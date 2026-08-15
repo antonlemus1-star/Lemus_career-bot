@@ -100,7 +100,7 @@ def get_main_keyboard():
     builder.button(text="📌 Трекер откликов")
     builder.button(text="💎 Оплата и Баланс")
     builder.button(text="🎁 Пригласить друга")
-    builder.button(text="ℹ️ Помощь") # Кнопка возвращена в интерфейс
+    builder.button(text="ℹ️ Помощь")
     builder.adjust(2, 2, 2, 2, 1, 2, 1)
     return builder.as_markup(resize_keyboard=True)
 
@@ -396,7 +396,7 @@ async def start_mock_interview(message: types.Message, state: FSMContext):
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
     prompt = f"Ты нанимающий менеджер. Вот резюме кандидата: {data['cv_text'][:1000]}\nА вот вакансия, на которую он претендует: {message.text[:1000]}\nОпираясь на пересечение этого опыта и требований, задай 1-й профильный вопрос из 5."
     try:
-        res = ai_client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
+        res = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
         await state.update_data(mock_step=1, mock_history=f"HR: {res.text}\n")
         await state.set_state(CareerState.mock_in_progress)
         await message.answer(res.text, reply_markup=types.ReplyKeyboardRemove())
@@ -413,11 +413,11 @@ async def continue_mock_interview(message: types.Message, state: FSMContext):
     if step < 5:
         step += 1
         prompt = f"Продолжаем. {step}-й вопрос из 5. История:\n{history}\nДай оценку ответу и задай следующий вопрос, опираясь на вакансию и резюме."
-        res = ai_client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
+        res = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
         await state.update_data(mock_step=step, mock_history=history + f"HR: {res.text}\n")
         await message.answer(res.text)
     else:
-        res = ai_client.models.generate_content(model='gemini-2.0-flash', contents=f"Конец. История:\n{history}\nДай развернутый фидбек по интервью. Укажи на сильные стороны и точки роста.")
+        res = ai_client.models.generate_content(model='gemini-1.5-flash', contents=f"Конец. История:\n{history}\nДай развернутый фидбек по интервью. Укажи на сильные стороны и точки роста.")
         await message.answer(f"🏁 Завершено.\n\n{res.text}", reply_markup=get_main_keyboard())
         await state.clear()
 
@@ -452,7 +452,7 @@ async def tracker_set_status(callback: types.CallbackQuery):
 async def execute_gemini_prompt(message: types.Message, prompt: str):
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
     try:
-        res = ai_client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
+        res = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
         await message.answer(res.text, reply_markup=get_main_keyboard())
     except Exception as e:
         await message.answer(f"⚠️ Ошибка ИИ: {e}", reply_markup=get_main_keyboard())
