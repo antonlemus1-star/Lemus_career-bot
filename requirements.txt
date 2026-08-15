@@ -1,2 +1,4 @@
 aiogram
 google-genai
+pypdf
+python-docx
