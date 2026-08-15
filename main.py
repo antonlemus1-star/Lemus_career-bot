@@ -112,19 +112,29 @@ def add_balance(user_id, amount):
     conn.commit()
 
 async def check_and_deduct(user_id, message: types.Message) -> bool:
-    if get_balance(user_id) <= 0:
-        await message.answer("⚠️ Твои запросы закончились!")
+    bal = get_balance(user_id)
+    if bal <= 0:
+        await message.answer("⚠️ Твои запросы закончились! Пополни баланс или пригласи друзей.")
         return False
     add_balance(user_id, -1)
     return True
 
+# Бронированный метод генерации с запасными вариантами моделей
+def call_gemini(prompt: str):
+    models_to_try = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-pro']
+    for m in models_to_try:
+        try:
+            res = ai_client.models.generate_content(model=m, contents=prompt)
+            if res and res.text:
+                return res.text
+        except Exception as e:
+            continue
+    return "⚠️ Не удалось получить ответ от ИИ. Проверь API-ключ."
+
 async def execute_ai(message: types.Message, prompt: str):
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    try:
-        res = ai_client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
-        await message.answer(res.text, reply_markup=get_main_keyboard())
-    except Exception as e:
-        await message.answer(f"⚠️ Ошибка ИИ: {e}")
+    text = call_gemini(prompt)
+    await message.answer(text, reply_markup=get_main_keyboard())
 
 def extract_text_from_pdf(file_path):
     return "".join([page.extract_text() or "" for page in PdfReader(file_path).pages])
@@ -173,20 +183,25 @@ async def handle_dislike(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("use_cv:"))
 async def process_cv_selection(callback: types.CallbackQuery, state: FSMContext):
+    # Гарантированно очищаем состояние, чтобы бот не зависал в ожиданиях
+    await state.clear()
+    
     cv_idx = int(callback.data.split(":")[1])
     resumes = user_resumes.get(callback.from_user.id, {})
     cv_name = list(resumes.keys())[cv_idx]
     cv_text = resumes[cv_name]
-    await state.update_data(cv_text=cv_text, cv_name=cv_name)
-    current_state = await state.get_state()
+
+    # Сразу определяем, какое действие нужно выполнить по названию кнопки в последнем сообщении
+    msg_text = callback.message.text or ""
     
-    if current_state == CareerState.choosing_cv_for_search.state:
+    if "поиск вакансий" in msg_text.lower() or "для поиска" in msg_text.lower():
         await callback.message.edit_text(f"🔍 Сканирую HeadHunter для: {cv_name}...")
         if await check_and_deduct(callback.from_user.id, callback.message):
             dislikes = [row[0] for row in cursor.execute('SELECT vacancy_title FROM dislikes WHERE user_id = ?', (callback.from_user.id,)).fetchall()]
             prompt = f"Выдели 3 ключевых слова для поиска на HH.ru. Верни ТОЛЬКО слова через пробел. Исключи: {', '.join(dislikes)}.\n\nРЕЗЮМЕ:\n{cv_text[:1000]}"
-            res = ai_client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
-            keywords = res.text.strip().replace('"', '').replace("'", "")
+            
+            keywords_raw = call_gemini(prompt)
+            keywords = keywords_raw.strip().replace('"', '').replace("'", "")
             
             vacs = await fetch_hh_vacancies(keywords)
             if vacs:
@@ -199,22 +214,24 @@ async def process_cv_selection(callback: types.CallbackQuery, state: FSMContext)
                     await callback.message.answer(f"🏢 {v.get('employer',{}).get('name')}\n💼 [{v['name']}]({v['alternate_url']})", reply_markup=builder.as_markup(), parse_mode="Markdown", link_preview_options=types.LinkPreviewOptions(is_disabled=True))
             else:
                 await callback.message.edit_text(f"По запросу `{keywords}` ничего не найдено.", parse_mode="Markdown")
-        await state.clear()
-    elif current_state == CareerState.choosing_cv_for_audit.state:
+    elif "аудит" in msg_text.lower():
         if await check_and_deduct(callback.from_user.id, callback.message):
             await execute_ai(callback.message, f"Проведи глубокий аудит резюме, подсвети клише и точки роста:\n\n{cv_text}")
-        await state.clear()
-    elif current_state == CareerState.choosing_cv_for_adapt.state:
+    elif "адаптац" in msg_text.lower():
         await state.set_state(CareerState.waiting_for_vacancy_adapt)
+        await state.update_data(cv_text=cv_text)
         await callback.message.edit_text("Отправь текст вакансии для адаптации:")
-    elif current_state == CareerState.choosing_cv_for_apply.state:
+    elif "отклик" in msg_text.lower():
         await state.set_state(CareerState.waiting_for_vacancy_apply)
+        await state.update_data(cv_text=cv_text)
         await callback.message.edit_text("Отправь текст вакансии для написания отклика:")
-    elif current_state == CareerState.choosing_cv_for_skillgap.state:
+    elif "анализ навыков" in msg_text.lower() or "skill" in msg_text.lower():
         await state.set_state(CareerState.waiting_for_vacancy_skillgap)
+        await state.update_data(cv_text=cv_text)
         await callback.message.edit_text("Отправь текст вакансии для анализа навыков:")
-    elif current_state == CareerState.choosing_cv_for_mock.state:
+    elif "тренировк" in msg_text.lower() or "собеседован" in msg_text.lower():
         await state.set_state(CareerState.waiting_for_vacancy_mock)
+        await state.update_data(cv_text=cv_text)
         await callback.message.edit_text("Отправь текст вакансии для тренировки на собеседовании:")
     await callback.answer()
 
@@ -275,24 +292,24 @@ async def start_mock(message: types.Message, state: FSMContext):
 async def adapt_cv(message: types.Message, state: FSMContext):
     if not await check_and_deduct(message.from_user.id, message): return
     data = await state.get_data()
-    await execute_ai(message, f"Адаптируй резюме под вакансию:\n\nРЕЗЮМЕ:\n{data['cv_text']}\n\nВАКАНСИЯ:\n{message.text}")
+    await execute_ai(message, f"Адаптируй резюме под вакансию:\n\nРЕЗЮМЕ:\n{data.get('cv_text', '')}\n\nВАКАНСИЯ:\n{message.text}")
     await state.clear()
 
 @dp.message(CareerState.waiting_for_vacancy_apply, F.text)
 async def gen_cover_letter(message: types.Message, state: FSMContext):
     if not await check_and_deduct(message.from_user.id, message): return
     data = await state.get_data()
-    res = ai_client.models.generate_content(model='gemini-2.0-flash', contents=f"Напиши сопроводительное письмо:\n\nРЕЗЮМЕ:\n{data['cv_text']}\n\nВАКАНСИЯ:\n{message.text}")
+    cover_text = call_gemini(f"Напиши сопроводительное письмо:\n\nРЕЗЮМЕ:\n{data.get('cv_text', '')}\n\nВАКАНСИЯ:\n{message.text}")
     cursor.execute('INSERT INTO applications (user_id, company_name, status) VALUES (?, ?, ?)', (message.from_user.id, message.text[:30], 'Отправлено'))
     conn.commit()
-    await message.answer(f"{res.text}\n\n📌 Добавлено в трекер откликов.", reply_markup=get_main_keyboard())
+    await message.answer(f"{cover_text}\n\n📌 Добавлено в трекер откликов.", reply_markup=get_main_keyboard())
     await state.clear()
 
 @dp.message(CareerState.waiting_for_vacancy_skillgap, F.text)
 async def process_skillgap(message: types.Message, state: FSMContext):
     if not await check_and_deduct(message.from_user.id, message): return
     data = await state.get_data()
-    await execute_ai(message, f"Сравни резюме и вакансию, укажи пробелы в навыках:\n\nРЕЗЮМЕ:\n{data['cv_text']}\n\nВАКАНСИЯ:\n{message.text}")
+    await execute_ai(message, f"Сравни резюме и вакансию, укажи пробелы в навыках:\n\nРЕЗЮМЕ:\n{data.get('cv_text', '')}\n\nВАКАНСИЯ:\n{message.text}")
     await state.clear()
 
 @dp.message(CareerState.waiting_for_vacancy_mock, F.text)
@@ -300,25 +317,25 @@ async def start_mock_interview(message: types.Message, state: FSMContext):
     if not await check_and_deduct(message.from_user.id, message): return
     data = await state.get_data()
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    res = ai_client.models.generate_content(model='gemini-2.0-flash', contents=f"Ты жесткий нанимающий менеджер. Задай 1-й профильный вопрос из 5:\n\nРЕЗЮМЕ:\n{data['cv_text'][:1000]}\n\nВАКАНСИЯ:\n{message.text[:1000]}")
-    await state.update_data(mock_step=1, mock_history=f"HR: {res.text}\n")
+    q_text = call_gemini(f"Ты жесткий нанимающий менеджер. Задай 1-й профильный вопрос из 5:\n\nРЕЗЮМЕ:\n{data.get('cv_text', '')[:1000]}\n\nВАКАНСИЯ:\n{message.text[:1000]}")
+    await state.update_data(mock_step=1, mock_history=f"HR: {q_text}\n", cv_text=data.get('cv_text', ''))
     await state.set_state(CareerState.mock_in_progress)
-    await message.answer(res.text, reply_markup=types.ReplyKeyboardRemove())
+    await message.answer(q_text, reply_markup=types.ReplyKeyboardRemove())
 
 @dp.message(CareerState.mock_in_progress, F.text)
 async def continue_mock_interview(message: types.Message, state: FSMContext):
     if not await check_and_deduct(message.from_user.id, message): return
     data = await state.get_data()
-    step, history = data['mock_step'], data['mock_history'] + f"Кандидат: {message.text}\n"
+    step, history = data.get('mock_step', 1), data.get('mock_history', '') + f"Кандидат: {message.text}\n"
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
     if step < 5:
         step += 1
-        res = ai_client.models.generate_content(model='gemini-2.0-flash', contents=f"Продолжаем собеседование ({step}/5). История:\n{history}")
-        await state.update_data(mock_step=step, mock_history=history + f"HR: {res.text}\n")
-        await message.answer(res.text)
+        next_q = call_gemini(f"Продолжаем собеседование ({step}/5). История:\n{history}")
+        await state.update_data(mock_step=step, mock_history=history + f"HR: {next_q}\n")
+        await message.answer(next_q)
     else:
-        res = ai_client.models.generate_content(model='gemini-2.0-flash', contents=f"Собеседование завершено. История:\n{history}\nДай развернутый фидбек.")
-        await message.answer(f"🏁 Фидбек по собеседованию:\n\n{res.text}", reply_markup=get_main_keyboard())
+        feedback = call_gemini(f"Собеседование завершено. История:\n{history}\nДай развернутый фидбек.")
+        await message.answer(f"🏁 Фидбек по собеседованию:\n\n{feedback}", reply_markup=get_main_keyboard())
         await state.clear()
 
 # --- CRM ТРЕКЕР ---
@@ -349,7 +366,8 @@ async def tracker_set_status(callback: types.CallbackQuery):
 # --- ОБЩИЙ ЧАТ ---
 @dp.message(F.text)
 async def handle_any_text(message: types.Message, state: FSMContext):
-    # Убран жесткий перехват кнопок меню, теперь текст обрабатывается корректно
+    if await state.get_state() is not None:
+        await state.clear()
     await execute_ai(message, message.text)
 
 async def main():
