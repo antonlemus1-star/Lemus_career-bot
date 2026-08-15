@@ -14,7 +14,7 @@ from google import genai
 from pypdf import PdfReader
 from docx import Document
 
-# --- КОНФИгурация ---
+# --- КОНФИГУРАЦИЯ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ADMIN_ID = os.getenv("ADMIN_ID")
@@ -70,22 +70,21 @@ conn.commit()
 user_resumes = {}
 temp_vacancies = {}
 
-# --- ПАРСИНГ HH API (УСТОЙЧИВЫЙ) ---
+# --- ЖЕЛЕЗОБЕТОННЫЙ ПАРСИНГ HH API ---
 async def fetch_hh_vacancies(keywords: str):
     url = "https://api.hh.ru/vacancies"
     headers = {"User-Agent": "LemusCareerBot/1.0"}
     
-    # Пробуем несколько вариантов запроса последовательно, если первый пустой
-    search_queries = [keywords, "Руководитель", "Director", "Manager"]
-    search_queries = list(dict.fromkeys(search_queries))
+    # Смягчаем запросы по порядку от точного к максимально широкому
+    queries = [keywords, "Руководитель", "Директор", "Manager", "Специалист"]
+    queries = list(dict.fromkeys(queries))
 
     async with aiohttp.ClientSession() as session:
-        for q in search_queries:
+        for q in queries:
             params = {
                 "text": q,
                 "area": 1,
-                "per_page": 15,
-                "period": 30,
+                "per_page": 10,
                 "order_by": "publication_time"
             }
             try:
@@ -131,7 +130,7 @@ class CareerState(StatesGroup):
     admin_edit_t_req = State()
     admin_edit_t_price = State()
 
-# --- КНОПКИ ИНТЕРФЕЙСА ---
+# --- ВСЕ КНОПКИ ИНТЕРФЕЙСА ---
 def get_main_keyboard():
     builder = ReplyKeyboardBuilder()
     builder.button(text="📁 Мои резюме")
@@ -322,15 +321,14 @@ async def process_cv_selection(callback: types.CallbackQuery, state: FSMContext)
     if current_state == CareerState.choosing_cv_for_search.state:
         await callback.message.edit_text("🔍 Ищу подходящие вакансии на HeadHunter...")
         if await check_and_deduct(callback.from_user.id, callback.message):
-            # Определяем ключевое слово из названия резюме или текста
+            # Гибкий подбор ключевого слова
             cv_lower = cv_name.lower() + " " + cv_text.lower()
             if "продаж" in cv_lower: keywords = "Руководитель отдела продаж"
             elif "развит" in cv_lower: keywords = "Руководитель по развитию"
             elif "направлен" in cv_lower: keywords = "Руководитель направления"
             elif "бухгалтер" in cv_lower: keywords = "Бухгалтер"
-            else: keywords = "Руководитель"
+            else: keywords = "Руководитель проектов"
 
-            # Запускаем парсинг с авто-подбором запроса
             vacancies, used_q = await fetch_hh_vacancies(keywords)
 
             if vacancies:
