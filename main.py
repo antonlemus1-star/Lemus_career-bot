@@ -70,26 +70,34 @@ conn.commit()
 user_resumes = {}
 temp_vacancies = {}
 
-# --- ИНТЕГРАЦИЯ С HEADHUNTER API ---
+# --- УЛУЧШЕННЫЙ ПАРСИНГ С РЕЗЕРВНЫМ ЗАПРОСОМ ---
 async def fetch_hh_vacancies(keywords: str):
     url = "https://api.hh.ru/vacancies"
-    params = {
-        "text": keywords,
-        "area": 1,
-        "per_page": 5,
-        "period": 30,
-        "order_by": "publication_time"
-    }
     headers = {"User-Agent": "LemusCareerBot/1.0"}
+    
+    # Список запросов для пробы (если первый не даст результатов)
+    queries = [keywords, "Руководитель проектов", "Руководитель", "Директор"]
+    # Убираем дубликаты сохраняя порядок
+    queries = list(dict.fromkeys(queries))
+
     async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(url, params=params, headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data.get("items", [])
-        except Exception as e:
-            logging.error(f"HH API error: {e}")
-    return []
+        for q in queries:
+            params = {
+                "text": q,
+                "area": 1,
+                "per_page": 10,
+                "order_by": "publication_time"
+            }
+            try:
+                async with session.get(url, params=params, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        items = data.get("items", [])
+                        if items:
+                            return items, q
+            except Exception as e:
+                logging.error(f"HH API error for '{q}': {e}")
+    return [], ""
 
 # --- MIDDLEWARE ДЛЯ ТРЕКИНГА АКТИВНОСТИ ---
 class ActivityMiddleware(BaseMiddleware):
@@ -123,7 +131,7 @@ class CareerState(StatesGroup):
     admin_edit_t_req = State()
     admin_edit_t_price = State()
 
-# --- КЛАВИАТУРА СО ВСЕМИ КНОПКАМИ ---
+# --- ПОЛНЫЙ НАБОР КНОПОК ФУНКЦИОНАЛА ---
 def get_main_keyboard():
     builder = ReplyKeyboardBuilder()
     builder.button(text="📁 Мои резюме")
@@ -310,7 +318,7 @@ async def cmd_help(message: types.Message):
         "🛠 **Адаптация резюме** — переписывание под конкретную вакансию для обхода ATS-фильтров.\n"
         "✍️ **Отклик** — генерация Cover Letter с авто-добавлением в CRM.\n"
         "📊 **Skill Gap** — анализ пробелов в навыках.\n"
-        "🎤 **Тренажер собеседований** — симуляция вопросов HR и подробный фидбек.\n"
+        "🎤 **Тренировка собеседований** — симуляция вопросов HR и подробный фидбек.\n"
         "📌 **Трекер откликов** — управление статусами собеседований.\n"
         "💎 **Оплата и Баланс** — пополнение запросов картами или Telegram Stars."
     )
@@ -404,36 +412,38 @@ async def process_cv_selection(callback: types.CallbackQuery, state: FSMContext)
     if current_state == CareerState.choosing_cv_for_search.state:
         await callback.message.edit_text(f"🔍 Сканирую HeadHunter по твоему профилю...")
         if await check_and_deduct(callback.from_user.id, callback.message):
-            # Надежный гибридный поиск с универсальным фоллбеком
-            keywords = "Руководитель проектов"
-            cv_lower = cv_name.lower() + " " + cv_text.lower()
-            if "продаж" in cv_lower:
-                keywords = "Руководитель отдела продаж"
-            elif "развит" in cv_lower or "business development" in cv_lower:
-                keywords = "Руководитель по развитию"
-            elif "направлен" in cv_lower:
-                keywords = "Руководитель направления"
-            elif "бухгалтер" in cv_lower or "учет" in cv_lower:
-                keywords = "Бухгалтер"
-
-            vacancies = await fetch_hh_vacancies(keywords)
+            # Извлекаем нежелательные вакансии
+            dislikes = [r[0] for r in cursor.execute('SELECT vacancy_title FROM dislikes WHERE user_id = ?', (callback.from_user.id,)).fetchall()]
             
-            # Если точный запрос пустой, пробуем общий
-            if not vacancies:
-                vacancies = await fetch_hh_vacancies("Руководитель")
-                keywords = "Руководитель"
+            # Интеллектуальный выбор поискового запроса на основе резюме
+            cv_lower = cv_name.lower() + " " + cv_text.lower()
+            if "продаж" in cv_lower or "роп" in cv_lower:
+                query = "Руководитель отдела продаж"
+            elif "развит" in cv_lower or "business development" in cv_lower:
+                query = "Руководитель по развитию"
+            elif "направлен" in cv_lower:
+                query = "Руководитель направления"
+            elif "бухгалтер" in cv_lower or "учет" in cv_lower:
+                query = "Бухгалтер"
+            else:
+                query = "Руководитель проектов"
 
-            if vacancies:
-                await callback.message.edit_text(f"🔥 **Вакансии по запросу:** `{keywords}`", parse_mode="Markdown")
-                for v in vacancies:
+            vacancies, used_query = await fetch_hh_vacancies(query)
+
+            # Фильтрация по черному списку (мимо)
+            filtered_vacancies = [v for v in vacancies if v.get("name") not in dislikes]
+
+            if filtered_vacancies:
+                await callback.message.edit_text(f"🔥 **Вакансии по запросу:** `{used_query}`", parse_mode="Markdown")
+                for v in filtered_vacancies:
                     name, vac_id, url = v.get("name", ""), str(v.get("id", "0")), v.get("alternate_url", "")
-                    employer = v.get("employer", {}).get("name", "")
+                    employer = v.get("employer", {}).get("name", "Компания")
                     temp_vacancies[vac_id] = name
                     builder = InlineKeyboardBuilder()
                     builder.button(text="👎 Мимо", callback_data=f"disl_{vac_id}")
                     await callback.message.answer(f"🏢 **{employer}**\n💼 [{name}]({url})", reply_markup=builder.as_markup(), parse_mode="Markdown", link_preview_options=types.LinkPreviewOptions(is_disabled=True))
             else:
-                await callback.message.edit_text("По твоему профилю за последнее время ничего не найдено на HH. Попробуй позже.", parse_mode="Markdown")
+                await callback.message.edit_text("По твоему профилю ничего не найдено. Попробуй обновить резюме или повторить позже.", parse_mode="Markdown")
         await state.clear()
     elif current_state == CareerState.choosing_cv_for_adapt.state:
         await state.set_state(CareerState.waiting_for_vacancy_adapt)
