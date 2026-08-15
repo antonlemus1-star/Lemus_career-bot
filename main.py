@@ -121,7 +121,6 @@ async def check_and_deduct(user_id, message: types.Message) -> bool:
 async def execute_ai(message: types.Message, prompt: str):
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
     try:
-        # Универсальный вызов без привязки к устаревшим путям моделей
         res = ai_client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
         await message.answer(res.text, reply_markup=get_main_keyboard())
     except Exception as e:
@@ -350,8 +349,7 @@ async def tracker_set_status(callback: types.CallbackQuery):
 # --- ОБЩИЙ ЧАТ ---
 @dp.message(F.text)
 async def handle_any_text(message: types.Message, state: FSMContext):
-    if await state.get_state() is not None:
-        return await message.answer("⚠️ Ожидается ввод данных. Нажми /start для сброса.")
+    # Убран жесткий перехват кнопок меню, теперь текст обрабатывается корректно
     await execute_ai(message, message.text)
 
 async def main():
