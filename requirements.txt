@@ -1,4 +1,2 @@
 aiogram
 google-genai
-selenium
-webdriver-manager
