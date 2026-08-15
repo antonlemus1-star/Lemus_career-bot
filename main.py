@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 import sqlite3
+import aiohttp
 from datetime import datetime
 from aiogram import Bot, Dispatcher, F, types, BaseMiddleware
 from aiogram.filters import Command, CommandObject
@@ -15,19 +16,11 @@ from google.genai import types as genai_types
 from pypdf import PdfReader
 from docx import Document
 
-# --- КОНФИГУРАЦИЯ И ТАРИФЫ ---
+# --- КОНФИГУРАЦИЯ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ADMIN_ID = os.getenv("ADMIN_ID")
 PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN")
-
-TARIFFS_FIAT = {
-    "basic": {"requests": 50, "price_rub": 150, "name": "Стартовый (50 запросов)"},
-    "pro": {"requests": 200, "price_rub": 450, "name": "Профи (200 запросов)"}
-}
-TARIFFS_STARS = {
-    "stars_100": {"requests": 100, "price_stars": 100, "name": "100 запросов (100 ⭐️)"}
-}
 
 if not BOT_TOKEN:
     print("Ошибка: не задан BOT_TOKEN!")
@@ -37,7 +30,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# --- БАЗА ДАННЫХ ---
+# --- БАЗА ДАННЫХ И ТАРИФЫ ---
 conn = sqlite3.connect('tracker.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS users (
@@ -53,9 +46,53 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS applications (
     company_name TEXT, 
     status TEXT
 )''')
+cursor.execute('''CREATE TABLE IF NOT EXISTS tariffs (
+    id TEXT PRIMARY KEY, 
+    type TEXT, 
+    requests INTEGER, 
+    price INTEGER, 
+    name TEXT
+)''')
+# Таблица для обучения ИИ (неподходящие вакансии)
+cursor.execute('''CREATE TABLE IF NOT EXISTS dislikes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    vacancy_title TEXT
+)''')
+
+cursor.execute('SELECT COUNT(*) FROM tariffs')
+if cursor.fetchone()[0] == 0:
+    cursor.executemany('INSERT INTO tariffs VALUES (?, ?, ?, ?, ?)', [
+        ('basic', 'fiat', 50, 150, 'Стартовый'),
+        ('pro', 'fiat', 200, 450, 'Профи'),
+        ('stars_100', 'stars', 100, 100, 'Пакет ⭐️')
+    ])
 conn.commit()
 
+# Хранилище резюме и кэш вакансий
 user_resumes = {}
+temp_vacancies = {} # Кэш для кнопок "Мимо"
+
+# --- ИНТЕГРАЦИЯ С HEADHUNTER API ---
+async def fetch_hh_vacancies(keywords: str):
+    url = "https://api.hh.ru/vacancies"
+    params = {
+        "text": keywords,
+        "search_field": "name",
+        "period": 10,      # Строго за последние 10 дней
+        "per_page": 5,     # Берем топ-5 лучших
+        "order_by": "relevance"
+    }
+    headers = {"User-Agent": "LemusCareerBot/1.0"}
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url, params=params, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("items", [])
+        except Exception as e:
+            logging.error(f"HH API error: {e}")
+    return []
 
 # --- MIDDLEWARE ДЛЯ ТРЕКИНГА АКТИВНОСТИ ---
 class ActivityMiddleware(BaseMiddleware):
@@ -83,8 +120,11 @@ class CareerState(StatesGroup):
     choosing_cv_for_mock = State()
     waiting_for_vacancy_mock = State()
     mock_in_progress = State()
+    
     admin_add_balance_user = State()
     admin_add_balance_amount = State()
+    admin_edit_t_req = State()
+    admin_edit_t_price = State()
 
 # --- КЛАВИАТУРА ---
 def get_main_keyboard():
@@ -96,7 +136,7 @@ def get_main_keyboard():
     builder.button(text="✍️ Отклик")
     builder.button(text="📊 Skill Gap")
     builder.button(text="📋 Аудит резюме")
-    builder.button(text="🎤 Мок-интервью")
+    builder.button(text="🎤 Тренажер собеседований") # <-- ИЗМЕНЕНО НАЗВАНИЕ
     builder.button(text="📌 Трекер откликов")
     builder.button(text="💎 Оплата и Баланс")
     builder.button(text="🎁 Пригласить друга")
@@ -128,7 +168,7 @@ def extract_text_from_pdf(file_path):
 def extract_text_from_docx(file_path):
     return "\n".join([p.text for p in Document(file_path).paragraphs])
 
-# --- АДМИН-ПАНЕЛЬ ---
+# --- ПАНЕЛЬ АДМИНИСТРАТОРА ---
 @dp.message(Command("adminlemus71"))
 async def cmd_admin(message: types.Message):
     if str(message.from_user.id) != str(ADMIN_ID): return
@@ -143,34 +183,99 @@ async def cmd_admin(message: types.Message):
     cursor.execute('SELECT COUNT(*) FROM applications')
     total_apps = cursor.fetchone()[0]
     
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⚙️ Настройка тарифов", callback_data="admin_tariffs")
+    builder.button(text="💰 Выдать запросы", callback_data="admin_give_balance")
+    builder.adjust(1)
+
     text = (f"👑 **Панель Администратора**\n\n"
             f"👥 Всего пользователей: {total_users}\n"
             f"💰 Платных подписчиков: {paid_users}\n"
             f"📈 Посещений за сегодня: {daily_visits}\n"
-            f"📝 Откликов в CRM: {total_apps}\n\n"
-            f"Команда пополнения: /addbalance")
-    await message.answer(text)
+            f"📝 Откликов в CRM: {total_apps}")
+    await message.answer(text, reply_markup=builder.as_markup())
 
-@dp.message(Command("addbalance"))
-async def admin_addbalance(message: types.Message, state: FSMContext):
-    if str(message.from_user.id) != str(ADMIN_ID): return
+@dp.callback_query(F.data == "admin_give_balance")
+async def admin_give_bal_btn(callback: types.CallbackQuery, state: FSMContext):
+    if str(callback.from_user.id) != str(ADMIN_ID): return
     await state.set_state(CareerState.admin_add_balance_user)
-    await message.answer("ID пользователя:")
+    await callback.message.answer("Введи ID пользователя, которому нужно начислить запросы:")
+    await callback.answer()
 
 @dp.message(CareerState.admin_add_balance_user)
 async def admin_add_user(message: types.Message, state: FSMContext):
     await state.update_data(target=int(message.text))
     await state.set_state(CareerState.admin_add_balance_amount)
-    await message.answer("Сумма запросов:")
+    await message.answer("Сколько запросов начислить?")
 
 @dp.message(CareerState.admin_add_balance_amount)
 async def admin_add_amt(message: types.Message, state: FSMContext):
     data = await state.get_data()
     add_balance(data['target'], int(message.text))
-    await message.answer(f"Начислено {message.text} запросов юзеру {data['target']}.")
+    await message.answer(f"✅ Начислено {message.text} запросов юзеру {data['target']}.")
     await state.clear()
 
-# --- СТАРТ (ОНБОРДИНГ) И РЕФЕРАЛКА ---
+@dp.callback_query(F.data == "admin_tariffs")
+async def admin_show_tariffs(callback: types.CallbackQuery):
+    if str(callback.from_user.id) != str(ADMIN_ID): return
+    builder = InlineKeyboardBuilder()
+    cursor.execute("SELECT id, name, requests, price, type FROM tariffs")
+    for t_id, name, req, price, t_type in cursor.fetchall():
+        sign = "₽" if t_type == "fiat" else "⭐️"
+        builder.button(text=f"{name}: {req} зап. / {price}{sign}", callback_data=f"adm_edt_tar_{t_id}")
+    builder.adjust(1)
+    await callback.message.edit_text("📋 **Список тарифов:**\nВыбери тариф, чтобы изменить его настройки.", reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data.startswith("adm_edt_tar_"))
+async def admin_edit_tariff_menu(callback: types.CallbackQuery, state: FSMContext):
+    if str(callback.from_user.id) != str(ADMIN_ID): return
+    t_id = callback.data.replace("adm_edt_tar_", "")
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔄 Изменить кол-во запросов", callback_data=f"adm_set_req_{t_id}")
+    builder.button(text="💵 Изменить цену", callback_data=f"adm_set_prc_{t_id}")
+    builder.button(text="⬅️ Назад", callback_data="admin_tariffs")
+    builder.adjust(1)
+    await callback.message.edit_text(f"Что меняем в тарифе?", reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data.startswith("adm_set_req_"))
+async def admin_ask_req(callback: types.CallbackQuery, state: FSMContext):
+    t_id = callback.data.replace("adm_set_req_", "")
+    await state.update_data(edit_t_id=t_id)
+    await state.set_state(CareerState.admin_edit_t_req)
+    await callback.message.answer("Отправь **новое количество запросов** (просто число):")
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("adm_set_prc_"))
+async def admin_ask_prc(callback: types.CallbackQuery, state: FSMContext):
+    t_id = callback.data.replace("adm_set_prc_", "")
+    await state.update_data(edit_t_id=t_id)
+    await state.set_state(CareerState.admin_edit_t_price)
+    await callback.message.answer("Отправь **новую цену** (просто число):")
+    await callback.answer()
+
+@dp.message(CareerState.admin_edit_t_req, F.text)
+async def admin_save_req(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    try:
+        val = int(message.text)
+        cursor.execute("UPDATE tariffs SET requests = ? WHERE id = ?", (val, data['edit_t_id']))
+        conn.commit()
+        await message.answer("✅ Количество запросов успешно обновлено!")
+    except: await message.answer("⚠️ Ошибка. Нужно отправить число.")
+    await state.clear()
+
+@dp.message(CareerState.admin_edit_t_price, F.text)
+async def admin_save_prc(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    try:
+        val = int(message.text)
+        cursor.execute("UPDATE tariffs SET price = ? WHERE id = ?", (val, data['edit_t_id']))
+        conn.commit()
+        await message.answer("✅ Цена успешно обновлена!")
+    except: await message.answer("⚠️ Ошибка. Нужно отправить число.")
+    await state.clear()
+
+# --- СТАРТ И РЕФЕРАЛКА ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext, command: CommandObject):
     await state.clear()
@@ -193,35 +298,24 @@ async def cmd_start(message: types.Message, state: FSMContext, command: CommandO
         "👋 **Привет! Я твой продвинутый карьерный AI-советник.**\n\n"
         "Я заменяю целую команду HR-специалистов. Помогу найти работу мечты быстрее и увереннее.\n\n"
         "🛠 **Как мы будем работать (Шаги):**\n"
-        "1️⃣ Нажми **«📤 Загрузить»** и отправь мне свои резюме (до 5 шт в PDF или Word).\n"
-        "2️⃣ Выбери любую кнопку из меню ниже, например **«📋 Аудит резюме»**, чтобы я жестко его проверил.\n"
-        "3️⃣ Отправляй мне описания вакансий через **«✍️ Отклик»** или **«📊 Skill Gap»**, чтобы я писал крутые Cover Letters и указывал, чего тебе не хватает.\n"
-        "4️⃣ Заходи в **«📌 Трекер откликов»**, чтобы не терять воронку своих собеседований.\n\n"
+        "1️⃣ Нажми **«📤 Загрузить»** и отправь мне свои резюме (до 5 шт).\n"
+        "2️⃣ Используй **«🔍 Поиск вакансий»**, чтобы я сам нашел для тебя свежие вакансии на HH.ru.\n"
+        "3️⃣ Отправляй мне описания вакансий через **«✍️ Отклик»**, чтобы я писал крутые Cover Letters.\n"
+        "4️⃣ Заходи в **«🎤 Тренажер собеседований»**, чтобы подготовиться к каверзным вопросам рекрутера.\n\n"
         "🎁 Тебе начислено **30 бесплатных запросов**. Нажми **«ℹ️ Помощь»**, чтобы прочитать подробнее обо всех функциях!"
     )
     await message.answer(welcome_text, reply_markup=get_main_keyboard())
 
-# --- ПОМОЩЬ (ПОДРОБНОЕ ОПИСАНИЕ ФУНКЦИОНАЛА) ---
 @dp.message(F.text == "ℹ️ Помощь")
 async def cmd_help(message: types.Message):
     help_text = (
-        "🤖 **Что я умею и какую ценность даю:**\n\n"
-        "📋 **Аудит резюме**\n"
-        "Я включаю режим «циничного рекрутера». Подсвечиваю клише (типа 'стрессоустойчивость'), указываю на отсутствие оцифрованных результатов и предлагаю более сильные формулировки.\n\n"
-        "📊 **Анализ пробелов (Skill Gap)**\n"
-        "Сравниваю требования вакансии и твой опыт. Честно говорю: «У тебя отлично закрыты пункты А и Б, но не хватает опыта с В. На собеседовании компенсируй это вот так...»\n\n"
-        "🎤 **Мок-интервью (AI-тренажер)**\n"
-        "Я выступаю в роли жесткого нанимающего менеджера. Задаю 5 профильных вопросов, вытекающих ИМЕННО из пересечения твоего резюме и вакансии. В конце выдаю фидбек: где вода, где слабо, а где отличный ответ.\n\n"
-        "📌 **Мини-CRM (Трекер откликов)**\n"
-        "Встроенная канбан-доска. При генерации отклика вакансия автоматически падает сюда. Меняй статусы («HR-интервью», «Оффер», «Отказ») и избавься от хаоса.\n\n"
-        "✍️ **Генерация отклика**\n"
-        "Пишу идеальное сопроводительное письмо, подчеркивая нужные достижения из выбранного резюме под конкретную вакансию.\n\n"
-        "🛠 **Адаптация резюме**\n"
-        "Переписываю твое резюме под конкретную вакансию для обхода ATS-фильтров HR.\n\n"
-        "🔍 **Поиск вакансий**\n"
-        "Анализирую опыт и выдаю идеальные должности и поисковые запросы (за последние 10 дней) для HH.ru.\n\n"
-        "🎁 **Пригласить друга**\n"
-        "Получай по 30 запросов за каждого друга!"
+        "🤖 **Что я умею:**\n\n"
+        "🔍 **Поиск вакансий** — сам сканирую HH.ru по твоему резюме и выдаю 5 свежих релевантных вакансий с ссылками!\n\n"
+        "📋 **Аудит резюме** — подсвечиваю клише и помогаю усилить формулировки.\n\n"
+        "📊 **Skill Gap** — говорю, каких навыков тебе не хватает для вакансии и как это компенсировать.\n\n"
+        "🎤 **Тренажер собеседований** — выступаю в роли HR: задаю 5 каверзных вопросов по пересечению твоего резюме и вакансии, а затем выдаю фидбек.\n\n"
+        "📌 **Трекер откликов** — встроенная CRM для ведения статусов твоих собеседований.\n\n"
+        "✍️ **Генерация отклика** — пишу идеальное сопроводительное письмо под конкретную вакансию."
     )
     await message.answer(help_text)
 
@@ -230,31 +324,44 @@ async def cmd_referral(message: types.Message):
     link = f"https://t.me/{(await bot.get_me()).username}?start={message.from_user.id}"
     await message.answer(f"🎁 Даю **30 запросов** тебе и другу!\n\nТвоя реферальная ссылка:\n`{link}`", parse_mode="Markdown")
 
-# --- БАЛАНС И ОПЛАТА ---
+# --- ДИНАМИЧЕСКИЙ БАЛАНС И ОПЛАТА ---
 @dp.message(F.text == "💎 Оплата и Баланс")
 async def cmd_balance(message: types.Message):
     bal = get_balance(message.from_user.id)
     builder = InlineKeyboardBuilder()
-    for key, data in TARIFFS_FIAT.items():
-        builder.button(text=f"💳 {data['name']} - {data['price_rub']}₽", callback_data=f"pay_fiat_{key}")
-    for key, data in TARIFFS_STARS.items():
-        builder.button(text=f"⭐️ {data['name']}", callback_data=f"pay_stars_{key}")
+    
+    cursor.execute("SELECT id, requests, price, name FROM tariffs WHERE type='fiat'")
+    for t_id, req, price, name in cursor.fetchall():
+        builder.button(text=f"💳 {name} ({req} зап.) - {price}₽", callback_data=f"pay_fiat_{t_id}")
+        
+    cursor.execute("SELECT id, requests, price, name FROM tariffs WHERE type='stars'")
+    for t_id, req, price, name in cursor.fetchall():
+        builder.button(text=f"⭐️ {name} ({req} зап.) - {price} ⭐️", callback_data=f"pay_stars_{t_id}")
+        
     builder.adjust(1)
     await message.answer(f"💰 Доступно: **{bal} запросов**.\n\nВыбери удобный способ пополнения:", reply_markup=builder.as_markup(), parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("pay_fiat_"))
 async def process_pay_fiat(callback: types.CallbackQuery):
     if not PAYMENT_TOKEN: return await callback.answer("⚠️ Оплата картами не настроена.", show_alert=True)
-    tariff = TARIFFS_FIAT[callback.data.replace("pay_fiat_", "")]
-    prices = [types.LabeledPrice(label=tariff['name'], amount=tariff['price_rub'] * 100)]
-    await bot.send_invoice(callback.from_user.id, title="Пакет запросов", description=tariff['name'], payload=f"req_{tariff['requests']}", provider_token=PAYMENT_TOKEN, currency="RUB", prices=prices)
+    t_id = callback.data.replace("pay_fiat_", "")
+    cursor.execute("SELECT requests, price, name FROM tariffs WHERE id=?", (t_id,))
+    tariff = cursor.fetchone()
+    if not tariff: return
+    req, price, name = tariff
+    prices = [types.LabeledPrice(label=f"{name}", amount=price * 100)]
+    await bot.send_invoice(callback.from_user.id, title="Пакет запросов", description=f"Пополнение на {req} запросов", payload=f"req_{req}", provider_token=PAYMENT_TOKEN, currency="RUB", prices=prices)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("pay_stars_"))
 async def process_pay_stars(callback: types.CallbackQuery):
-    tariff = TARIFFS_STARS[callback.data.replace("pay_stars_", "")]
-    prices = [types.LabeledPrice(label=tariff['name'], amount=tariff['price_stars'])]
-    await bot.send_invoice(callback.from_user.id, title="Пакет запросов", description=tariff['name'], payload=f"req_{tariff['requests']}", provider_token="", currency="XTR", prices=prices)
+    t_id = callback.data.replace("pay_stars_", "")
+    cursor.execute("SELECT requests, price, name FROM tariffs WHERE id=?", (t_id,))
+    tariff = cursor.fetchone()
+    if not tariff: return
+    req, price, name = tariff
+    prices = [types.LabeledPrice(label=f"{name}", amount=price)]
+    await bot.send_invoice(callback.from_user.id, title="Пакет запросов", description=f"Пополнение на {req} запросов", payload=f"req_{req}", provider_token="", currency="XTR", prices=prices)
     await callback.answer()
 
 @dp.pre_checkout_query()
@@ -280,6 +387,19 @@ async def show_cv_selector(message: types.Message, state: FSMContext, state_to_s
     builder.adjust(1)
     await message.answer(prompt_text, reply_markup=builder.as_markup())
 
+# --- ОБРАБОТКА ОБУЧЕНИЯ БОТА ("МИМО") ---
+@dp.callback_query(F.data.startswith("disl_"))
+async def handle_dislike(callback: types.CallbackQuery):
+    vac_id = callback.data.replace("disl_", "")
+    title = temp_vacancies.get(vac_id, "Неизвестная вакансия")
+    
+    # Сохраняем неприязнь в базу
+    cursor.execute('INSERT INTO dislikes (user_id, vacancy_title) VALUES (?, ?)', (callback.from_user.id, title))
+    conn.commit()
+    
+    await callback.message.edit_text(f"🚫 Вакансия скрыта.\nЯ запомнил, что **«{title}»** тебе не подходит, и буду отсеивать подобные в будущем.", parse_mode="Markdown")
+    await callback.answer()
+
 @dp.callback_query(F.data.startswith("use_cv:"))
 async def process_cv_selection(callback: types.CallbackQuery, state: FSMContext):
     current_state = await state.get_state()
@@ -289,13 +409,53 @@ async def process_cv_selection(callback: types.CallbackQuery, state: FSMContext)
     cv_text = resumes[cv_name]
     await state.update_data(cv_text=cv_text, cv_name=cv_name)
 
+    # 🚀 СУПЕР ФУНКЦИЯ ПОИСКА С ОБУЧЕНИЕМ
     if current_state == CareerState.choosing_cv_for_search.state:
-        await callback.message.edit_text(f"🔍 Ищу вакансии для резюме: {cv_name}...")
+        await callback.message.edit_text(f"🔍 Сканирую HeadHunter для резюме: {cv_name}...\nПодожди секунду, подбираю самые свежие вакансии.")
         if await check_and_deduct(callback.from_user.id, callback.message):
-            prompt = (f"Проанализируй резюме. Выдай 5 идеальных должностей и 10 ключевых слов для HH.ru. "
-                      f"Обязательно напиши четкую инструкцию для пользователя: как настроить фильтры на HH.ru, "
-                      f"чтобы искать вакансии СТРОГО за последние 10 дней, так как это критично для успешного отклика.\n\nРЕЗЮМЕ:\n{cv_text}")
-            await execute_gemini_prompt(callback.message, prompt)
+            
+            # Получаем историю неприязней
+            cursor.execute('SELECT vacancy_title FROM dislikes WHERE user_id = ? ORDER BY id DESC LIMIT 10', (callback.from_user.id,))
+            dislikes = [row[0] for row in cursor.fetchall()]
+            dislikes_str = ", ".join(dislikes) if dislikes else "Нет"
+
+            # Шаг 1: ИИ вытягивает ключевые слова, исключая мусор
+            prompt = (f"Сформируй 1-3 самых точных ключевых слова (название должности или навык) для строки поиска HeadHunter. "
+                      f"Верни ТОЛЬКО слова через пробел. "
+                      f"ВАЖНО: Пользователь отметил, что ему НЕ подходят вакансии с названиями: {dislikes_str}. "
+                      f"Используй оператор NOT, чтобы исключить их из поиска (например: Менеджер NOT продаж NOT b2b).\n\n"
+                      f"РЕЗЮМЕ:\n{cv_text[:1000]}")
+            
+            res = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
+            keywords = res.text.strip().replace('"', '').replace("'", "")
+            
+            # Шаг 2: Парсим API HH.ru
+            vacancies = await fetch_hh_vacancies(keywords)
+            
+            if vacancies:
+                await callback.message.edit_text(f"🔥 **Нашел свежие вакансии по запросу:** `{keywords}`\nВыбери подходящую, скопируй её текст и нажми «✍️ Отклик» в меню!", parse_mode="Markdown")
+                
+                # Отправляем каждую вакансию отдельным сообщением с кнопкой "Мимо"
+                for v in vacancies:
+                    name = v.get("name", "Без названия")
+                    vac_id = str(v.get("id", "0"))
+                    url = v.get("alternate_url", "")
+                    employer = v.get("employer", {}).get("name", "Компания не указана")
+                    
+                    salary = v.get("salary")
+                    sal_text = "ЗП не указана"
+                    if salary:
+                        sal_text = f"от {salary.get('from', '')} до {salary.get('to', '')} {salary.get('currency', '')}".replace("от None", "").replace("до None", "").strip()
+                    
+                    temp_vacancies[vac_id] = name # Кэшируем для кнопки "Мимо"
+                    
+                    builder = InlineKeyboardBuilder()
+                    builder.button(text="👎 Мимо (Не показывать)", callback_data=f"disl_{vac_id}")
+                    
+                    msg_text = f"🏢 **{employer}**\n💼 [{name}]({url})\n💰 {sal_text}"
+                    await callback.message.answer(msg_text, reply_markup=builder.as_markup(), parse_mode="Markdown", link_preview_options=types.LinkPreviewOptions(is_disabled=True))
+            else:
+                await callback.message.edit_text(f"К сожалению, по запросу `{keywords}` свежих вакансий не найдено. Попробуй обновить резюме.", parse_mode="Markdown")
         await state.clear()
         
     elif current_state == CareerState.choosing_cv_for_adapt.state:
@@ -304,7 +464,7 @@ async def process_cv_selection(callback: types.CallbackQuery, state: FSMContext)
         
     elif current_state == CareerState.choosing_cv_for_apply.state:
         await state.set_state(CareerState.waiting_for_vacancy_apply)
-        await callback.message.edit_text(f"Выбрано резюме: {cv_name}\n\n📝 Теперь отправь текст конкретной вакансии, чтобы я написал идеальный отклик (Cover Letter) именно под эту пару:")
+        await callback.message.edit_text(f"Выбрано резюме: {cv_name}\n\n📝 Теперь отправь текст конкретной вакансии, чтобы я написал идеальный отклик (Cover Letter):")
         
     elif current_state == CareerState.choosing_cv_for_skillgap.state:
         await state.set_state(CareerState.waiting_for_vacancy_skillgap)
@@ -312,14 +472,12 @@ async def process_cv_selection(callback: types.CallbackQuery, state: FSMContext)
         
     elif current_state == CareerState.choosing_cv_for_mock.state:
         await state.set_state(CareerState.waiting_for_vacancy_mock)
-        await callback.message.edit_text(f"Выбрано резюме: {cv_name}\n\n🎤 Отправь текст вакансии, на которую ты идешь. Тренажер задаст вопросы, опираясь ИМЕННО на пересечение этого резюме и этой вакансии:")
+        await callback.message.edit_text(f"Выбрано резюме: {cv_name}\n\n🎤 Отправь текст вакансии, на которую ты идешь. Тренажер задаст вопросы по ней:")
         
     elif current_state == CareerState.choosing_cv_for_audit.state:
         await callback.message.edit_text(f"📋 Провожу аудит резюме: {cv_name}...")
         if await check_and_deduct(callback.from_user.id, callback.message):
-            prompt = (f"Ты профессиональный и тактичный карьерный консультант. Проведи глубокий аудит этого резюме. "
-                      f"Подсвети сильные стороны. Затем укажи на точки роста: есть ли клише, хватает ли оцифрованных результатов (выручка, конверсии)? "
-                      f"Предложи более сильные формулировки в поддерживающем тоне.\n\n{cv_text}")
+            prompt = f"Ты тактичный карьерный консультант. Проведи глубокий аудит этого резюме. Подсвети сильные стороны, укажи на точки роста и клише, предложи сильные формулировки.\n\n{cv_text}"
             await execute_gemini_prompt(callback.message, prompt)
         await state.clear()
     await callback.answer()
@@ -356,7 +514,7 @@ async def process_resume_document(message: types.Message, state: FSMContext):
 # --- ТОЧКИ ВХОДА ИИ ---
 @dp.message(F.text == "🔍 Поиск вакансий")
 async def start_search(message: types.Message, state: FSMContext):
-    await show_cv_selector(message, state, CareerState.choosing_cv_for_search, "Какое резюме использовать для подбора должностей?")
+    await show_cv_selector(message, state, CareerState.choosing_cv_for_search, "Какое резюме использовать для поиска вакансий?")
 
 @dp.message(F.text == "🛠 Адаптация резюме")
 async def start_adapt(message: types.Message, state: FSMContext):
@@ -374,7 +532,7 @@ async def start_skillgap(message: types.Message, state: FSMContext):
 async def start_audit(message: types.Message, state: FSMContext):
     await show_cv_selector(message, state, CareerState.choosing_cv_for_audit, "Какое резюме отправить на аудит?")
 
-@dp.message(F.text == "🎤 Мок-интервью")
+@dp.message(F.text == "🎤 Тренажер собеседований")
 async def start_mock(message: types.Message, state: FSMContext):
     await show_cv_selector(message, state, CareerState.choosing_cv_for_mock, "С каким резюме пойдем на собеседование?")
 
@@ -476,9 +634,35 @@ async def execute_gemini_prompt(message: types.Message, prompt: str):
     except Exception as e:
         await message.answer(f"⚠️ Ошибка ИИ: {e}", reply_markup=get_main_keyboard())
 
+# --- ОБЩИЙ ОБРАБОТЧИК ТЕКСТА (ЗАГЛУШКА И ИИ-ЧАТ) ---
+@dp.message(F.text)
+async def handle_any_text(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    
+    if current_state is not None:
+        await message.answer("⚠️ Я сейчас жду от тебя конкретный файл или текст вакансии.\n\nЕсли хочешь отменить действие и начать заново, нажми /start.")
+        return
+    
+    lower_text = message.text.lower()
+    if "поиск" in lower_text and "вакансий" in lower_text:
+        await start_search(message, state)
+        return
+    elif "адаптировать" in lower_text:
+        await start_adapt(message, state)
+        return
+    elif "отклик" in lower_text:
+        await start_apply(message, state)
+        return
+    elif "тренажер" in lower_text or "собеседован" in lower_text:
+        await start_mock(message, state)
+        return
+
+    prompt = f"Ты опытный карьерный AI-консультант. Ответь на вопрос пользователя конструктивно и по делу:\n\n{message.text}"
+    await execute_gemini_prompt(message, prompt)
+
 async def main():
     logging.basicConfig(level=logging.INFO)
-    print("Бот запущен с обновленным онбордингом и подробным описанием в 'Помощи'!")
+    print("Бот запущен с обновленным названием Тренажера собеседований!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
