@@ -19,7 +19,7 @@ from docx import Document
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ADMIN_ID = os.getenv("ADMIN_ID")
-PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN") # Токен ЮKassa/Сбербанк (если есть)
+PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN") # Токен ЮKassa/Сбербанк
 
 TARIFFS_FIAT = {
     "basic": {"requests": 50, "price_rub": 150, "name": "Стартовый (50 запросов)"},
@@ -100,7 +100,8 @@ def get_main_keyboard():
     builder.button(text="📌 Трекер откликов")
     builder.button(text="💎 Оплата и Баланс")
     builder.button(text="🎁 Пригласить друга")
-    builder.adjust(2, 2, 2, 2, 1, 2)
+    builder.button(text="ℹ️ Помощь") # Кнопка возвращена в интерфейс
+    builder.adjust(2, 2, 2, 2, 1, 2, 1)
     return builder.as_markup(resize_keyboard=True)
 
 # --- УПРАВЛЕНИЕ БАЛАНСОМ ---
@@ -185,7 +186,25 @@ async def cmd_start(message: types.Message, state: FSMContext, command: CommandO
             except: pass
         cursor.execute('INSERT INTO users (user_id, referrer_id, balance, last_active_date) VALUES (?, ?, 30, ?)', (user_id, ref_id, today))
         conn.commit()
-    await message.answer("👋 Привет! Я твой карьерный AI-советник. Загружай резюме и поехали!", reply_markup=get_main_keyboard())
+    await message.answer("👋 Привет! Я твой карьерный AI-советник. Загружай резюме и поехали!\n\nЕсли не знаешь с чего начать, нажми **«ℹ️ Помощь»**.", reply_markup=get_main_keyboard())
+
+# --- ПОМОЩЬ (ОПИСАНИЕ ФУНКЦИОНАЛА) ---
+@dp.message(F.text == "ℹ️ Помощь")
+async def cmd_help(message: types.Message):
+    help_text = (
+        "🤖 **Что я умею? Вот мой полный функционал:**\n\n"
+        "📁 **Мои резюме / 📤 Загрузить** — храни до 5 резюме в форматах PDF или Word (.docx). Я буду использовать их для всех остальных задач.\n\n"
+        "🔍 **Поиск вакансий** — проанализирую твой опыт и выдам идеальные должности, ключевые слова и инструкции для поиска самых свежих вакансий на HH.ru.\n\n"
+        "🛠 **Адаптация резюме** — перепишу твое резюме так, чтобы оно идеально подходило под требования конкретной вакансии и обходило ATS-фильтры.\n\n"
+        "✍️ **Отклик** — напишу мощное сопроводительное письмо (Cover Letter) на основе твоего резюме и текста вакансии. Вакансия автоматически добавится в трекер!\n\n"
+        "📊 **Skill Gap** — честно скажу, каких навыков тебе не хватает для желаемой должности и как это компенсировать на собеседовании.\n\n"
+        "📋 **Аудит резюме** — проведу глубокий анализ, подсвечу сильные стороны, укажу на клише и подскажу, как усилить формулировки.\n\n"
+        "🎤 **Мок-интервью** — побуду в роли HR: задам 5 профильных вопросов по связке 'твое резюме + вакансия' и дам развернутый фидбек.\n\n"
+        "📌 **Трекер откликов** — встроенная мини-CRM. Все сгенерированные отклики падают сюда. Меняй статусы (HR-интервью, Тестовое, Оффер) и не теряй воронку!\n\n"
+        "💎 **Оплата и Баланс** — проверяй остаток запросов и пополняй счет.\n\n"
+        "🎁 **Пригласить друга** — получай по 30 бесплатных запросов за каждого приглашенного пользователя."
+    )
+    await message.answer(help_text, parse_mode="Markdown")
 
 @dp.message(F.text == "🎁 Пригласить друга")
 async def cmd_referral(message: types.Message):
