@@ -71,7 +71,7 @@ conn.commit()
 
 # Хранилище резюме и кэш вакансий
 user_resumes = {}
-temp_vacancies = {} # Кэш для кнопок "Мимо"
+temp_vacancies = {}
 
 # --- ИНТЕГРАЦИЯ С HEADHUNTER API ---
 async def fetch_hh_vacancies(keywords: str):
@@ -79,8 +79,8 @@ async def fetch_hh_vacancies(keywords: str):
     params = {
         "text": keywords,
         "search_field": "name",
-        "period": 10,      # Строго за последние 10 дней
-        "per_page": 5,     # Берем топ-5 лучших
+        "period": 10,
+        "per_page": 5,
         "order_by": "relevance"
     }
     headers = {"User-Agent": "LemusCareerBot/1.0"}
@@ -136,7 +136,7 @@ def get_main_keyboard():
     builder.button(text="✍️ Отклик")
     builder.button(text="📊 Skill Gap")
     builder.button(text="📋 Аудит резюме")
-    builder.button(text="🎤 Тренажер собеседований") # <-- ИЗМЕНЕНО НАЗВАНИЕ
+    builder.button(text="🎤 Тренажер собеседований")
     builder.button(text="📌 Трекер откликов")
     builder.button(text="💎 Оплата и Баланс")
     builder.button(text="🎁 Пригласить друга")
@@ -199,17 +199,27 @@ async def cmd_admin(message: types.Message):
 async def admin_give_bal_btn(callback: types.CallbackQuery, state: FSMContext):
     if str(callback.from_user.id) != str(ADMIN_ID): return
     await state.set_state(CareerState.admin_add_balance_user)
-    await callback.message.answer("Введи ID пользователя, которому нужно начислить запросы:")
+    await callback.message.answer("Введи **ID пользователя** (только цифры), которому нужно начислить запросы:")
     await callback.answer()
 
 @dp.message(CareerState.admin_add_balance_user)
 async def admin_add_user(message: types.Message, state: FSMContext):
+    # ЗАЩИТА: Проверяем, что введены именно цифры
+    if not message.text or not message.text.isdigit():
+        await message.answer("⚠️ Ошибка: ID пользователя должен состоять только из цифр.\nВведи корректный ID или нажми /start для отмены.")
+        return
+        
     await state.update_data(target=int(message.text))
     await state.set_state(CareerState.admin_add_balance_amount)
     await message.answer("Сколько запросов начислить?")
 
 @dp.message(CareerState.admin_add_balance_amount)
 async def admin_add_amt(message: types.Message, state: FSMContext):
+    # ЗАЩИТА: Проверяем, что введено число
+    if not message.text or (not message.text.isdigit() and not (message.text.startswith('-') and message.text[1:].isdigit())):
+        await message.answer("⚠️ Ошибка: Количество запросов должно быть числом.\nВведи число или нажми /start для отмены.")
+        return
+        
     data = await state.get_data()
     add_balance(data['target'], int(message.text))
     await message.answer(f"✅ Начислено {message.text} запросов юзеру {data['target']}.")
@@ -256,23 +266,21 @@ async def admin_ask_prc(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(CareerState.admin_edit_t_req, F.text)
 async def admin_save_req(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    try:
-        val = int(message.text)
-        cursor.execute("UPDATE tariffs SET requests = ? WHERE id = ?", (val, data['edit_t_id']))
-        conn.commit()
-        await message.answer("✅ Количество запросов успешно обновлено!")
-    except: await message.answer("⚠️ Ошибка. Нужно отправить число.")
+    if not message.text.isdigit():
+        return await message.answer("⚠️ Ошибка. Нужно отправить целое число.")
+    cursor.execute("UPDATE tariffs SET requests = ? WHERE id = ?", (int(message.text), data['edit_t_id']))
+    conn.commit()
+    await message.answer("✅ Количество запросов успешно обновлено!")
     await state.clear()
 
 @dp.message(CareerState.admin_edit_t_price, F.text)
 async def admin_save_prc(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    try:
-        val = int(message.text)
-        cursor.execute("UPDATE tariffs SET price = ? WHERE id = ?", (val, data['edit_t_id']))
-        conn.commit()
-        await message.answer("✅ Цена успешно обновлена!")
-    except: await message.answer("⚠️ Ошибка. Нужно отправить число.")
+    if not message.text.isdigit():
+        return await message.answer("⚠️ Ошибка. Нужно отправить целое число.")
+    cursor.execute("UPDATE tariffs SET price = ? WHERE id = ?", (int(message.text), data['edit_t_id']))
+    conn.commit()
+    await message.answer("✅ Цена успешно обновлена!")
     await state.clear()
 
 # --- СТАРТ И РЕФЕРАЛКА ---
@@ -283,9 +291,7 @@ async def cmd_start(message: types.Message, state: FSMContext, command: CommandO
     today = datetime.now().strftime('%Y-%m-%d')
     
     cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
-    is_new = not cursor.fetchone()
-    
-    if is_new:
+    if not cursor.fetchone():
         ref_id = int(command.args) if command.args and command.args.isdigit() else None
         if ref_id and ref_id != user_id:
             add_balance(ref_id, 30)
@@ -313,7 +319,7 @@ async def cmd_help(message: types.Message):
         "🔍 **Поиск вакансий** — сам сканирую HH.ru по твоему резюме и выдаю 5 свежих релевантных вакансий с ссылками!\n\n"
         "📋 **Аудит резюме** — подсвечиваю клише и помогаю усилить формулировки.\n\n"
         "📊 **Skill Gap** — говорю, каких навыков тебе не хватает для вакансии и как это компенсировать.\n\n"
-        "🎤 **Тренажер собеседований** — выступаю в роли HR: задаю 5 каверзных вопросов по пересечению твоего резюме и вакансии, а затем выдаю фидбек.\n\n"
+        "🎤 **Тренажер собеседований** — выступаю в роли HR: задаю 5 каверзных вопросов по пересечению твоего резюме и вакансии.\n\n"
         "📌 **Трекер откликов** — встроенная CRM для ведения статусов твоих собеседований.\n\n"
         "✍️ **Генерация отклика** — пишу идеальное сопроводительное письмо под конкретную вакансию."
     )
@@ -393,7 +399,6 @@ async def handle_dislike(callback: types.CallbackQuery):
     vac_id = callback.data.replace("disl_", "")
     title = temp_vacancies.get(vac_id, "Неизвестная вакансия")
     
-    # Сохраняем неприязнь в базу
     cursor.execute('INSERT INTO dislikes (user_id, vacancy_title) VALUES (?, ?)', (callback.from_user.id, title))
     conn.commit()
     
@@ -409,17 +414,14 @@ async def process_cv_selection(callback: types.CallbackQuery, state: FSMContext)
     cv_text = resumes[cv_name]
     await state.update_data(cv_text=cv_text, cv_name=cv_name)
 
-    # 🚀 СУПЕР ФУНКЦИЯ ПОИСКА С ОБУЧЕНИЕМ
     if current_state == CareerState.choosing_cv_for_search.state:
         await callback.message.edit_text(f"🔍 Сканирую HeadHunter для резюме: {cv_name}...\nПодожди секунду, подбираю самые свежие вакансии.")
         if await check_and_deduct(callback.from_user.id, callback.message):
             
-            # Получаем историю неприязней
             cursor.execute('SELECT vacancy_title FROM dislikes WHERE user_id = ? ORDER BY id DESC LIMIT 10', (callback.from_user.id,))
             dislikes = [row[0] for row in cursor.fetchall()]
             dislikes_str = ", ".join(dislikes) if dislikes else "Нет"
 
-            # Шаг 1: ИИ вытягивает ключевые слова, исключая мусор
             prompt = (f"Сформируй 1-3 самых точных ключевых слова (название должности или навык) для строки поиска HeadHunter. "
                       f"Верни ТОЛЬКО слова через пробел. "
                       f"ВАЖНО: Пользователь отметил, что ему НЕ подходят вакансии с названиями: {dislikes_str}. "
@@ -429,13 +431,11 @@ async def process_cv_selection(callback: types.CallbackQuery, state: FSMContext)
             res = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
             keywords = res.text.strip().replace('"', '').replace("'", "")
             
-            # Шаг 2: Парсим API HH.ru
             vacancies = await fetch_hh_vacancies(keywords)
             
             if vacancies:
                 await callback.message.edit_text(f"🔥 **Нашел свежие вакансии по запросу:** `{keywords}`\nВыбери подходящую, скопируй её текст и нажми «✍️ Отклик» в меню!", parse_mode="Markdown")
                 
-                # Отправляем каждую вакансию отдельным сообщением с кнопкой "Мимо"
                 for v in vacancies:
                     name = v.get("name", "Без названия")
                     vac_id = str(v.get("id", "0"))
@@ -447,7 +447,7 @@ async def process_cv_selection(callback: types.CallbackQuery, state: FSMContext)
                     if salary:
                         sal_text = f"от {salary.get('from', '')} до {salary.get('to', '')} {salary.get('currency', '')}".replace("от None", "").replace("до None", "").strip()
                     
-                    temp_vacancies[vac_id] = name # Кэшируем для кнопки "Мимо"
+                    temp_vacancies[vac_id] = name
                     
                     builder = InlineKeyboardBuilder()
                     builder.button(text="👎 Мимо (Не показывать)", callback_data=f"disl_{vac_id}")
@@ -640,7 +640,7 @@ async def handle_any_text(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
     
     if current_state is not None:
-        await message.answer("⚠️ Я сейчас жду от тебя конкретный файл или текст вакансии.\n\nЕсли хочешь отменить действие и начать заново, нажми /start.")
+        await message.answer("⚠️ Я сейчас жду от тебя конкретный файл, текст или ID.\n\nЕсли хочешь отменить действие и начать заново, нажми /start.")
         return
     
     lower_text = message.text.lower()
@@ -662,7 +662,7 @@ async def handle_any_text(message: types.Message, state: FSMContext):
 
 async def main():
     logging.basicConfig(level=logging.INFO)
-    print("Бот запущен с обновленным названием Тренажера собеседований!")
+    print("Бот запущен! Исправлена ошибка 'invalid literal for int()'")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
