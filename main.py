@@ -14,7 +14,7 @@ from google import genai
 from pypdf import PdfReader
 from docx import Document
 
-# --- КОНФИГУРАЦИЯ ---
+# --- КОНФИгурация ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ADMIN_ID = os.getenv("ADMIN_ID")
@@ -70,21 +70,22 @@ conn.commit()
 user_resumes = {}
 temp_vacancies = {}
 
-# --- ПАРСИНГ ДО 300 ВАКАНСИЙ (ПАГИНАЦИЯ API) ---
+# --- ПАРСИНГ HH API (УСТОЙЧИВЫЙ) ---
 async def fetch_hh_vacancies(keywords: str):
     url = "https://api.hh.ru/vacancies"
     headers = {"User-Agent": "LemusCareerBot/1.0"}
-    all_items = []
     
-    # Обходим страницы для сбора до 300 вакансий (по 100 на страницу, макс 3 страницы)
+    # Пробуем несколько вариантов запроса последовательно, если первый пустой
+    search_queries = [keywords, "Руководитель", "Director", "Manager"]
+    search_queries = list(dict.fromkeys(search_queries))
+
     async with aiohttp.ClientSession() as session:
-        for page in range(3):
+        for q in search_queries:
             params = {
-                "text": keywords,
-                "area": 1, # Москва
-                "per_page": 100, # Максимум на страницу в API HH
-                "page": page,
-                "period": 30, # За последний месяц
+                "text": q,
+                "area": 1,
+                "per_page": 15,
+                "period": 30,
                 "order_by": "publication_time"
             }
             try:
@@ -92,20 +93,11 @@ async def fetch_hh_vacancies(keywords: str):
                     if resp.status == 200:
                         data = await resp.json()
                         items = data.get("items", [])
-                        if not items:
-                            break
-                        all_items.extend(items)
-                        if len(items) < 100:
-                            break
+                        if items:
+                            return items, q
             except Exception as e:
-                logging.error(f"HH API error on page {page}: {e}")
-                break
-                
-    # Если по точному запросу ничего нет, делаем запасной широкий запрос
-    if not all_items and keywords != "Руководитель":
-        return await fetch_hh_vacancies("Руководитель")
-        
-    return all_items
+                logging.error(f"HH API error: {e}")
+    return [], ""
 
 # --- MIDDLEWARE ---
 class ActivityMiddleware(BaseMiddleware):
@@ -328,28 +320,22 @@ async def process_cv_selection(callback: types.CallbackQuery, state: FSMContext)
     await state.update_data(cv_text=cv_text, cv_name=cv_name)
 
     if current_state == CareerState.choosing_cv_for_search.state:
-        await callback.message.edit_text("🔍 Анализирую последние до 300 вакансий на HeadHunter...")
+        await callback.message.edit_text("🔍 Ищу подходящие вакансии на HeadHunter...")
         if await check_and_deduct(callback.from_user.id, callback.message):
-            dislikes = [r[0] for r in cursor.execute('SELECT vacancy_title FROM dislikes WHERE user_id = ?', (callback.from_user.id,)).fetchall()]
-            
-            # Определяем поисковый запрос из резюме
+            # Определяем ключевое слово из названия резюме или текста
             cv_lower = cv_name.lower() + " " + cv_text.lower()
             if "продаж" in cv_lower: keywords = "Руководитель отдела продаж"
             elif "развит" in cv_lower: keywords = "Руководитель по развитию"
             elif "направлен" in cv_lower: keywords = "Руководитель направления"
             elif "бухгалтер" in cv_lower: keywords = "Бухгалтер"
-            else: keywords = "Руководитель проектов"
+            else: keywords = "Руководитель"
 
-            # Получаем массив вакансий (до 300 штук)
-            vacancies = await fetch_hh_vacancies(keywords)
-            
-            # Убираем те, что пользователь отметил как "Мимо"
-            filtered = [v for v in vacancies if v.get("name") not in dislikes]
+            # Запускаем парсинг с авто-подбором запроса
+            vacancies, used_q = await fetch_hh_vacancies(keywords)
 
-            if filtered:
-                await callback.message.edit_text(f"🔥 **Найдено вакансий: {len(filtered)}. Вот лучшие:**", parse_mode="Markdown")
-                # Выводим первые 10 самых релевантных/свежих из найденных
-                for v in filtered[:10]:
+            if vacancies:
+                await callback.message.edit_text(f"🔥 **Найденные вакансии (запрос: `{used_q}`):**", parse_mode="Markdown")
+                for v in vacancies[:10]:
                     name, vac_id, url = v.get("name", ""), str(v.get("id", "0")), v.get("alternate_url", "")
                     employer = v.get("employer", {}).get("name", "Компания")
                     temp_vacancies[vac_id] = name
@@ -357,7 +343,7 @@ async def process_cv_selection(callback: types.CallbackQuery, state: FSMContext)
                     builder.button(text="👎 Мимо", callback_data=f"disl_{vac_id}")
                     await callback.message.answer(f"🏢 **{employer}**\n💼 [{name}]({url})", reply_markup=builder.as_markup(), parse_mode="Markdown", link_preview_options=types.LinkPreviewOptions(is_disabled=True))
             else:
-                await callback.message.edit_text("По твоему профилю среди последних вакансий ничего не найдено.")
+                await callback.message.edit_text("Не удалось найти вакансии. Попробуй позже.")
         await state.clear()
     elif current_state == CareerState.choosing_cv_for_adapt.state:
         await state.set_state(CareerState.waiting_for_vacancy_adapt)
