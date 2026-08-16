@@ -1,8 +1,6 @@
 import asyncio
 import os
 import sqlite3
-import time
-from bs4 import BeautifulSoup
 import requests
 from aiohttp import web
 
@@ -17,7 +15,6 @@ from google import genai
 from pypdf import PdfReader
 from docx import Document
 
-# --- КОНФИГУРАЦИЯ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PORT = int(os.getenv("PORT", 10000))
@@ -25,19 +22,21 @@ PORT = int(os.getenv("PORT", 10000))
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
+# Безопасная инициализация клиента Google GenAI
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 def ai_generate(prompt: str) -> str:
     if not client:
         return "⚠️ Ошибка: API-ключ Gemini не настроен на Render."
     try:
+        # Корректный вызов актуальной модели через новый SDK
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=prompt
+            model='gemini-1.5-flash',
+            contents=prompt,
         )
         return response.text
     except Exception as e:
-        return f"⚠️ Ошибка ИИ: {str(e)[:60]}"
+        return f"⚠️ Ошибка ИИ: {str(e)[:80]}"
 
 USER_DATA_DIR = "user_data"
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -51,37 +50,28 @@ cursor.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, b
 cursor.execute('CREATE TABLE IF NOT EXISTS applications (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, company_name TEXT, status TEXT)')
 conn.commit()
 
-# --- ПАРСЕР ЧЕРЕЗ RSS HH ---
+# --- ПАРСЕР ЧЕРЕЗ ПРЯМОЙ API HH ---
 def fetch_hh_vacancies_sync(query="Руководитель проектов"):
-    q_encoded = query.replace(" ", "+")
-    url = f"https://hh.ru/search/vacancy?text={q_encoded}&area=1&format=rss"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    }
+    url = "https://api.hh.ru/vacancies"
+    headers = {"User-Agent": "LemusCareerBot/3.0 (anton@megafon.ru)"}
+    params = {"text": query, "area": "1", "per_page": "10"}
     
-    for attempt in range(3):
-        try:
-            response = requests.get(url, headers=headers, timeout=15)
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.content, 'html.parser')
-                items = []
-                for item in soup.find_all(['item', 'vacancy']):
-                    title = item.find('title').text if item.find('title') else "Вакансия"
-                    link = item.find('link').text if item.find('link') else "https://hh.ru"
-                    items.append({
-                        "id": str(abs(hash(link))),
-                        "name": title,
-                        "employer": {"name": "HeadHunter (RSS)"},
-                        "alternate_url": link
-                    })
-                if items:
-                    return items, ""
-            return [], f"HTTP {response.status_code}"
-        except Exception as e:
-            if attempt == 2:
-                return [], f"ошибка: {e}"
-        time.sleep(1)
-    return [], "превышено число попыток"
+    try:
+        r = requests.get(url, params=params, headers=headers, timeout=10)
+        if r.status_code == 200:
+            items = r.json().get("items", [])
+            formatted = []
+            for item in items:
+                formatted.append({
+                    "id": item.get("id"),
+                    "name": item.get("name"),
+                    "employer": {"name": item.get("employer", {}).get("name", "Компания")},
+                    "alternate_url": item.get("alternate_url")
+                })
+            return formatted, ""
+        return [], f"HTTP {r.status_code}"
+    except Exception as e:
+        return [], str(e)
 
 # --- ИНТЕРФЕЙС СО ВСЕМИ КНОПКАМИ ---
 def get_main_keyboard():
@@ -102,7 +92,7 @@ class CareerState(StatesGroup):
 # --- ХЕНДЛЕРЫ ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("👋 Привет, Антон! Твой карьерный агент полностью восстановлен со всем функционалом.", reply_markup=get_main_keyboard())
+    await message.answer("👋 Привет, Антон! Бот полностью обновлен. Все модули активны.", reply_markup=get_main_keyboard())
 
 @dp.message(F.text == "📁 Мои резюме")
 async def my_resumes(message: types.Message):
@@ -144,15 +134,15 @@ async def process_file(message: types.Message, state: FSMContext):
 
 @dp.message(F.text == "🔍 Поиск вакансий")
 async def search_vacancies(message: types.Message):
-    await message.answer("🔍 Запрашиваю свежие вакансии через RSS-ленту HeadHunter...")
+    await message.answer("🔍 Запрашиваю свежие вакансии через API HeadHunter...")
     vacancies, err = await asyncio.to_thread(fetch_hh_vacancies_sync, "Руководитель проектов")
 
     if not vacancies:
         return await message.answer(f"⚠️ Не удалось получить вакансии. Ошибка: {err or 'пустой ответ'}")
 
-    await message.answer(f"🔥 Нашел позиций: {len(vacancies)}. Вывожу первые 10:")
+    await message.answer(f"🔥 Нашел позиций: {len(vacancies)}. Вывожу:")
 
-    for v in vacancies[:10]:
+    for v in vacancies:
         vac_id = str(v.get("id"))
         title = v.get("name", "Вакансия")
         employer = v.get("employer", {}).get("name", "Компания")
@@ -179,7 +169,6 @@ async def gen_cover(callback: types.CallbackQuery):
 
 @dp.message(F.text)
 async def chat(message: types.Message):
-    # Обработка кнопок интерфейса через ИИ-анализ или заглушки
     text = message.text
     resume = user_resumes.get(message.from_user.id, "Резюме не загружено.")
     
