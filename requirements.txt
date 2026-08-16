@@ -3,7 +3,4 @@ google-genai
 pypdf
 python-docx
 aiohttp
-selenium
-webdriver-manager
 requests
-striprtf
