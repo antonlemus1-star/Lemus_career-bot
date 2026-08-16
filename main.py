@@ -31,10 +31,11 @@ if not BOT_TOKEN:
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
+# Актуальные модели Gemini
 GEMINI_MODEL_CANDIDATES = list(dict.fromkeys([
-    os.getenv("GEMINI_MODEL", "gemini-flash-latest"),
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
+    os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
 ]))
 OPENROUTER_MODELS = [
     "openai/gpt-oss-20b:free",
@@ -93,7 +94,7 @@ def get_user_balance(user_id: int) -> int:
     return row[0] if row else 5
 
 
-# ---------------- ИИ-слой ----------------
+# ---------------- ИИ-слой с надежными фолбэками ----------------
 def _openai_compat(prompt: str, base: str, key: str, model: str) -> str:
     r = requests.post(
         f"{base}/chat/completions",
