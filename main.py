@@ -21,7 +21,7 @@ PORT = int(os.getenv("PORT", 10000))
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-MODEL_NAME = 'gemini-1.5-flash'
+MODEL_NAME = 'gemini-2.0-flash'
 
 USER_DATA_DIR = "user_data"
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -39,7 +39,7 @@ conn.commit()
 class CareerState(StatesGroup):
     waiting_for_resume_file = State()
 
-# --- ВЕБ-СЕРВЕР ДЛЯ RENDER (ЗАПУСК ПЕРВЫМ ДЕЛОМ) ---
+# --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
 async def handle_ping(request):
     return web.Response(text="Bot is running!")
 
@@ -176,10 +176,8 @@ async def chat(message: types.Message):
     await message.answer(answer, reply_markup=get_main_keyboard())
 
 async def main():
-    # Сначала поднимаем веб-сервер, чтобы Render сразу поймал порт
     await start_web_server()
     print("Бот и веб-сервер запущены!")
-    # Затем запускаем поллинг бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
