@@ -6,4 +6,4 @@ aiohttp
 selenium
 webdriver-manager
 requests
-striprtf
+striprt
