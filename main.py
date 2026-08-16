@@ -20,8 +20,6 @@ log = logging.getLogger("career_bot")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PORT = int(os.getenv("PORT", 10000))
-
-# Укажи здесь свой Telegram ID, чтобы активировать админ-панель (или бот определит тебя автоматически по первому входу)
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -92,7 +90,6 @@ async def build_query_from_resume(resume_text: str) -> str:
     return query
 
 
-# --- ПАРСЕР ДО 100 ВАКАНСИЙ ---
 HH_SEARCH_URL = "https://hh.ru/search/vacancy"
 STATE_RE = re.compile(r'<template[^>]*id="HH-Lux-InitialState"[^>]*>(.*?)</template>', re.S)
 
@@ -102,7 +99,6 @@ def fetch_hh_vacancies_sync(query: str, area: str = "1"):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept-Language": "ru-RU,ru;q=0.9",
     }
-    # Запрашиваем 100 вакансий для максимального охвата
     params = {"text": query, "area": area, "search_field": "name", "items_on_page": "100"}
     try:
         r = requests.get(HH_SEARCH_URL, params=params, headers=headers, timeout=15)
@@ -171,11 +167,35 @@ def get_main_keyboard(is_admin: bool = False):
     return {"keyboard": keyboard, "resize_keyboard": True}
 
 
-# --- ОБРАБОТЧИК ВЕБХУКОВ ---
 async def telegram_webhook(request):
     try:
         data = await request.json()
     except:
+        return web.Response(text="OK")
+
+    # Обработка нажатий на инлайн-кнопки (генерация письма)
+    if "callback_query" in data:
+        cb = data["callback_query"]
+        chat_id = cb["message"]["chat"]["id"]
+        data_str = cb["data"]
+        
+        if data_str.startswith("gen_"):
+            vac_id = data_str.replace("gen_", "")
+            vac_info = temp_vacancies.get(vac_id, {"title": "Вакансия", "employer": "Компания"})
+            
+            await send_telegram(chat_id, f"✍️ Готовлю сильное сопроводительное письмо для *{vac_info['employer']}* на позицию «{vac_info['title']}» по вашему активному резюме...")
+            
+            resume_text = get_active_resume_text(chat_id) or "Опыт: не указан."
+            prompt = (
+                f"Напиши профессиональное, убедительное сопроводительное письмо для отклика на вакансию "
+                f"'{vac_info['title']}' в компанию '{vac_info['employer']}' на основе следующего резюме:\n\n{resume_text}"
+            )
+            letter = await asyncio.to_thread(ai_generate, prompt)
+            await send_telegram(chat_id, f"📝 *Сопроводительное письмо:*\n\n{letter}")
+        
+        # Отвечаем на callback, чтобы убрать часики на кнопке
+        async with aiohttp.ClientSession() as session:
+            await session.post(f"{TELEGRAM_API}/answerCallbackQuery", json={"callback_query_id": cb["id"]})
         return web.Response(text="OK")
 
     if "message" in data:
@@ -186,35 +206,33 @@ async def telegram_webhook(request):
         document = msg.get("document")
 
         register_user(chat_id, username)
-        is_admin = (chat_id == ADMIN_ID or ADMIN_ID == 0) # Если ADMIN_ID не задан, первый пользователь становится админом для теста
+        is_admin = (chat_id == ADMIN_ID or ADMIN_ID == 0)
 
         if text.startswith("/start"):
             help_text = (
                 "👋 *Приветствую! Я твой персональный карьерный агент.*\n\n"
                 "Вот что я умею:\n"
-                "• 📄 *Загрузка резюме* (до 5 штук в PDF, DOCX, RTF) с переключением активного.\n"
-                "• 🔍 *Умный поиск вакансий* на hh.ru по ключевым словам из твоего опыта.\n"
-                "• ✍️ *Генерация сопроводительных писем* под конкретные компании.\n"
-                "• 🛠 *Адаптация резюме* под конкретные требования рынка.\n"
-                "• 📊 *Skill Gap анализ* для выявления пробелов в навыках.\n"
-                "• 📋 *Аудит резюме* и рекомендации по его усилению.\n"
-                "• 🎤 *Тренажер собеседований* с каверзными вопросами."
+                "• 📄 *Загрузка резюме* (до 5 штук) с выбором активного.\n"
+                "• 🔍 *Умный поиск вакансий* на hh.ru под твой реальный опыт.\n"
+                "• ✍️ *Генерация писем* под конкретные вакансии с инлайн-кнопок.\n"
+                "• 🛠 *Адаптация резюме* под требования рынка.\n"
+                "• 📊 *Skill Gap анализ* и 📋 *Аудит резюме*.\n"
+                "• 🎤 *Тренажер собеседований*."
             )
             await send_telegram(chat_id, help_text, get_main_keyboard(is_admin))
 
         elif text == "ℹ️ Помощь":
             info = (
                 "💡 *Как пользоваться ботом:*\n"
-                "1. Нажми «📥 Загрузить резюме» и отправь файл.\n"
-                "2. Нажми «🔍 Поиск вакансий» — бот сам проанализирует твой опыт, выделит ключевую фразу и найдет релевантные позиции на hh.ru.\n"
-                "3. Кликай на кнопку под вакансией, чтобы создать идеальное сопроводительное письмо!"
+                "1. Нажми «📥 Загрузить резюме» и отправь файл (PDF, DOCX, RTF).\n"
+                "2. Нажми «🔍 Поиск вакансий» — бот найдет релевантные позиции.\n"
+                "3. Под каждой вакансией будет кнопка для генерации идеального сопроводительного письма по твоему активному резюме!"
             )
             await send_telegram(chat_id, info, get_main_keyboard(is_admin))
 
         elif text == "👑 Админ-панель" or text == "/admin":
             cursor.execute("SELECT COUNT(*) FROM users")
             total_users = cursor.fetchone()[0]
-            
             admin_msg = (
                 "👑 *Панель администратора*\n\n"
                 f"👥 Всего пользователей в базе: `{total_users}`\n"
@@ -249,10 +267,23 @@ async def telegram_webhook(request):
                 if not vacancies:
                     await send_telegram(chat_id, f"⚠️ Не удалось найти вакансии по запросу «{query}». Причина: {err or 'пусто'}")
                 else:
-                    await send_telegram(chat_id, f"🔥 Нашёл релевантных позиций по запросу «{query}»: {len(vacancies)}. Вывожу первые 20:")
-                    for v in vacancies[:20]:
-                        msg_text = f"🏢 *{v['employer']['name']}*\n💼 [{v['name']}]({v['alternate_url']})"
-                        await send_telegram(chat_id, msg_text)
+                    await send_telegram(chat_id, f"🔥 Нашёл релевантных позиций по запросу «{query}»: {len(vacancies)}. Вывожу первые 15:")
+                    for v in vacancies[:15]:
+                        vac_id = v["id"]
+                        title = v["name"]
+                        employer = v["employer"]["name"]
+                        url = v["alternate_url"]
+                        
+                        temp_vacancies[vac_id] = {"title": title, "employer": employer}
+                        
+                        inline_markup = {
+                            "inline_keyboard": [
+                                [{"text": "✍️ Сопроводительное письмо", "callback_data": f"gen_{vac_id}"}]
+                            ]
+                        }
+                        
+                        msg_text = f"🏢 *{employer}*\n💼 [{title}]({url})"
+                        await send_telegram(chat_id, msg_text, inline_markup)
                         await asyncio.sleep(0.2)
         else:
             resume = get_active_resume_text(chat_id) or "Резюме не загружено."
@@ -324,7 +355,7 @@ async def main():
     async with aiohttp.ClientSession() as session:
         await session.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}")
 
-    log.info("Bot started with full functionality and admin panel.")
+    log.info("Bot started with full functionality, cover letters, and admin panel.")
     await asyncio.Event().wait()
 
 
