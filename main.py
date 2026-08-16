@@ -20,7 +20,7 @@ PORT = int(os.getenv("PORT", 10000))
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-MODEL_NAME = 'gemini-2.5-flash'  # Исправлено на актуальную модель
+MODEL_NAME = 'gemini-2.5-flash'  # Актуальная и стабильная модель
 
 USER_DATA_DIR = "user_data"
 os.makedirs(USER_DATA_DIR, exist_ok=True)
