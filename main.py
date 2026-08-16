@@ -9,19 +9,24 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
-from google import genai
+from openai import AsyncOpenAI
 from pypdf import PdfReader
 from docx import Document
 
 # --- КОНФИГУРАЦИЯ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Ключ от Groq (получить можно бесплатно на console.groq.com)
+API_KEY = os.getenv("GROQ_API_KEY") 
+BASE_URL = "https://api.groq.com/openai/v1"
+
 PORT = int(os.getenv("PORT", 10000))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-MODEL_NAME = 'gemini-2.0-flash'
+
+# Подключаемся к Groq через OpenAI-совместимый клиент
+ai_client = AsyncOpenAI(api_key=API_KEY, base_url=BASE_URL)
+MODEL_NAME = "llama-3.3-70b-versatile"  # Бесплатная, мощная модель с отличным русским языком
 
 USER_DATA_DIR = "user_data"
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -154,11 +159,14 @@ async def gen_cover(callback: types.CallbackQuery):
     
     prompt = f"Напиши сильное профессиональное сопроводительное письмо для отклика на позицию '{title}' на основе резюме:\n{resume}"
     
-    if ai_client:
-        res = ai_client.models.generate_content(model=MODEL_NAME, contents=prompt)
-        letter_text = res.text
-    else:
-        letter_text = "⚠️ ИИ-клиент не инициализирован."
+    try:
+        response = await ai_client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        letter_text = response.choices[0].message.content
+    except Exception as e:
+        letter_text = f"⚠️ Ошибка генерации: {e}"
         
     await callback.message.answer(f"📝 **Сопроводительное письмо:**\n\n{letter_text}", parse_mode="Markdown")
 
@@ -168,11 +176,14 @@ async def cmd_help(message: types.Message):
 
 @dp.message(F.text)
 async def chat(message: types.Message):
-    if ai_client:
-        res = ai_client.models.generate_content(model=MODEL_NAME, contents=message.text)
-        answer = res.text
-    else:
-        answer = "ИИ временно недоступен."
+    try:
+        response = await ai_client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": message.text}]
+        )
+        answer = response.choices[0].message.content
+    except Exception as e:
+        answer = f"⚠️ Ошибка ИИ: {e}"
     await message.answer(answer, reply_markup=get_main_keyboard())
 
 async def main():
