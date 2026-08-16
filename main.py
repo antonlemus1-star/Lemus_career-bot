@@ -25,7 +25,7 @@ TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # Актуальная стабильная модель Gemini
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
 
 def ai_generate(prompt: str) -> str:
