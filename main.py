@@ -6,6 +6,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from google import genai
@@ -20,7 +21,7 @@ PORT = int(os.getenv("PORT", 10000))
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-MODEL_NAME = 'gemini-2.0-flash'
+MODEL_NAME = 'gemini-1.5-flash'
 
 USER_DATA_DIR = "user_data"
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -34,7 +35,11 @@ cursor.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, b
 cursor.execute('CREATE TABLE IF NOT EXISTS applications (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, company_name TEXT, status TEXT)')
 conn.commit()
 
-# --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
+# --- СОСТОЯНИЯ ---
+class CareerState(StatesGroup):
+    waiting_for_resume_file = State()
+
+# --- ВЕБ-СЕРВЕР ДЛЯ RENDER (ЗАПУСК ПЕРВЫМ ДЕЛОМ) ---
 async def handle_ping(request):
     return web.Response(text="Bot is running!")
 
@@ -47,40 +52,24 @@ async def start_web_server():
     await site.start()
     print(f"Web server started on port {PORT}")
 
-# --- КАСКАДНЫЙ ПАРСЕР HH API (ГАРАНТИРОВАННЫЙ НАХОЖДЕНИЕ) ---
+# --- ПАРСЕР HH API ---
 async def fetch_hh_vacancies():
     url = "https://api.hh.ru/vacancies"
     headers = {"User-Agent": "LemusCareerBot/1.0"}
-    
-    # Список запросов по степени широты поиска
-    queries = [
-        "Руководитель направления",
-        "Руководитель проектов",
-        "Руководитель",
-        "Директор",
-        "Manager"
-    ]
+    queries = ["Руководитель направления", "Руководитель проектов", "Руководитель", "Директор"]
     
     async with aiohttp.ClientSession() as session:
         for q in queries:
-            params = {
-                "text": q,
-                "area": 1, # Москва
-                "per_page": 10,
-                "order_by": "publication_time"
-            }
+            params = {"text": q, "area": 1, "per_page": 10, "order_by": "publication_time"}
             try:
                 async with session.get(url, params=params, headers=headers) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         items = data.get("items", [])
                         if items:
-                            print(f"Успешно найдено по запросу: {q}")
                             return items
-                    else:
-                        print(f"HH API статус {resp.status} для запроса {q}")
             except Exception as e:
-                print(f"HH API Error для {q}: {e}")
+                print(f"HH API Error: {e}")
     return []
 
 # --- ИНТЕРФЕЙС ---
@@ -95,9 +84,6 @@ def get_main_keyboard():
     b.adjust(2, 2, 2, 2, 1, 2, 1)
     return b.as_markup(resize_keyboard=True)
 
-class CareerState(StatesGroup):
-    waiting_for_resume_file = State()
-
 # --- ХЕНДЛЕРЫ БОТА ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
@@ -106,7 +92,6 @@ async def start(message: types.Message):
 @dp.message(F.text == "🔍 Поиск вакансий")
 async def search_vacancies(message: types.Message):
     await message.answer("🔍 Ищу актуальные вакансии на HeadHunter...")
-    
     vacancies = await fetch_hh_vacancies()
     
     if not vacancies:
@@ -191,8 +176,10 @@ async def chat(message: types.Message):
     await message.answer(answer, reply_markup=get_main_keyboard())
 
 async def main():
+    # Сначала поднимаем веб-сервер, чтобы Render сразу поймал порт
     await start_web_server()
     print("Бот и веб-сервер запущены!")
+    # Затем запускаем поллинг бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
