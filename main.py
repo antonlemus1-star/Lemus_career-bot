@@ -15,14 +15,13 @@ PORT = int(os.getenv("PORT", 10000))
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Инициализация клиента Google GenAI
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 def ai_generate(prompt: str) -> str:
     if not client:
         return "⚠️ Ошибка: API-ключ Gemini не настроен на Render."
     try:
-        # Используем актуальный и стабильный идентификатор модели
+        # Используем стабильную точку входа Google
         response = client.models.generate_content(
             model="gemini-1.5-flash",
             contents=prompt
@@ -32,7 +31,6 @@ def ai_generate(prompt: str) -> str:
         return f"Ошибка ИИ: {str(e)[:60]}"
 
 def fetch_vacancies():
-    # Запрос вакансий через публичное API HeadHunter
     headers = {"User-Agent": "Mozilla/5.0"}
     params = {"text": "Руководитель проектов", "area": "1", "per_page": "5"}
     try:
@@ -80,7 +78,6 @@ async def main():
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
     
-    # Сбрасываем старые зависшие потоки Telegram
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
