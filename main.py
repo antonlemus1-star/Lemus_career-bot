@@ -14,6 +14,7 @@ from docx import Document
 import requests
 import html
 import re
+from aiohttp import web
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -230,16 +231,16 @@ async def cmd_balance(message: types.Message):
     await message.answer("ℹ️ Баланс запросов: 30.")
 
 async def main():
+    # Поднимаем фиктивный веб-сервер на порту 10000, чтобы Render видел открытый порт
     app = web.Application()
     app.router.add_get("/", lambda r: web.Response(text="Bot is running"))
     runner = web.AppRunner(app)
     await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", PORT).start()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
     
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    import aiohttp
-    from aiohttp import web
     asyncio.run(main())
