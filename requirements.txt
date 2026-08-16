@@ -1,5 +1,5 @@
 aiogram
-google-generativeai
+google-genai
 pypdf
 python-docx
 aiohttp

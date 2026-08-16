@@ -13,66 +13,35 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
-import google.generativeai as genai
+from google import genai
 from pypdf import PdfReader
 from docx import Document
 
 # --- КОНФИГУРАЦИЯ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-HH_PROXY = os.getenv("HH_PROXY")  # опционально: http://login:pass@host:port (если HH блочит IP)
+HH_PROXY = os.getenv("HH_PROXY")
 PORT = int(os.getenv("PORT", 10000))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# --- АВТОПОДБОР ЖИВОЙ МОДЕЛИ GEMINI ---
-GEMINI_MODEL_CANDIDATES = [
-    "gemini-flash-latest",
-    "gemini-2.0-flash",
-    "gemini-2.5-flash",
-    "gemini-1.5-flash",
-]
-
-ai_model = None
-ai_model_name = None
-
-def pick_ai_model():
-    global ai_model, ai_model_name
-    if not GEMINI_API_KEY:
-        print("Gemini: НЕТ GEMINI_API_KEY в переменных окружения!")
-        return None
-    genai.configure(api_key=GEMINI_API_KEY)
-    for name in GEMINI_MODEL_CANDIDATES:
-        try:
-            m = genai.GenerativeModel(name)
-            m.generate_content("Ответь одним словом: готов")
-            ai_model, ai_model_name = m, name
-            print(f"Gemini: активна модель {name}")
-            return m
-        except Exception as e:
-            print(f"Gemini: модель {name} недоступна: {e}")
-    ai_model, ai_model_name = None, None
-    return None
-
-ai_model = pick_ai_model()
+# Инициализация нового клиента Google GenAI
+ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+MODEL_NAME = 'gemini-2.5-flash'  # Актуальная модель нового SDK
 
 def ai_generate(prompt: str) -> str:
-    """Генерация с авто-восстановлением, если модель снова отключат."""
-    global ai_model
-    if ai_model is None:
-        pick_ai_model()
-    if ai_model is None:
+    if not ai_client:
         return "⚠️ ИИ не инициализирован: проверь GEMINI_API_KEY на Render."
-    for _ in range(2):
-        try:
-            return ai_model.generate_content(prompt).text
-        except Exception as e:
-            print(f"Gemini ошибка: {e} — переподбираю модель")
-            pick_ai_model()
-            if ai_model is None:
-                return f"⚠️ Ошибка ответа ИИ: {e}"
-    return "⚠️ ИИ временно недоступен, попробуй через минуту."
+    try:
+        response = ai_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+        )
+        return response.text
+    except Exception as e:
+        print(f"Gemini ошибка: {e}")
+        return f"⚠️ Ошибка ответа ИИ: {e}"
 
 USER_DATA_DIR = "user_data"
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -111,7 +80,7 @@ def fetch_hh_vacancies_sync(query="Руководитель проектов"):
     url = "https://api.hh.ru/vacancies"
     params = {
         "text": query,
-        "area": "1", # 1 = Москва
+        "area": "1", # Москва
         "per_page": "50",
         "page": "0",
         "order_by": "publication_time",
@@ -152,8 +121,7 @@ class CareerState(StatesGroup):
 # --- ХЕНДЛЕРЫ БОТА ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    model_info = f" (ИИ: {ai_model_name})" if ai_model_name else ""
-    await message.answer(f"👋 Привет! Я твой карьерный агент. База запущена{model_info}!",
+    await message.answer("👋 Привет! Я твой карьерный агент. Перешли на новый SDK Google GenAI!",
                          reply_markup=get_main_keyboard())
 
 @dp.message(F.text == "📁 Мои резюме")
@@ -176,7 +144,6 @@ async def search_vacancies(message: types.Message):
             "Если это 403 — HH блокирует IP сервера, задай в Render переменную HH_PROXY."
         )
 
-    # Берем 15 самых свежих вакансий из любой сферы, чтобы не заспамить чат
     top_vacancies = vacancies[:15]
     await message.answer(f"🔥 Нашел {len(vacancies)} свежих позиций. Вывожу топ-{len(top_vacancies)} последних:")
 
@@ -243,7 +210,6 @@ async def gen_cover(callback: types.CallbackQuery):
 
     letter_text = await asyncio.to_thread(ai_generate, prompt)
     
-    # Сохраняем отклик в CRM (Базу данных)
     cursor.execute('INSERT INTO applications (user_id, company_name, status) VALUES (?, ?, ?)', 
                    (callback.from_user.id, title, "Сгенерировано письмо"))
     conn.commit()
@@ -262,7 +228,6 @@ async def track_applications(message: types.Message):
         return await message.answer("📭 Твой трекер пока пуст. Найди вакансию и сгенерируй сопроводительное письмо, чтобы оно появилось здесь!")
 
     text = "📌 **История твоих откликов:**\n\n"
-    # Показываем 15 последних записей
     for i, (company, status) in enumerate(apps[-15:], 1):
         text += f"{i}. **{company}** — {status}\n"
         
