@@ -1,4 +1,6 @@
 import asyncio
+import json
+import logging
 import os
 import sqlite3
 import aiohttp
@@ -11,6 +13,9 @@ from google.genai import types as gtypes
 from pypdf import PdfReader
 from docx import Document
 
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("career_bot")
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PORT = int(os.getenv("PORT", 10000))
@@ -19,18 +24,24 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
+# Актуальная стабильная модель Gemini
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+
 def ai_generate(prompt: str) -> str:
     if not client:
         return "⚠️ Ошибка: API-ключ Gemini не настроен."
     try:
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model=GEMINI_MODEL,
             contents=prompt,
             config=gtypes.GenerateContentConfig(temperature=0.7)
         )
         return response.text if response and response.text else "⚠️ Пустой ответ от ИИ."
     except Exception as e:
-        return f"⚠️ Ошибка ИИ: {str(e)[:80]}"
+        log.error("Gemini generation failed: %s", e)
+        return f"⚠️ Ошибка ИИ: {str(e)[:200]}"
+
 
 USER_DATA_DIR = "user_data"
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -44,12 +55,14 @@ cursor = conn.cursor()
 cursor.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT)')
 conn.commit()
 
+
 def get_active_resume(user_id: int) -> str:
     resumes = user_resumes.get(user_id, [])
     if not resumes:
         return ""
     idx = user_active_resume.get(user_id, len(resumes) - 1)
     return resumes[idx]["text"]
+
 
 def get_keyboard(is_admin=False):
     kb = [
@@ -63,14 +76,33 @@ def get_keyboard(is_admin=False):
         kb.append([{"text": "👑 Админ-панель"}])
     return {"keyboard": kb, "resize_keyboard": True}
 
-async def send_telegram(chat_id: int, text: str, reply_markup=None):
+
+async def send_telegram(chat_id: int, text: str, reply_markup=None, parse_mode="Markdown"):
+    """
+    Отправляет сообщение. Если Telegram отклоняет из-за битой Markdown-разметки
+    (частый случай с текстом от нейросети) — повторяет без parse_mode, обычным текстом.
+    """
     url = f"{TELEGRAM_API}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    payload = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     if reply_markup:
         payload["reply_markup"] = reply_markup
+
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload) as resp:
-            return await resp.json()
+            result = await resp.json()
+
+        if not result.get("ok") and parse_mode:
+            log.warning("Telegram sendMessage failed with parse_mode=%s: %s — retrying as plain text", parse_mode, result)
+            payload.pop("parse_mode", None)
+            async with session.post(url, json=payload) as resp2:
+                result = await resp2.json()
+                if not result.get("ok"):
+                    log.error("Telegram sendMessage failed even as plain text: %s", result)
+
+        return result
+
 
 async def run_ai_generation(chat_id: int, vac_info: dict):
     await send_telegram(chat_id, f"✍️ Готовлю сильное сопроводительное письмо для *{vac_info['employer']}* на позицию «{vac_info['title']}»...")
@@ -79,10 +111,11 @@ async def run_ai_generation(chat_id: int, vac_info: dict):
     letter = ai_generate(prompt)
     await send_telegram(chat_id, f"📝 *Сопроводительное письмо:*\n\n{letter}")
 
+
 async def telegram_webhook(request):
     try:
         data = await request.json()
-    except:
+    except Exception:
         return web.Response(text="OK")
 
     if "callback_query" in data:
@@ -171,7 +204,7 @@ async def telegram_webhook(request):
                     await send_telegram(chat_id, "🔍 Ищу вакансии на hh.ru...", get_keyboard(is_admin))
                     prompt = "Сформулируй ОДНУ короткую фразу (2-4 слова) для поиска на hh.ru без кавычек:\n\n" + resume[:4000]
                     query = ai_generate(prompt).strip().strip('"')
-                    
+
                     r = requests.get("https://hh.ru/search/vacancy", params={"text": query, "area": "1", "items_on_page": "100"}, headers={"User-Agent": "Mozilla/5.0"})
                     match = re.search(r'<template[^>]*id="HH-Lux-InitialState"[^>]*>(.*?)</template>', r.text, re.S)
                     if match:
@@ -184,7 +217,7 @@ async def telegram_webhook(request):
                             comp = (item.get("company") or {}).get("name") or "Компания"
                             link = f"https://hh.ru/vacancy/{v_id}"
                             temp_vacancies[str(v_id)] = {"title": name, "employer": comp}
-                            
+
                             markup = {"inline_keyboard": [[{"text": "✍️ Сопроводительное письмо", "callback_data": f"gen_{v_id}"}]]}
                             await send_telegram(chat_id, f"🏢 *{comp}*\n💼 [{name}]({link})", markup)
                             await asyncio.sleep(0.2)
@@ -212,11 +245,12 @@ async def telegram_webhook(request):
 
     return web.Response(text="OK")
 
+
 async def main():
     app = web.Application()
     app.router.add_get("/", lambda r: web.Response(text="Bot is running"))
     app.router.add_post(f"/{BOT_TOKEN}", telegram_webhook)
-    
+
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
@@ -225,8 +259,9 @@ async def main():
     async with aiohttp.ClientSession() as session:
         await session.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}")
 
-    print("Bot started on aiohttp webhook.")
+    log.info("Bot started on aiohttp webhook.")
     await asyncio.Event().wait()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
