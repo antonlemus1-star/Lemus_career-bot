@@ -9,23 +9,21 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
-from groq import Groq
 from google import genai
 from pypdf import PdfReader
 from docx import Document
 
 # --- КОНФИГУРАЦИЯ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY") 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PORT = int(os.getenv("PORT", 10000))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
+ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# Инициализируем оба клиента
-groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+# ИСПРАВЛЕНИЕ 1: Используем стабильную модель вместо отключенной
+MODEL_NAME = 'gemini-1.5-flash'
 
 USER_DATA_DIR = "user_data"
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -52,55 +50,34 @@ async def start_web_server():
     await site.start()
     print(f"Web server started on port {PORT}")
 
-# --- УМНАЯ ФУНКЦИЯ ИИ (GROQ -> GEMINI) ---
-def generate_ai_response(prompt):
-    # Попытка 1: Groq (Llama 3.1)
-    if groq_client:
-        try:
-            completion = groq_client.chat.completions.create(
-                model='llama-3.1-70b-versatile',
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return completion.choices[0].message.content
-        except Exception as e:
-            print(f"Ошибка Groq, переключаюсь на Gemini: {e}")
-            
-    # Попытка 2: Gemini (Резервный вариант)
-    if gemini_client:
-        try:
-            res = gemini_client.models.generate_content(
-                model='gemini-2.0-flash', 
-                contents=prompt
-            )
-            return res.text
-        except Exception as e:
-            return f"⚠️ Ошибка обеих нейросетей: {e}"
-            
-    return "⚠️ Ни один ИИ-клиент не настроен. Проверь ключи в Render."
-
 # --- ПАРСЕР HH API ---
 def fetch_hh_vacancies_sync(query="Руководитель проектов"):
     url = "https://api.hh.ru/vacancies"
-    headers = {"User-Agent": "LemusCareerBot/4.0 (anton@megafon.ru)"}
+    
+    # ИСПРАВЛЕНИЕ 2: Маскируем бота под обычный браузер Chrome
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json"
+    }
     
     all_vacancies = []
     try:
-        for page in range(2):
-            params = {
-                "text": query,
-                "area": "1",
-                "per_page": "100", 
-                "page": str(page),
-                "order_by": "publication_time" 
-            }
-            response = requests.get(url, params=params, headers=headers, timeout=15)
-            
-            if response.status_code == 200:
-                data = response.json()
-                items = data.get("items", [])
-                all_vacancies.extend(items)
-            else:
-                print(f"Ошибка HH API: {response.status_code}")
+        # Запрашиваем 1 страницу на 50 вакансий, чтобы не вызывать подозрений
+        params = {
+            "text": query,
+            "area": "1", # Москва
+            "per_page": "50", 
+            "page": "0",
+            "order_by": "publication_time" 
+        }
+        response = requests.get(url, params=params, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            items = data.get("items", [])
+            all_vacancies.extend(items)
+        else:
+            print(f"Ошибка HH API: {response.status_code} - {response.text}")
                 
         return all_vacancies
     except Exception as e:
@@ -126,16 +103,16 @@ class CareerState(StatesGroup):
 # --- ХЕНДЛЕРЫ БОТА ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("👋 Привет! Я твой карьерный агент. Меню обновлено:", reply_markup=get_main_keyboard())
+    await message.answer("👋 Привет! Я твой карьерный агент. Баги исправлены, меню обновлено:", reply_markup=get_main_keyboard())
 
 @dp.message(F.text == "🔍 Поиск вакансий")
 async def search_vacancies(message: types.Message):
-    await message.answer("🔍 Собираю базу из 200 последних вакансий «Руководитель проектов» и фильтрую по целевым направлениям (IT, B2B, Телеком)...")
+    await message.answer("🔍 Собираю свежие вакансии «Руководитель проектов» и фильтрую по целевым направлениям (IT, B2B, Телеком)...")
     
     vacancies = await asyncio.to_thread(fetch_hh_vacancies_sync, "Руководитель проектов")
     
     if not vacancies:
-        return await message.answer("Не удалось получить вакансии. Возможно, HH временно ограничил доступ.")
+        return await message.answer("Не удалось получить вакансии. HH временно ограничил доступ с облачного сервера.")
     
     keywords = ["b2b", "телеком", "telecom", "интеграци", "связь", "it", "ит ", "ит-", "продукт", "product", "развити", "инфраструктур", "тех", "tech"]
     relevant_vacancies = []
@@ -146,8 +123,8 @@ async def search_vacancies(message: types.Message):
             relevant_vacancies.append(v)
             
     if len(relevant_vacancies) == 0:
-        relevant_vacancies = vacancies[:15]
-        await message.answer("⚠️ Строгих совпадений по B2B/IT не найдено. Вывожу 15 самых свежих позиций:")
+        relevant_vacancies = vacancies[:10]
+        await message.answer("⚠️ Строгих совпадений по B2B/IT не найдено. Вывожу 10 самых свежих позиций:")
     else:
         await message.answer(f"🔥 Нашел {len(relevant_vacancies)} максимально релевантных позиций. Выгружаю:")
     
@@ -210,15 +187,27 @@ async def gen_cover(callback: types.CallbackQuery):
     
     prompt = f"Напиши сильное профессиональное сопроводительное письмо для отклика на позицию '{title}' на основе резюме:\n{resume}"
     
-    # Запускаем нашу умную функцию в отдельном потоке, чтобы бот не зависал
-    letter_text = await asyncio.to_thread(generate_ai_response, prompt)
+    if ai_client:
+        try:
+            res = ai_client.models.generate_content(model=MODEL_NAME, contents=prompt)
+            letter_text = res.text
+        except Exception as e:
+            letter_text = f"⚠️ Ошибка генерации: {e}"
+    else:
+        letter_text = "⚠️ ИИ-клиент не инициализирован."
         
     await callback.message.answer(f"📝 **Сопроводительное письмо:**\n\n{letter_text}", parse_mode="Markdown")
 
 @dp.message(F.text)
 async def chat(message: types.Message):
-    # Тот же каскадный вызов ИИ для простого общения
-    answer = await asyncio.to_thread(generate_ai_response, message.text)
+    if ai_client:
+        try:
+            res = ai_client.models.generate_content(model=MODEL_NAME, contents=message.text)
+            answer = res.text
+        except Exception as e:
+            answer = f"⚠️ Ошибка ответа ИИ: {e}"
+    else:
+        answer = "ИИ временно недоступен."
     await message.answer(answer, reply_markup=get_main_keyboard())
 
 async def main():
