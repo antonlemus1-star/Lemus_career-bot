@@ -12,6 +12,7 @@ from aiohttp import web
 from bs4 import BeautifulSoup
 from docx import Document
 from google import genai
+from google.genai import types
 from pypdf import PdfReader
 
 logging.basicConfig(level=logging.INFO)
@@ -32,9 +33,13 @@ def ai_generate(prompt: str) -> str:
     if not prompt or not prompt.strip():
         return "⚠️ Ошибка: пустой запрос к ИИ."
     try:
+        # Прямой вызов с конфигурацией без автоматических функций
         response = client.models.generate_content(
             model='gemini-1.5-flash',
             contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.7,
+            )
         )
         return response.text if response and response.text else "⚠️ Пустой ответ от ИИ."
     except Exception as e:
@@ -211,7 +216,6 @@ async def telegram_webhook(request):
         register_user(chat_id, username)
         is_admin = (chat_id == ADMIN_ID or ADMIN_ID == 0)
 
-        # 1. Обработка загрузки файла резюме
         if document:
             file_id = document["file_id"]
             file_name = document.get("file_name", "resume.pdf")
@@ -245,7 +249,6 @@ async def telegram_webhook(request):
             if os.path.exists(path):
                 os.remove(path)
 
-        # 2. Обработка текстовых команд и кнопок
         elif text.startswith("/start"):
             help_text = (
                 "👋 *Приветствую! Я твой персональный карьерный агент.*\n\n"
@@ -360,7 +363,7 @@ async def main():
     async with aiohttp.ClientSession() as session:
         await session.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}")
 
-    log.info("Bot started with separated document and text handlers.")
+    log.info("Bot started with clean AI generation config.")
     await asyncio.Event().wait()
 
 
