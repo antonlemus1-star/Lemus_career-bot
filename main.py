@@ -9,19 +9,23 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
+from groq import Groq
 from google import genai
 from pypdf import PdfReader
 from docx import Document
 
 # --- КОНФИГУРАЦИЯ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY") 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PORT = int(os.getenv("PORT", 10000))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-MODEL_NAME = 'gemini-2.0-flash'
+
+# Инициализируем оба клиента
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 USER_DATA_DIR = "user_data"
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -48,20 +52,43 @@ async def start_web_server():
     await site.start()
     print(f"Web server started on port {PORT}")
 
+# --- УМНАЯ ФУНКЦИЯ ИИ (GROQ -> GEMINI) ---
+def generate_ai_response(prompt):
+    # Попытка 1: Groq (Llama 3.1)
+    if groq_client:
+        try:
+            completion = groq_client.chat.completions.create(
+                model='llama-3.1-70b-versatile',
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return completion.choices[0].message.content
+        except Exception as e:
+            print(f"Ошибка Groq, переключаюсь на Gemini: {e}")
+            
+    # Попытка 2: Gemini (Резервный вариант)
+    if gemini_client:
+        try:
+            res = gemini_client.models.generate_content(
+                model='gemini-2.0-flash', 
+                contents=prompt
+            )
+            return res.text
+        except Exception as e:
+            return f"⚠️ Ошибка обеих нейросетей: {e}"
+            
+    return "⚠️ Ни один ИИ-клиент не настроен. Проверь ключи в Render."
+
 # --- ПАРСЕР HH API ---
 def fetch_hh_vacancies_sync(query="Руководитель проектов"):
     url = "https://api.hh.ru/vacancies"
-    headers = {
-        "User-Agent": "LemusCareerBot/3.0 (anton@megafon.ru)"
-    }
+    headers = {"User-Agent": "LemusCareerBot/4.0 (anton@megafon.ru)"}
     
     all_vacancies = []
     try:
-        # Проходим по 2 страницам по 100 вакансий (итого 200 последних)
         for page in range(2):
             params = {
                 "text": query,
-                "area": "1", # Москва
+                "area": "1",
                 "per_page": "100", 
                 "page": str(page),
                 "order_by": "publication_time" 
@@ -110,17 +137,14 @@ async def search_vacancies(message: types.Message):
     if not vacancies:
         return await message.answer("Не удалось получить вакансии. Возможно, HH временно ограничил доступ.")
     
-    # Жесткий фильтр релевантности
     keywords = ["b2b", "телеком", "telecom", "интеграци", "связь", "it", "ит ", "ит-", "продукт", "product", "развити", "инфраструктур", "тех", "tech"]
     relevant_vacancies = []
     
     for v in vacancies:
-        # Проверяем название вакансии и имя компании на наличие ключевых слов
         text_to_check = (v.get("name", "") + " " + v.get("employer", {}).get("name", "")).lower()
         if any(k in text_to_check for k in keywords):
             relevant_vacancies.append(v)
             
-    # Предохранитель: если фильтр ничего не нашел, отдаем 15 самых свежих общих
     if len(relevant_vacancies) == 0:
         relevant_vacancies = vacancies[:15]
         await message.answer("⚠️ Строгих совпадений по B2B/IT не найдено. Вывожу 15 самых свежих позиций:")
@@ -142,7 +166,6 @@ async def search_vacancies(message: types.Message):
         
         try:
             await message.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown", link_preview_options=types.LinkPreviewOptions(is_disabled=True))
-            # Обязательная пауза 0.3 сек, чтобы Telegram не заблокировал бота за спам
             await asyncio.sleep(0.3)
         except Exception as e:
             print(f"Ошибка отправки сообщения: {e}")
@@ -187,21 +210,15 @@ async def gen_cover(callback: types.CallbackQuery):
     
     prompt = f"Напиши сильное профессиональное сопроводительное письмо для отклика на позицию '{title}' на основе резюме:\n{resume}"
     
-    if ai_client:
-        res = ai_client.models.generate_content(model=MODEL_NAME, contents=prompt)
-        letter_text = res.text
-    else:
-        letter_text = "⚠️ ИИ-клиент не инициализирован."
+    # Запускаем нашу умную функцию в отдельном потоке, чтобы бот не зависал
+    letter_text = await asyncio.to_thread(generate_ai_response, prompt)
         
     await callback.message.answer(f"📝 **Сопроводительное письмо:**\n\n{letter_text}", parse_mode="Markdown")
 
 @dp.message(F.text)
 async def chat(message: types.Message):
-    if ai_client:
-        res = ai_client.models.generate_content(model=MODEL_NAME, contents=message.text)
-        answer = res.text
-    else:
-        answer = "ИИ временно недоступен."
+    # Тот же каскадный вызов ИИ для простого общения
+    answer = await asyncio.to_thread(generate_ai_response, message.text)
     await message.answer(answer, reply_markup=get_main_keyboard())
 
 async def main():
