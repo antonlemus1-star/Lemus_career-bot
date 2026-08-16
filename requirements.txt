@@ -1,0 +1,7 @@
+aiogram
+groq
+google-genai
+pypdf
+python-docx
+aiohttp
+requests
