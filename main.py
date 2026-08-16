@@ -15,18 +15,17 @@ from docx import Document
 
 # --- КОНФИГУРАЦИЯ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-# Ключ от Groq (получить можно бесплатно на console.groq.com)
-API_KEY = os.getenv("GROQ_API_KEY") 
+API_KEY = os.getenv("GROQ_API_KEY") or os.getenv("OPENAI_API_KEY")
 BASE_URL = "https://api.groq.com/openai/v1"
-
+ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 PORT = int(os.getenv("PORT", 10000))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Подключаемся к Groq через OpenAI-совместимый клиент
+# Инициализация OpenAI-клиента для работы с Groq
 ai_client = AsyncOpenAI(api_key=API_KEY, base_url=BASE_URL)
-MODEL_NAME = "llama-3.3-70b-versatile"  # Бесплатная, мощная модель с отличным русским языком
+MODEL_NAME = "llama-3.3-70b-versatile"
 
 USER_DATA_DIR = "user_data"
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -93,6 +92,23 @@ def get_main_keyboard():
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer("👋 Привет! Я твой карьерный агент. Выбирай нужную функцию в меню:", reply_markup=get_main_keyboard())
+
+@dp.message(Command("admin"))
+async def admin_panel(message: types.Message):
+    if ADMIN_ID and message.from_user.id != ADMIN_ID:
+        return await message.answer("⛔ У тебя нет доступа к этой команде.")
+    
+    cursor.execute("SELECT COUNT(*) FROM users")
+    users_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM applications")
+    apps_count = cursor.fetchone()[0]
+    
+    await message.answer(
+        f"👑 **Панель администратора**\n\n"
+        f"👥 Всего пользователей в базе: {users_count}\n"
+        f"📌 Всего откликов/заявок: {apps_count}",
+        parse_mode="Markdown"
+    )
 
 @dp.message(F.text == "🔍 Поиск вакансий")
 async def search_vacancies(message: types.Message):
@@ -176,6 +192,10 @@ async def cmd_help(message: types.Message):
 
 @dp.message(F.text)
 async def chat(message: types.Message):
+    # Фиксация пользователя в БД
+    cursor.execute('INSERT OR IGNORE INTO users (user_id) VALUES (?)', (message.from_user.id,))
+    conn.commit()
+    
     try:
         response = await ai_client.chat.completions.create(
             model=MODEL_NAME,
