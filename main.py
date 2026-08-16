@@ -15,13 +15,15 @@ from groq import Groq
 
 # --- КОНФИГУРАЦИЯ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY") # Убедись, что этот ключ прописан в Render
+GROQ_API_KEY = os.getenv("GROQ_API_KEY") 
 PORT = int(os.getenv("PORT", 10000))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 ai_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-MODEL_NAME = 'llama-3.1-70b-versatile' # Актуальная модель Groq
+
+# АКТУАЛЬНАЯ МОДЕЛЬ GROQ (llama 3.3)
+MODEL_NAME = 'llama-3.3-70b-versatile' 
 
 USER_DATA_DIR = "user_data"
 os.makedirs(USER_DATA_DIR, exist_ok=True)
