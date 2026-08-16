@@ -2,7 +2,7 @@ import asyncio
 import os
 import sqlite3
 import time
-import xml.etree.ElementTree as ET
+from bs4 import BeautifulSoup
 
 import requests
 from aiohttp import web
@@ -28,7 +28,7 @@ dp = Dispatcher(storage=MemoryStorage())
 
 # --- ИНИЦИАЛИЗАЦИЯ GEMINI ЧЕРЕЗ НОВЫЙ SDK ---
 ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-MODEL_NAME = 'gemini-2.5-flash'  # Актуальная и стабильная модель
+MODEL_NAME = 'gemini-2.5-flash'
 
 def ai_generate(prompt: str) -> str:
     if not ai_client:
@@ -68,7 +68,7 @@ async def start_web_server():
     await site.start()
     print(f"Web server started on port {PORT}")
 
-# --- ПАРСЕР ЧЕРЕЗ RSS HH ---
+# --- НАДЕЖНЫЙ ПАРСЕР ЧЕРЕЗ BEAUTIFULSOUP ---
 def fetch_hh_vacancies_sync(query="Руководитель проектов"):
     q_encoded = query.replace(" ", "+")
     url = f"https://hh.ru/search/vacancy?text={q_encoded}&area=1&enable_snippets=true&ored_clusters=true&search_field=name&no_magic=true&items_on_page=50&format=rss"
@@ -81,11 +81,16 @@ def fetch_hh_vacancies_sync(query="Руководитель проектов"):
         try:
             response = requests.get(url, headers=headers, timeout=15)
             if response.status_code == 200:
-                root = ET.fromstring(response.content)
+                # Используем BeautifulSoup вместо строгого XML-парсера
+                soup = BeautifulSoup(response.content, 'html.parser')
                 items = []
-                for item in root.findall('.//item'):
-                    title = item.find('title').text if item.find('title') is not None else "Вакансия"
-                    link = item.find('link').text if item.find('link') is not None else "https://hh.ru"
+                
+                for item in soup.find_all('item'):
+                    title_elem = item.find('title')
+                    link_elem = item.find('link')
+                    
+                    title = title_elem.text if title_elem else "Вакансия"
+                    link = link_elem.text if link_elem else "https://hh.ru"
                     
                     items.append({
                         "id": str(abs(hash(link))),
@@ -120,7 +125,7 @@ class CareerState(StatesGroup):
 # --- ХЕНДЛЕРЫ БОТА ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("👋 Привет! Я твой карьерный агент. Все системы активны!", reply_markup=get_main_keyboard())
+    await message.answer("👋 Привет! Я твой карьерный агент. Парсер обновлен!", reply_markup=get_main_keyboard())
 
 @dp.message(F.text == "📁 Мои резюме")
 async def my_resumes(message: types.Message):
@@ -229,7 +234,6 @@ async def chat(message: types.Message):
 async def main():
     await start_web_server()
     print("Бот и веб-сервер запущены!")
-    # Сбрасываем старые зависшие вебхуки/соединения перед запуском поллинга
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
