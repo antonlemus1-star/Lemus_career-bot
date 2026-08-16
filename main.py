@@ -2,6 +2,7 @@ import asyncio
 import os
 import sqlite3
 import time
+import xml.etree.ElementTree as ET
 
 import requests
 from aiohttp import web
@@ -13,42 +14,72 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
-from google import genai
+import google.generativeai as genai
 from pypdf import PdfReader
 from docx import Document
 
 # --- КОНФИГУРАЦИЯ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-HH_PROXY = os.getenv("HH_PROXY")
 PORT = int(os.getenv("PORT", 10000))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Инициализация нового клиента Google GenAI
-ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-MODEL_NAME = 'gemini-2.5-flash'  # Актуальная модель нового SDK
+# --- АВТОПОДБОР МОДЕЛИ GEMINI ---
+GEMINI_MODEL_CANDIDATES = [
+    "gemini-flash-latest",
+    "gemini-3-flash",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+]
+
+ai_model = None
+ai_model_name = None
+
+def pick_ai_model():
+    global ai_model, ai_model_name
+    if not GEMINI_API_KEY:
+        print("Gemini: НЕТ GEMINI_API_KEY в переменных окружения!")
+        return None
+    genai.configure(api_key=GEMINI_API_KEY)
+    for name in GEMINI_MODEL_CANDIDATES:
+        try:
+            m = genai.GenerativeModel(name)
+            m.generate_content("Ответь одним словом: готов")
+            ai_model, ai_model_name = m, name
+            print(f"Gemini: активна модель {name}")
+            return m
+        except Exception as e:
+            print(f"Gemini: модель {name} недоступна: {e}")
+    ai_model, ai_model_name = None, None
+    return None
+
+pick_ai_model()
 
 def ai_generate(prompt: str) -> str:
-    if not ai_client:
+    global ai_model
+    if ai_model is None:
+        pick_ai_model()
+    if ai_model is None:
         return "⚠️ ИИ не инициализирован: проверь GEMINI_API_KEY на Render."
-    try:
-        response = ai_client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt,
-        )
-        return response.text
-    except Exception as e:
-        print(f"Gemini ошибка: {e}")
-        return f"⚠️ Ошибка ответа ИИ: {e}"
+    for _ in range(2):
+        try:
+            return ai_model.generate_content(prompt).text
+        except Exception as e:
+            print(f"Gemini ошибка: {e} — переподбираю модель")
+            pick_ai_model()
+            if ai_model is None:
+                return f"⚠️ Ошибка ответа ИИ: {e}"
+    return "⚠️ ИИ временно недоступен, попробуй через минуту."
 
 USER_DATA_DIR = "user_data"
 os.makedirs(USER_DATA_DIR, exist_ok=True)
 user_resumes = {}
 temp_vacancies = {}
 
-# --- БАЗА ДАННЫХ (CRM) ---
+# --- БАЗА ДАННЫХ ---
 conn = sqlite3.connect('tracker.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance INTEGER DEFAULT 30)')
@@ -68,39 +99,38 @@ async def start_web_server():
     await site.start()
     print(f"Web server started on port {PORT}")
 
-# --- ПАРСЕР HH API ---
-HH_HEADERS = {
-    "User-Agent": "LemusCareerBot/1.0 (anton@megafon.ru)",
-    "Accept": "application/json",
-    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-}
-PROXIES = {"http": HH_PROXY, "https": HH_PROXY} if HH_PROXY else None
-
+# --- НАДЕЖНЫЙ ПАРСЕР ЧЕРЕЗ RSS HH ---
 def fetch_hh_vacancies_sync(query="Руководитель проектов"):
-    url = "https://api.hh.ru/vacancies"
-    params = {
-        "text": query,
-        "area": "1", # Москва
-        "per_page": "50",
-        "page": "0",
-        "order_by": "publication_time",
+    q_encoded = query.replace(" ", "+")
+    url = f"https://hh.ru/search/vacancy?text={q_encoded}&area=1&enable_snippets=true&ored_clusters=true&search_field=name&no_magic=true&items_on_page=50&format=rss"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     }
-    last_error = ""
+    
     for attempt in range(3):
         try:
-            r = requests.get(url, params=params, headers=HH_HEADERS, timeout=15, proxies=PROXIES)
-            if r.status_code == 200:
-                return r.json().get("items", []), ""
-            last_error = f"HTTP {r.status_code}: {r.text[:150]}"
-            if r.status_code == 400 and "order_by" in params:
-                del params["order_by"]
-                continue
-            if r.status_code == 403:
-                last_error += " | HH блокирует IP. Задай HH_PROXY."
+            response = requests.get(url, headers=headers, timeout=15)
+            if response.status_code == 200:
+                root = ET.fromstring(response.content)
+                items = []
+                for item in root.findall('.//item'):
+                    title = item.find('title').text if item.find('title') is not None else "Вакансия"
+                    link = item.find('link').text if item.find('link') is not None else "https://hh.ru"
+                    
+                    items.append({
+                        "id": str(abs(hash(link))),
+                        "name": title,
+                        "employer": {"name": "HeadHunter (RSS)"},
+                        "alternate_url": link
+                    })
+                return items, ""
+            return [], f"HTTP {response.status_code}"
         except Exception as e:
-            last_error = f"сетевая ошибка: {e}"
+            if attempt == 2:
+                return [], f"ошибка парсинга RSS: {e}"
         time.sleep(2 * (attempt + 1))
-    return [], last_error
+    return [], "превышено число попыток"
 
 # --- ИНТЕРФЕЙС ---
 def get_main_keyboard():
@@ -121,8 +151,8 @@ class CareerState(StatesGroup):
 # --- ХЕНДЛЕРЫ БОТА ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("👋 Привет! Я твой карьерный агент. Перешли на новый SDK Google GenAI!",
-                         reply_markup=get_main_keyboard())
+    model_info = f" (ИИ: {ai_model_name})" if ai_model_name else ""
+    await message.answer(f"👋 Привет! Я твой карьерный агент{model_info}!", reply_markup=get_main_keyboard())
 
 @dp.message(F.text == "📁 Мои резюме")
 async def my_resumes(message: types.Message):
@@ -134,20 +164,28 @@ async def my_resumes(message: types.Message):
 
 @dp.message(F.text == "🔍 Поиск вакансий")
 async def search_vacancies(message: types.Message):
-    await message.answer("🔍 Собираю самые свежие вакансии «Руководитель проектов» по всем сферам...")
+    await message.answer("🔍 Запрашиваю свежие вакансии через RSS-ленту HeadHunter...")
 
     vacancies, err = await asyncio.to_thread(fetch_hh_vacancies_sync, "Руководитель проектов")
 
     if not vacancies:
-        return await message.answer(
-            f"⚠️ Не удалось получить вакансии. Диагноз: {err or 'пустой ответ HH'}. "
-            "Если это 403 — HH блокирует IP сервера, задай в Render переменную HH_PROXY."
-        )
+        return await message.answer(f"⚠️ Не удалось получить вакансии. Ошибка: {err or 'пустой ответ'}")
 
-    top_vacancies = vacancies[:15]
-    await message.answer(f"🔥 Нашел {len(vacancies)} свежих позиций. Вывожу топ-{len(top_vacancies)} последних:")
+    keywords = ["b2b", "телеком", "telecom", "интеграци", "связь", "it", "ит ", "ит-", "продукт", "product", "развити", "инфраструктур", "тех", "tech"]
+    relevant_vacancies = []
 
-    for v in top_vacancies:
+    for v in vacancies:
+        text_to_check = (v.get("name", "") + " " + v.get("employer", {}).get("name", "")).lower()
+        if any(k in text_to_check for k in keywords):
+            relevant_vacancies.append(v)
+
+    if len(relevant_vacancies) == 0:
+        relevant_vacancies = vacancies[:10]
+        await message.answer("⚠️ Строгих совпадений по ключевым словам не найдено. Вывожу 10 самых свежих позиций:")
+    else:
+        await message.answer(f"🔥 Нашел {len(relevant_vacancies)} релевантных позиций:")
+
+    for v in relevant_vacancies:
         vac_id = str(v.get("id"))
         title = v.get("name", "Вакансия")
         employer = v.get("employer", {}).get("name", "Компания")
@@ -209,29 +247,11 @@ async def gen_cover(callback: types.CallbackQuery):
     prompt = f"Напиши сильное профессиональное сопроводительное письмо для отклика на позицию '{title}' на основе резюме:\n{resume}"
 
     letter_text = await asyncio.to_thread(ai_generate, prompt)
-    
-    cursor.execute('INSERT INTO applications (user_id, company_name, status) VALUES (?, ?, ?)', 
-                   (callback.from_user.id, title, "Сгенерировано письмо"))
-    conn.commit()
 
     try:
-        await callback.message.answer(f"📝 **Сопроводительное письмо:**\n\n{letter_text}\n\n_✅ Отклик добавлен в трекер!_", parse_mode="Markdown")
+        await callback.message.answer(f"📝 **Сопроводительное письмо:**\n\n{letter_text}", parse_mode="Markdown")
     except Exception:
-        await callback.message.answer(f"📝 Сопроводительное письмо:\n\n{letter_text}\n\n✅ Отклик добавлен в трекер!")
-
-@dp.message(F.text == "📌 Трекер откликов")
-async def track_applications(message: types.Message):
-    cursor.execute("SELECT company_name, status FROM applications WHERE user_id = ?", (message.from_user.id,))
-    apps = cursor.fetchall()
-    
-    if not apps:
-        return await message.answer("📭 Твой трекер пока пуст. Найди вакансию и сгенерируй сопроводительное письмо, чтобы оно появилось здесь!")
-
-    text = "📌 **История твоих откликов:**\n\n"
-    for i, (company, status) in enumerate(apps[-15:], 1):
-        text += f"{i}. **{company}** — {status}\n"
-        
-    await message.answer(text, parse_mode="Markdown")
+        await callback.message.answer(f"📝 Сопроводительное письмо:\n\n{letter_text}")
 
 @dp.message(F.text)
 async def chat(message: types.Message):
