@@ -211,7 +211,42 @@ async def telegram_webhook(request):
         register_user(chat_id, username)
         is_admin = (chat_id == ADMIN_ID or ADMIN_ID == 0)
 
-        if text.startswith("/start"):
+        # 1. Обработка загрузки файла резюме
+        if document:
+            file_id = document["file_id"]
+            file_name = document.get("file_name", "resume.pdf")
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{TELEGRAM_API}/getFile?file_id={file_id}") as resp:
+                    file_info = await resp.json()
+                    file_path = file_info.get("result", {}).get("file_path")
+                    download_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+                    async with session.get(download_url) as f_resp:
+                        content = await f_resp.read()
+                        path = f"tmp_{chat_id}_{file_name}"
+                        with open(path, "wb") as f:
+                            f.write(content)
+
+            text_content = ""
+            try:
+                if file_name.endswith('.pdf'):
+                    text_content = "".join([p.extract_text() or "" for p in PdfReader(path).pages])
+                elif file_name.endswith('.docx'):
+                    text_content = "\n".join([p.text for p in Document(path).paragraphs])
+                elif file_name.endswith('.rtf'):
+                    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                        text_content = f.read()
+            except Exception as e:
+                text_content = f"Ошибка чтения: {e}"
+
+            resumes = user_resumes.setdefault(chat_id, [])
+            resumes.append({"name": file_name, "text": text_content})
+            user_active_resume[chat_id] = len(resumes) - 1
+            await send_telegram(chat_id, f"✅ Резюме «{file_name}» успешно сохранено и назначено активным!", get_main_keyboard(is_admin))
+            if os.path.exists(path):
+                os.remove(path)
+
+        # 2. Обработка текстовых команд и кнопок
+        elif text.startswith("/start"):
             help_text = (
                 "👋 *Приветствую! Я твой персональный карьерный агент.*\n\n"
                 "Вот что я умею:\n"
@@ -288,7 +323,7 @@ async def telegram_webhook(request):
                         msg_text = f"🏢 *{employer}*\n💼 [{title}]({url})"
                         await send_telegram(chat_id, msg_text, inline_markup)
                         await asyncio.sleep(0.2)
-        else:
+        elif text:
             resume = get_active_resume_text(chat_id) or "Резюме не загружено."
             prompt = text
             if "Адаптация" in text:
@@ -309,39 +344,6 @@ async def telegram_webhook(request):
             answer = await asyncio.to_thread(ai_generate, prompt)
             await send_telegram(chat_id, answer, get_main_keyboard(is_admin))
 
-        if document:
-            file_id = document["file_id"]
-            file_name = document.get("file_name", "resume.pdf")
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"{TELEGRAM_API}/getFile?file_id={file_id}") as resp:
-                    file_info = await resp.json()
-                    file_path = file_info.get("result", {}).get("file_path")
-                    download_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-                    async with session.get(download_url) as f_resp:
-                        content = await f_resp.read()
-                        path = f"tmp_{chat_id}_{file_name}"
-                        with open(path, "wb") as f:
-                            f.write(content)
-
-            text_content = ""
-            try:
-                if file_name.endswith('.pdf'):
-                    text_content = "".join([p.extract_text() or "" for p in PdfReader(path).pages])
-                elif file_name.endswith('.docx'):
-                    text_content = "\n".join([p.text for p in Document(path).paragraphs])
-                elif file_name.endswith('.rtf'):
-                    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                        text_content = f.read()
-            except Exception as e:
-                text_content = f"Ошибка чтения: {e}"
-
-            resumes = user_resumes.setdefault(chat_id, [])
-            resumes.append({"name": file_name, "text": text_content})
-            user_active_resume[chat_id] = len(resumes) - 1
-            await send_telegram(chat_id, f"✅ Резюме «{file_name}» успешно сохранено и назначено активным!", get_main_keyboard(is_admin))
-            if os.path.exists(path):
-                os.remove(path)
-
     return web.Response(text="OK")
 
 
@@ -358,7 +360,7 @@ async def main():
     async with aiohttp.ClientSession() as session:
         await session.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}")
 
-    log.info("Bot started with full async background AI tasks and robust buttons.")
+    log.info("Bot started with separated document and text handlers.")
     await asyncio.Event().wait()
 
 
