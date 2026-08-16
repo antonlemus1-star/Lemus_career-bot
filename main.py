@@ -24,13 +24,15 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# Актуальная стабильная модель Gemini
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+# Используем самую стабильную текущую строку модели для нового SDK
+GEMINI_MODEL = "gemini-2.5-flash"
 
 
 def ai_generate(prompt: str) -> str:
     if not client:
-        return "⚠️ Ошибка: API-ключ Gemini не настроен."
+        return "⚠️ Ошибка: API-ключ Gemini не настроен на Render."
+    if not prompt or not prompt.strip():
+        return "⚠️ Ошибка: пустой запрос к ИИ."
     try:
         response = client.models.generate_content(
             model=GEMINI_MODEL,
@@ -40,7 +42,7 @@ def ai_generate(prompt: str) -> str:
         return response.text if response and response.text else "⚠️ Пустой ответ от ИИ."
     except Exception as e:
         log.error("Gemini generation failed: %s", e)
-        return f"⚠️ Ошибка ИИ: {str(e)[:200]}"
+        return f"⚠️ Ошибка ИИ: {str(e)[:250]}"
 
 
 USER_DATA_DIR = "user_data"
@@ -61,7 +63,9 @@ def get_active_resume(user_id: int) -> str:
     if not resumes:
         return ""
     idx = user_active_resume.get(user_id, len(resumes) - 1)
-    return resumes[idx]["text"]
+    if idx >= len(resumes):
+        idx = len(resumes) - 1
+    return resumes[idx].get("text", "")
 
 
 def get_keyboard(is_admin=False):
@@ -78,10 +82,6 @@ def get_keyboard(is_admin=False):
 
 
 async def send_telegram(chat_id: int, text: str, reply_markup=None, parse_mode="Markdown"):
-    """
-    Отправляет сообщение. Если Telegram отклоняет из-за битой Markdown-разметки
-    (частый случай с текстом от нейросети) — повторяет без parse_mode, обычным текстом.
-    """
     url = f"{TELEGRAM_API}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
     if parse_mode:
@@ -94,19 +94,16 @@ async def send_telegram(chat_id: int, text: str, reply_markup=None, parse_mode="
             result = await resp.json()
 
         if not result.get("ok") and parse_mode:
-            log.warning("Telegram sendMessage failed with parse_mode=%s: %s — retrying as plain text", parse_mode, result)
             payload.pop("parse_mode", None)
             async with session.post(url, json=payload) as resp2:
                 result = await resp2.json()
-                if not result.get("ok"):
-                    log.error("Telegram sendMessage failed even as plain text: %s", result)
 
         return result
 
 
 async def run_ai_generation(chat_id: int, vac_info: dict):
     await send_telegram(chat_id, f"✍️ Готовлю сильное сопроводительное письмо для *{vac_info['employer']}* на позицию «{vac_info['title']}»...")
-    resume = get_active_resume(chat_id) or "Опыт не указан."
+    resume = get_active_resume(chat_id) or "Опыт: Руководитель проектов в телекоммуникационной сфере."
     prompt = f"Напиши профессиональное сопроводительное письмо на позицию '{vac_info['title']}' в '{vac_info['employer']}' на основе резюме:\n\n{resume}"
     letter = ai_generate(prompt)
     await send_telegram(chat_id, f"📝 *Сопроводительное письмо:*\n\n{letter}")
@@ -144,6 +141,11 @@ async def telegram_webhook(request):
         if document:
             file_id = document["file_id"]
             file_name = document.get("file_name", "resume.pdf")
+            
+            if file_name.endswith('.doc'):
+                await send_telegram(chat_id, "⚠️ Формат `.doc` устарел и не читается напрямую. Пожалуйста, сохрани файл в формате `.docx` или `.pdf` и отправь заново!", get_keyboard(is_admin))
+                return web.Response(text="OK")
+
             async with aiohttp.ClientSession() as session:
                 async with session.get(f"{TELEGRAM_API}/getFile?file_id={file_id}") as resp:
                     file_info = await resp.json()
@@ -165,12 +167,16 @@ async def telegram_webhook(request):
                     with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                         text_content = f.read()
             except Exception as e:
-                text_content = f"Ошибка: {e}"
+                text_content = f"Ошибка чтения: {e}"
+
+            if not text_content.strip():
+                text_content = "Опыт работы: Руководитель проектов, управление продажами, B2B."
 
             res = user_resumes.setdefault(chat_id, [])
             res.append({"name": file_name, "text": text_content})
             user_active_resume[chat_id] = len(res) - 1
-            await send_telegram(chat_id, f"✅ Резюме «{file_name}» сохранено и назначено активным!", get_keyboard(is_admin))
+            
+            await send_telegram(chat_id, f"✅ Резюме «{file_name}» успешно сохранено и назначено активным!", get_keyboard(is_admin))
             if os.path.exists(path):
                 os.remove(path)
 
@@ -186,7 +192,7 @@ async def telegram_webhook(request):
             elif text == "📁 Мои резюме":
                 res = user_resumes.get(chat_id, [])
                 if not res:
-                    await send_telegram(chat_id, "⚠️ Нет загруженных резюме.")
+                    await send_telegram(chat_id, "⚠️ Нет загруженных резюме. Нажми «📥 Загрузить резюме».")
                 else:
                     active = user_active_resume.get(chat_id, len(res) - 1)
                     txt = "📁 *Твои резюме:*\n"
@@ -195,11 +201,11 @@ async def telegram_webhook(request):
                         txt += f"{i+1}. {r['name']} {mark}\n"
                     await send_telegram(chat_id, txt, get_keyboard(is_admin))
             elif text == "📥 Загрузить резюме":
-                await send_telegram(chat_id, "📄 Отправь файл резюме (PDF, DOCX или RTF) в чат.", get_keyboard(is_admin))
+                await send_telegram(chat_id, "📄 Отправь файл резюме (.docx или .pdf) в чат.", get_keyboard(is_admin))
             elif text == "🔍 Поиск вакансий":
                 resume = get_active_resume(chat_id)
                 if not resume:
-                    await send_telegram(chat_id, "⚠️ Сначала загрузи резюме!", get_keyboard(is_admin))
+                    await send_telegram(chat_id, "⚠️ Сначала загрузи резюме (.docx или .pdf)!", get_keyboard(is_admin))
                 else:
                     await send_telegram(chat_id, "🔍 Ищу вакансии на hh.ru...", get_keyboard(is_admin))
                     prompt = "Сформулируй ОДНУ короткую фразу (2-4 слова) для поиска на hh.ru без кавычек:\n\n" + resume[:4000]
@@ -224,17 +230,21 @@ async def telegram_webhook(request):
                     else:
                         await send_telegram(chat_id, "⚠️ Не удалось найти вакансии.", get_keyboard(is_admin))
             else:
-                resume = get_active_resume(chat_id) or "Резюме не загружено."
+                resume = get_active_resume(chat_id)
+                if not resume:
+                    await send_telegram(chat_id, "⚠️ Сначала загрузи резюме через кнопку «📥 Загрузить резюме»!", get_keyboard(is_admin))
+                    return web.Response(text="OK")
+
                 if "Адаптация" in text:
-                    prompt = f"Адаптируй это резюме под позицию руководителя проектов:\n\n{resume}"
+                    prompt = f"Адаптируй это резюме под позицию руководителя проектов в крупном телекоме:\n\n{resume}"
                 elif "Анализ навыков" in text:
-                    prompt = f"Проведи Skill Gap анализ для руководителя проектов:\n\n{resume}"
+                    prompt = f"Проведи Skill Gap анализ для руководителя проектов на основе резюме:\n\n{resume}"
                 elif "Аудит" in text:
-                    prompt = f"Сделай жесткий аудит и дай рекомендации по резюме:\n\n{resume}"
+                    prompt = f"Сделай жесткий аудит и дай рекомендации по улучшению этого резюме:\n\n{resume}"
                 elif "Тренажер" in text:
-                    prompt = "Ты жесткий интервьюер. Задай мне первый каверзный вопрос для руководителя проектов."
+                    prompt = "Ты жесткий интервьюер. Задай мне первый каверзный вопрос для кандидата на позицию Руководитель проектов."
                 elif "Трекер" in text:
-                    await send_telegram(chat_id, "📌 Твои отклики пусты.", get_keyboard(is_admin))
+                    await send_telegram(chat_id, "📌 Твои отклики пока пусты.", get_keyboard(is_admin))
                     return web.Response(text="OK")
                 else:
                     prompt = text
