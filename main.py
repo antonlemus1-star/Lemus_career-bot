@@ -1,7 +1,7 @@
 import asyncio
 import os
 import sqlite3
-import aiohttp
+import requests
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -9,22 +9,19 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
-from openai import AsyncOpenAI
+from groq import Groq
 from pypdf import PdfReader
 from docx import Document
 
 # --- КОНФИГУРАЦИЯ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-API_KEY = os.getenv("GROQ_API_KEY") or os.getenv("OPENAI_API_KEY")
-BASE_URL = "https://api.groq.com/openai/v1"
-ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 PORT = int(os.getenv("PORT", 10000))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-
-ai_client = AsyncOpenAI(api_key=API_KEY, base_url=BASE_URL)
-MODEL_NAME = "llama-3.3-70b-versatile"
+ai_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+MODEL_NAME = 'llama3-70b-8192' # Отличная модель для работы с русским языком
 
 USER_DATA_DIR = "user_data"
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -37,11 +34,6 @@ cursor = conn.cursor()
 cursor.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance INTEGER DEFAULT 30)')
 cursor.execute('CREATE TABLE IF NOT EXISTS applications (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, company_name TEXT, status TEXT)')
 conn.commit()
-
-# --- СОСТОЯНИЯ ---
-class CareerState(StatesGroup):
-    waiting_for_resume_file = State()
-    waiting_for_skill_gap_vacancy = State()
 
 # --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
 async def handle_ping(request):
@@ -56,69 +48,87 @@ async def start_web_server():
     await site.start()
     print(f"Web server started on port {PORT}")
 
-# --- ПАРСЕР HH API ---
-async def fetch_hh_vacancies():
+# --- БРОНЕБОЙНЫЙ ПАРСЕР HH API ---
+def fetch_hh_vacancies_sync(query):
     url = "https://api.hh.ru/vacancies"
-    headers = {"User-Agent": "LemusCareerBot/2.0 (antonio.lemus@yandex.ru)"}
-    queries = ["Руководитель направления", "Руководитель проектов", "Директор", "Руководитель"]
-    
-    async with aiohttp.ClientSession() as session:
-        for q in queries:
-            params = {"text": q, "area": 113, "per_page": 5, "order_by": "publication_time"}
-            try:
-                async with session.get(url, params=params, headers=headers) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        items = data.get("items", [])
-                        if items:
-                            return items
-            except Exception as e:
-                print(f"HH API Error: {e}")
+    headers = {
+        "User-Agent": "LemusCareerBot/1.0 (anton@megafon.ru)"
+    }
+    params = {
+        "text": query,
+        "area": "1", # 1 = Москва
+        "per_page": "5",
+        "page": "0",
+        "order_by": "publication_time"
+    }
+    try:
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("items", [])
+        else:
+            print(f"Ошибка HH API: {response.status_code}")
+    except Exception as e:
+        print(f"Сетевая ошибка при поиске: {e}")
     return []
 
 # --- ИНТЕРФЕЙС ---
 def get_main_keyboard():
     b = ReplyKeyboardBuilder()
-    b.button(text="📁 Мои резюме"); b.button(text="📤 Загрузить резюме")
+    b.button(text="📁 Мои резюме"); b.button(text="📥 Загрузить резюме")
     b.button(text="🔍 Поиск вакансий"); b.button(text="🛠 Адаптация резюме")
     b.button(text="✍️ Отклик"); b.button(text="📊 Анализ навыков (Skill Gap)")
     b.button(text="📋 Аудит резюме"); b.button(text="🎤 Тренажер собеседований")
-    b.button(text="📌 Трекер откликов"); b.button(text="💎 Оплата и Баланс")
-    b.button(text="🎁 Пригласить друга"); b.button(text="ℹ️ Помощь")
+    b.button(text="📌 Трекер откликов")
+    b.button(text="💎 Оплата и Баланс"); b.button(text="🎁 Пригласить друга")
+    b.button(text="ℹ️ Помощь")
     b.adjust(2, 2, 2, 2, 1, 2, 1)
     return b.as_markup(resize_keyboard=True)
+
+class CareerState(StatesGroup):
+    waiting_for_resume_file = State()
 
 # --- ХЕНДЛЕРЫ БОТА ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("👋 Привет! Я твой карьерный агент. Выбирай нужную функцию в меню:", reply_markup=get_main_keyboard())
-
-@dp.message(Command("admin"))
-async def admin_panel(message: types.Message):
-    if ADMIN_ID and message.from_user.id != ADMIN_ID:
-        return await message.answer("⛔ У тебя нет доступа к этой команде.")
-    
-    cursor.execute("SELECT COUNT(*) FROM users")
-    users_count = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM applications")
-    apps_count = cursor.fetchone()[0]
-    
-    await message.answer(
-        f"👑 **Панель администратора**\n\n"
-        f"👥 Всего пользователей: {users_count}\n"
-        f"📌 Всего откликов: {apps_count}",
-        parse_mode="Markdown"
-    )
+    await message.answer("👋 Привет! Я твой карьерный агент. Меню обновлено:", reply_markup=get_main_keyboard())
 
 @dp.message(F.text == "🔍 Поиск вакансий")
 async def search_vacancies(message: types.Message):
-    await message.answer("🔍 Ищу актуальные вакансии на HeadHunter...")
-    vacancies = await fetch_hh_vacancies()
+    user_id = message.from_user.id
+    resume_text = user_resumes.get(user_id)
+    
+    search_query = "Руководитель проектов" # Запрос по умолчанию
+    
+    # УМНЫЙ ПОИСК ЧЕРЕЗ GROQ
+    if resume_text and ai_client:
+        await message.answer("🧠 Анализирую твой опыт в резюме для подбора максимально релевантных вакансий...")
+        prompt = (
+            "Проанализируй текст резюме и выдели ключевую экспертизу кандидата. "
+            "Сформируй идеальный поисковый запрос для сайта вакансий (HeadHunter), "
+            "чтобы найти наиболее подходящие должности. Запрос должен состоять максимум из 3-4 слов "
+            "(например: 'Руководитель проектов B2B' или 'Директор по продажам телеком'). "
+            "Верни ТОЛЬКО текст запроса, без кавычек, точек и пояснений.\n\n"
+            f"Резюме:\n{resume_text[:3000]}"
+        )
+        try:
+            chat_completion = ai_client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model=MODEL_NAME,
+            )
+            if chat_completion.choices[0].message.content:
+                search_query = chat_completion.choices[0].message.content.strip().replace('"', '').replace("'", "")
+        except Exception as e:
+            print(f"Ошибка Groq при генерации запроса: {e}")
+            
+    await message.answer(f"🔍 Ищу вакансии по запросу: *{search_query}*...", parse_mode="Markdown")
+    
+    vacancies = await asyncio.to_thread(fetch_hh_vacancies_sync, search_query)
     
     if not vacancies:
-        return await message.answer("Не удалось получить вакансии. Попробуй чуть позже.")
+        return await message.answer(f"По запросу «{search_query}» ничего не найдено. Попробуй чуть позже.")
     
-    await message.answer(f"🔥 Нашел свежие позиции ({len(vacancies)}):")
+    await message.answer(f"🔥 Нашел свежие позиции под твой опыт ({len(vacancies)}):")
     
     for v in vacancies:
         vac_id = str(v.get("id"))
@@ -130,81 +140,38 @@ async def search_vacancies(message: types.Message):
         
         builder = InlineKeyboardBuilder()
         builder.button(text="✍️ Сопроводительное письмо", callback_data=f"gen_{vac_id}")
-        builder.adjust(1)
         
         text = f"🏢 **{employer}**\n💼 [{title}]({url})"
         await message.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown", link_preview_options=types.LinkPreviewOptions(is_disabled=True))
 
-@dp.message(F.text == "📤 Загрузить резюме")
+@dp.message(F.text == "📥 Загрузить резюме")
 async def upload_resume(message: types.Message, state: FSMContext):
     await state.set_state(CareerState.waiting_for_resume_file)
-    await message.answer("📄 Отправь файл резюме (поддерживаются PDF, Word (.docx) и RTF).", reply_markup=types.ReplyKeyboardRemove())
+    await message.answer("📄 Отправь файл резюме (PDF, Word или RTF).", reply_markup=types.ReplyKeyboardRemove())
 
 @dp.message(CareerState.waiting_for_resume_file, F.document)
 async def process_file(message: types.Message, state: FSMContext):
     doc = message.document
-    file_name = doc.file_name.lower()
-    if not (file_name.endswith('.pdf') or file_name.endswith('.docx') or file_name.endswith('.rtf')):
-        return await message.answer("⚠️ Поддерживаются только форматы PDF, Word (.docx) и RTF!")
-        
     path = f"tmp_{message.from_user.id}_{doc.file_name}"
     await bot.download(await bot.get_file(doc.file_id), destination=path)
     
     text = ""
     try:
-        if file_name.endswith('.pdf'):
+        if doc.file_name.endswith('.pdf'):
             text = "".join([p.extract_text() or "" for p in PdfReader(path).pages])
-        elif file_name.endswith('.docx'):
+        elif doc.file_name.endswith('.docx'):
             text = "\n".join([p.text for p in Document(path).paragraphs])
-        elif file_name.endswith('.rtf'):
+        elif doc.file_name.endswith('.rtf'):
             with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                 text = f.read()
     except Exception as e:
         text = f"Ошибка чтения: {e}"
         
     user_resumes[message.from_user.id] = text
-    await message.answer(f"✅ Резюме «{doc.file_name}» успешно сохранено!", reply_markup=get_main_keyboard())
+    await message.answer(f"✅ Резюме «{doc.file_name}» успешно сохранено! Теперь поиск вакансий будет адаптирован под твой опыт.", reply_markup=get_main_keyboard())
     
     if os.path.exists(path):
         os.remove(path)
-    await state.clear()
-
-@dp.message(F.text == "📊 Анализ навыков (Skill Gap)")
-async def skill_gap_start(message: types.Message, state: FSMContext):
-    if message.from_user.id not in user_resumes:
-        return await message.answer("⚠️ Сначала загрузи свое резюме через кнопку «📤 Загрузить резюме».", reply_markup=get_main_keyboard())
-    
-    await state.set_state(CareerState.waiting_for_skill_gap_vacancy)
-    await message.answer("🎯 Напиши название целевой позиции или вставь описание вакансии, чтобы я провел анализ недостающих навыков (Skill Gap) на русском языке.")
-
-@dp.message(CareerState.waiting_for_skill_gap_vacancy, F.text)
-async def skill_gap_process(message: types.Message, state: FSMContext):
-    target_info = message.text
-    resume = user_resumes.get(message.from_user.id, "")
-    
-    await message.answer("🔍 Анализирую соответствие навыков...")
-    
-    prompt = (
-        "Проведи глубокий анализ разрыва навыков (Skill Gap Analysis) на русском языке. "
-        "Сравни резюме кандидата с требованиями целевой вакансии/позиции.\n\n"
-        f"РЕЗЮМЕ КАНДИДАТА:\n{resume}\n\n"
-        f"ЦЕЛЕВАЯ ВАКАНСИЯ / ТРЕБОВАНИЯ:\n{target_info}\n\n"
-        "Выдай структурированный ответ на русском языке:\n"
-        "1. Сильные стороны и совпадения.\n"
-        "2. Чего критически не хватает (каких навыков, опыта или технологий).\n"
-        "3. Конкретные рекомендации, как закрыть эти пробелы."
-    )
-    
-    try:
-        response = await ai_client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        result_text = response.choices[0].message.content
-    except Exception as e:
-        result_text = f"⚠️ Ошибка анализа: {e}"
-        
-    await message.answer(f"📊 **Результаты анализа навыков:**\n\n{result_text}", parse_mode="Markdown", reply_markup=get_main_keyboard())
     await state.clear()
 
 @dp.callback_query(F.data.startswith("gen_"))
@@ -213,38 +180,37 @@ async def gen_cover(callback: types.CallbackQuery):
     title = temp_vacancies.get(vac_id, "Вакансия")
     
     await callback.answer("Генерирую письмо...", show_alert=False)
-    resume = user_resumes.get(callback.from_user.id, "Опыт: Руководитель проектов и направлений в B2B и IT.")
+    resume = user_resumes.get(callback.from_user.id, "Опыт: Руководитель проектов.")
     
-    prompt = f"Напиши сильное профессиональное сопроводительное письмо на русском языке для отклика на позицию '{title}' на основе резюме:\n{resume}"
+    prompt = f"Напиши сильное профессиональное сопроводительное письмо для отклика на позицию '{title}' на основе резюме:\n{resume}"
     
-    try:
-        response = await ai_client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        letter_text = response.choices[0].message.content
-    except Exception as e:
-        letter_text = f"⚠️ Ошибка генерации: {e}"
+    if ai_client:
+        try:
+            chat_completion = ai_client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model=MODEL_NAME,
+            )
+            letter_text = chat_completion.choices[0].message.content
+        except Exception as e:
+            letter_text = f"Ошибка при генерации письма через Groq: {e}"
+    else:
+        letter_text = "⚠️ ИИ-клиент Groq не инициализирован."
         
     await callback.message.answer(f"📝 **Сопроводительное письмо:**\n\n{letter_text}", parse_mode="Markdown")
 
-@dp.message(F.text == "ℹ️ Помощь")
-async def cmd_help(message: types.Message):
-    await message.answer("🤖 Используй кнопки меню для поиска вакансий, загрузки резюме, анализа навыков и генерации откликов.")
-
 @dp.message(F.text)
 async def chat(message: types.Message):
-    cursor.execute('INSERT OR IGNORE INTO users (user_id) VALUES (?)', (message.from_user.id,))
-    conn.commit()
-    
-    try:
-        response = await ai_client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": message.text}]
-        )
-        answer = response.choices[0].message.content
-    except Exception as e:
-        answer = f"⚠️ Ошибка ИИ: {e}"
+    if ai_client:
+        try:
+            chat_completion = ai_client.chat.completions.create(
+                messages=[{"role": "user", "content": message.text}],
+                model=MODEL_NAME,
+            )
+            answer = chat_completion.choices[0].message.content
+        except Exception as e:
+            answer = f"Ошибка Groq: {e}"
+    else:
+        answer = "ИИ временно недоступен."
     await message.answer(answer, reply_markup=get_main_keyboard())
 
 async def main():

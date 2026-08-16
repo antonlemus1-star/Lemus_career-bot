@@ -1,5 +1,6 @@
 aiogram
-openai
+groq
 pypdf
 python-docx
 aiohttp
+requests
