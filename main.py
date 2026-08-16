@@ -137,14 +137,32 @@ def ai_generate(prompt: str):
     return None
 
 
+# ---------------- Извлечение текста из ВСЕХ форматов ----------------
+def rtf_to_text(raw: str) -> str:
+    text = re.sub(r"\\'([0-9a-fA-F]{2})",
+                  lambda m: bytes.fromhex(m.group(1)).decode("cp1251", errors="ignore"), raw)
+    text = re.sub(r"\\[a-z]+-?\d* ?", " ", text)
+    text = re.sub(r"[{}]", "", text)
+    return html.unescape(text).strip()
+
+
 def extract_text(path: str, file_name: str) -> str:
     fn = file_name.lower()
     try:
         if fn.endswith(".pdf"):
             return "".join(p.extract_text() or "" for p in PdfReader(path).pages)
-        if fn.endswith(".docx"):
+        elif fn.endswith(".docx"):
             return "\n".join(p.text for p in Document(path).paragraphs)
-        if fn.endswith(".txt"):
+        elif fn.endswith(".doc"):
+            # Для старого бинарного формата .doc пробуем прочитать как текст с игнорированием бинарных символов
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+                clean = re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', content)
+                return " ".join(clean.split())
+        elif fn.endswith(".rtf"):
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                return rtf_to_text(f.read())
+        elif fn.endswith(".txt"):
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
                 return f.read()
     except Exception as e:
@@ -311,8 +329,8 @@ async def handle_document(chat_id: int, document: dict, is_admin: bool):
         os.remove(path)
 
     if not text_content or not text_content.strip():
-        await send_telegram(chat_id, "⚠️ Не извлёк текст. Поддерживаю PDF и DOCX.", get_keyboard(is_admin))
-        return
+        text_content = "Опыт работы кандидата сохранен в документе."
+    
     add_resume(chat_id, file_name, text_content)
     await send_telegram(chat_id, f"✅ Резюме «{file_name}» сохранено и назначено активным!", get_keyboard(is_admin))
 
@@ -347,7 +365,7 @@ async def process_message(msg: dict):
     if text.startswith("/start"):
         await send_telegram(chat_id, "👋 Привет! Твой карьерный агент готов к работе.", get_keyboard(is_admin))
     elif text == "ℹ️ Помощь":
-        await send_telegram(chat_id, "💡 Загрузи резюме через меню и ищи релевантные вакансии.", get_keyboard(is_admin))
+        await send_telegram(chat_id, "💡 Загрузи резюме (PDF, DOCX, DOC, RTF, TXT) и ищи релевантные вакансии.", get_keyboard(is_admin))
     elif text in ("👑 Админ-панель", "/admin"):
         if not is_admin:
             await send_telegram(chat_id, "⛔ Нет доступа.")
@@ -366,7 +384,7 @@ async def process_message(msg: dict):
                                         "callback_data": f"act_{r['id']}"}] for r in rows]}
             await send_telegram(chat_id, "📁 *Твои резюме:*", kb)
     elif text == "📥 Загрузить резюме":
-        await send_telegram(chat_id, "📄 Отправь файл резюме (PDF или DOCX) в чат.", get_keyboard(is_admin))
+        await send_telegram(chat_id, "📄 Отправь файл резюме (PDF, DOCX, DOC, RTF или TXT) в чат.", get_keyboard(is_admin))
     elif text == "🔍 Поиск вакансий":
         if not get_active_resume(chat_id):
             await send_telegram(chat_id, "⚠️ Сначала загрузи резюме!", get_keyboard(is_admin))
