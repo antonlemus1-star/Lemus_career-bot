@@ -167,35 +167,38 @@ def get_main_keyboard(is_admin: bool = False):
     return {"keyboard": keyboard, "resize_keyboard": True}
 
 
+async def run_ai_generation(chat_id: int, vac_info: dict):
+    try:
+        await send_telegram(chat_id, f"✍️ Готовлю сильное сопроводительное письмо для *{vac_info['employer']}* на позицию «{vac_info['title']}» по вашему активному резюме...")
+        resume_text = get_active_resume_text(chat_id) or "Опыт: не указан."
+        prompt = (
+            f"Напиши профессиональное, убедительное сопроводительное письмо для отклика на вакансию "
+            f"'{vac_info['title']}' в компанию '{vac_info['employer']}' на основе следующего резюме:\n\n{resume_text}"
+        )
+        letter = await asyncio.to_thread(ai_generate, prompt)
+        await send_telegram(chat_id, f"📝 *Сопроводительное письмо:*\n\n{letter}")
+    except Exception as e:
+        await send_telegram(chat_id, f"⚠️ Ошибка генерации: {str(e)}")
+
+
 async def telegram_webhook(request):
     try:
         data = await request.json()
     except:
         return web.Response(text="OK")
 
-    # Обработка нажатий на инлайн-кнопки (генерация письма)
     if "callback_query" in data:
         cb = data["callback_query"]
         chat_id = cb["message"]["chat"]["id"]
         data_str = cb["data"]
         
+        async with aiohttp.ClientSession() as session:
+            await session.post(f"{TELEGRAM_API}/answerCallbackQuery", json={"callback_query_id": cb["id"]})
+        
         if data_str.startswith("gen_"):
             vac_id = data_str.replace("gen_", "")
             vac_info = temp_vacancies.get(vac_id, {"title": "Вакансия", "employer": "Компания"})
-            
-            await send_telegram(chat_id, f"✍️ Готовлю сильное сопроводительное письмо для *{vac_info['employer']}* на позицию «{vac_info['title']}» по вашему активному резюме...")
-            
-            resume_text = get_active_resume_text(chat_id) or "Опыт: не указан."
-            prompt = (
-                f"Напиши профессиональное, убедительное сопроводительное письмо для отклика на вакансию "
-                f"'{vac_info['title']}' в компанию '{vac_info['employer']}' на основе следующего резюме:\n\n{resume_text}"
-            )
-            letter = await asyncio.to_thread(ai_generate, prompt)
-            await send_telegram(chat_id, f"📝 *Сопроводительное письмо:*\n\n{letter}")
-        
-        # Отвечаем на callback, чтобы убрать часики на кнопке
-        async with aiohttp.ClientSession() as session:
-            await session.post(f"{TELEGRAM_API}/answerCallbackQuery", json={"callback_query_id": cb["id"]})
+            asyncio.create_task(run_ai_generation(chat_id, vac_info))
         return web.Response(text="OK")
 
     if "message" in data:
@@ -288,15 +291,15 @@ async def telegram_webhook(request):
         else:
             resume = get_active_resume_text(chat_id) or "Резюме не загружено."
             prompt = text
-            if text == "🛠 Адаптация резюме":
+            if "Адаптация" in text:
                 prompt = f"Адаптируй это резюме под позицию руководителя проектов в крупном телекоме:\n{resume}"
-            elif text == "📊 Анализ навыков (Skill Gap)":
+            elif "Анализ навыков" in text:
                 prompt = f"Проведи Skill Gap анализ для руководителя проектов на основе резюме:\n{resume}"
-            elif text == "📋 Аудит резюме":
+            elif "Аудит" in text:
                 prompt = f"Сделай жесткий аудит и дай рекомендации по улучшению этого резюме:\n{resume}"
-            elif text == "🎤 Тренажер собеседований":
+            elif "Тренажер" in text:
                 prompt = "Ты интервьюер. Задай мне первый каверзный вопрос для кандидата на позицию Руководитель проектов."
-            elif text == "📌 Трекер откликов":
+            elif "Трекер" in text:
                 await send_telegram(chat_id, "📌 Твои активные отклики пока пусты.")
                 return
             elif text in ["💎 Оплата и Баланс", "🎁 Пригласить друга"]:
@@ -355,7 +358,7 @@ async def main():
     async with aiohttp.ClientSession() as session:
         await session.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}")
 
-    log.info("Bot started with full functionality, cover letters, and admin panel.")
+    log.info("Bot started with full async background AI tasks and robust buttons.")
     await asyncio.Event().wait()
 
 
