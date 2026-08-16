@@ -23,7 +23,6 @@ PORT = int(os.getenv("PORT", 10000))
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Инициализация OpenAI-клиента для работы с Groq
 ai_client = AsyncOpenAI(api_key=API_KEY, base_url=BASE_URL)
 MODEL_NAME = "llama-3.3-70b-versatile"
 
@@ -42,6 +41,7 @@ conn.commit()
 # --- СОСТОЯНИЯ ---
 class CareerState(StatesGroup):
     waiting_for_resume_file = State()
+    waiting_for_skill_gap_vacancy = State()
 
 # --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
 async def handle_ping(request):
@@ -59,12 +59,12 @@ async def start_web_server():
 # --- ПАРСЕР HH API ---
 async def fetch_hh_vacancies():
     url = "https://api.hh.ru/vacancies"
-    headers = {"User-Agent": "LemusCareerBot/1.0"}
-    queries = ["Руководитель направления", "Руководитель проектов", "Руководитель", "Директор"]
+    headers = {"User-Agent": "LemusCareerBot/2.0 (antonio.lemus@yandex.ru)"}
+    queries = ["Руководитель направления", "Руководитель проектов", "Директор", "Руководитель"]
     
     async with aiohttp.ClientSession() as session:
         for q in queries:
-            params = {"text": q, "area": 1, "per_page": 10, "order_by": "publication_time"}
+            params = {"text": q, "area": 113, "per_page": 5, "order_by": "publication_time"}
             try:
                 async with session.get(url, params=params, headers=headers) as resp:
                     if resp.status == 200:
@@ -79,9 +79,9 @@ async def fetch_hh_vacancies():
 # --- ИНТЕРФЕЙС ---
 def get_main_keyboard():
     b = ReplyKeyboardBuilder()
-    b.button(text="📁 Мои резюме"); b.button(text="📤 Загрузить")
+    b.button(text="📁 Мои резюме"); b.button(text="📤 Загрузить резюме")
     b.button(text="🔍 Поиск вакансий"); b.button(text="🛠 Адаптация резюме")
-    b.button(text="✍️ Отклик"); b.button(text="📊 Skill Gap")
+    b.button(text="✍️ Отклик"); b.button(text="📊 Анализ навыков (Skill Gap)")
     b.button(text="📋 Аудит резюме"); b.button(text="🎤 Тренажер собеседований")
     b.button(text="📌 Трекер откликов"); b.button(text="💎 Оплата и Баланс")
     b.button(text="🎁 Пригласить друга"); b.button(text="ℹ️ Помощь")
@@ -105,8 +105,8 @@ async def admin_panel(message: types.Message):
     
     await message.answer(
         f"👑 **Панель администратора**\n\n"
-        f"👥 Всего пользователей в базе: {users_count}\n"
-        f"📌 Всего откликов/заявок: {apps_count}",
+        f"👥 Всего пользователей: {users_count}\n"
+        f"📌 Всего откликов: {apps_count}",
         parse_mode="Markdown"
     )
 
@@ -135,26 +135,30 @@ async def search_vacancies(message: types.Message):
         text = f"🏢 **{employer}**\n💼 [{title}]({url})"
         await message.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown", link_preview_options=types.LinkPreviewOptions(is_disabled=True))
 
-@dp.message(F.text == "📤 Загрузить")
+@dp.message(F.text == "📤 Загрузить резюме")
 async def upload_resume(message: types.Message, state: FSMContext):
     await state.set_state(CareerState.waiting_for_resume_file)
-    await message.answer("📄 Отправь файл резюме (PDF или Word).", reply_markup=types.ReplyKeyboardRemove())
+    await message.answer("📄 Отправь файл резюме (поддерживаются PDF, Word (.docx) и RTF).", reply_markup=types.ReplyKeyboardRemove())
 
 @dp.message(CareerState.waiting_for_resume_file, F.document)
 async def process_file(message: types.Message, state: FSMContext):
     doc = message.document
-    if not (doc.file_name.endswith('.pdf') or doc.file_name.endswith('.docx')):
-        return await message.answer("⚠️ Поддерживаются только PDF и Word файлы!")
+    file_name = doc.file_name.lower()
+    if not (file_name.endswith('.pdf') or file_name.endswith('.docx') or file_name.endswith('.rtf')):
+        return await message.answer("⚠️ Поддерживаются только форматы PDF, Word (.docx) и RTF!")
         
     path = f"tmp_{message.from_user.id}_{doc.file_name}"
     await bot.download(await bot.get_file(doc.file_id), destination=path)
     
     text = ""
     try:
-        if doc.file_name.endswith('.pdf'):
+        if file_name.endswith('.pdf'):
             text = "".join([p.extract_text() or "" for p in PdfReader(path).pages])
-        elif doc.file_name.endswith('.docx'):
+        elif file_name.endswith('.docx'):
             text = "\n".join([p.text for p in Document(path).paragraphs])
+        elif file_name.endswith('.rtf'):
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                text = f.read()
     except Exception as e:
         text = f"Ошибка чтения: {e}"
         
@@ -165,6 +169,44 @@ async def process_file(message: types.Message, state: FSMContext):
         os.remove(path)
     await state.clear()
 
+@dp.message(F.text == "📊 Анализ навыков (Skill Gap)")
+async def skill_gap_start(message: types.Message, state: FSMContext):
+    if message.from_user.id not in user_resumes:
+        return await message.answer("⚠️ Сначала загрузи свое резюме через кнопку «📤 Загрузить резюме».", reply_markup=get_main_keyboard())
+    
+    await state.set_state(CareerState.waiting_for_skill_gap_vacancy)
+    await message.answer("🎯 Напиши название целевой позиции или вставь описание вакансии, чтобы я провел анализ недостающих навыков (Skill Gap) на русском языке.")
+
+@dp.message(CareerState.waiting_for_skill_gap_vacancy, F.text)
+async def skill_gap_process(message: types.Message, state: FSMContext):
+    target_info = message.text
+    resume = user_resumes.get(message.from_user.id, "")
+    
+    await message.answer("🔍 Анализирую соответствие навыков...")
+    
+    prompt = (
+        "Проведи глубокий анализ разрыва навыков (Skill Gap Analysis) на русском языке. "
+        "Сравни резюме кандидата с требованиями целевой вакансии/позиции.\n\n"
+        f"РЕЗЮМЕ КАНДИДАТА:\n{resume}\n\n"
+        f"ЦЕЛЕВАЯ ВАКАНСИЯ / ТРЕБОВАНИЯ:\n{target_info}\n\n"
+        "Выдай структурированный ответ на русском языке:\n"
+        "1. Сильные стороны и совпадения.\n"
+        "2. Чего критически не хватает (каких навыков, опыта или технологий).\n"
+        "3. Конкретные рекомендации, как закрыть эти пробелы."
+    )
+    
+    try:
+        response = await ai_client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        result_text = response.choices[0].message.content
+    except Exception as e:
+        result_text = f"⚠️ Ошибка анализа: {e}"
+        
+    await message.answer(f"📊 **Результаты анализа навыков:**\n\n{result_text}", parse_mode="Markdown", reply_markup=get_main_keyboard())
+    await state.clear()
+
 @dp.callback_query(F.data.startswith("gen_"))
 async def gen_cover(callback: types.CallbackQuery):
     vac_id = callback.data.replace("gen_", "")
@@ -173,7 +215,7 @@ async def gen_cover(callback: types.CallbackQuery):
     await callback.answer("Генерирую письмо...", show_alert=False)
     resume = user_resumes.get(callback.from_user.id, "Опыт: Руководитель проектов и направлений в B2B и IT.")
     
-    prompt = f"Напиши сильное профессиональное сопроводительное письмо для отклика на позицию '{title}' на основе резюме:\n{resume}"
+    prompt = f"Напиши сильное профессиональное сопроводительное письмо на русском языке для отклика на позицию '{title}' на основе резюме:\n{resume}"
     
     try:
         response = await ai_client.chat.completions.create(
@@ -188,11 +230,10 @@ async def gen_cover(callback: types.CallbackQuery):
 
 @dp.message(F.text == "ℹ️ Помощь")
 async def cmd_help(message: types.Message):
-    await message.answer("🤖 Используй кнопки меню для поиска вакансий, загрузки резюме и генерации откликов.")
+    await message.answer("🤖 Используй кнопки меню для поиска вакансий, загрузки резюме, анализа навыков и генерации откликов.")
 
 @dp.message(F.text)
 async def chat(message: types.Message):
-    # Фиксация пользователя в БД
     cursor.execute('INSERT OR IGNORE INTO users (user_id) VALUES (?)', (message.from_user.id,))
     conn.commit()
     
