@@ -53,7 +53,7 @@ ignored_vacancies = set()
 conn = sqlite3.connect("tracker.db", check_same_thread=False)
 cur = conn.cursor()
 cur.executescript("""
-CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT);
+CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, balance INTEGER DEFAULT 5);
 CREATE TABLE IF NOT EXISTS resumes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -85,6 +85,12 @@ def get_active_resume(user_id: int) -> str:
         cur.execute("SELECT text FROM resumes WHERE user_id=? ORDER BY id DESC LIMIT 1", (user_id,))
         row = cur.fetchone()
     return row[0] if row else ""
+
+
+def get_user_balance(user_id: int) -> int:
+    cur.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+    row = cur.fetchone()
+    return row[0] if row else 5
 
 
 # ---------------- ИИ-слой ----------------
@@ -137,17 +143,7 @@ def ai_generate(prompt: str):
     return None
 
 
-# ---------------- Извлечение текста из ВСЕХ форматов ----------------
-def rtf_to_text(raw: str) -> str:
-    text = re.sub(r"\\par[d]?", "\n", raw)
-    text = re.sub(r"\\f\d+", "", text)
-    text = re.sub(r"\\[a-z]+-?\d* ?([-?\d+])?", "", text)
-    text = re.sub(r"[{}]", "", text)
-    text = re.sub(r"\\'[0-9a-fA-F]{2}", 
-                  lambda m: bytes.fromhex(m.group(1)).decode("cp1251", errors="ignore"), text)
-    return html.unescape(text).strip()
-
-
+# ---------------- Чистое извлечение текста (PDF, DOCX, TXT) ----------------
 def extract_text(path: str, file_name: str) -> str:
     fn = file_name.lower()
     try:
@@ -155,14 +151,6 @@ def extract_text(path: str, file_name: str) -> str:
             return "".join(p.extract_text() or "" for p in PdfReader(path).pages)
         elif fn.endswith(".docx"):
             return "\n".join(p.text for p in Document(path).paragraphs)
-        elif fn.endswith(".doc"):
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
-                clean = re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', content)
-                return " ".join(clean.split())
-        elif fn.endswith(".rtf"):
-            with open(path, "r", encoding="latin1", errors="ignore") as f:
-                return rtf_to_text(f.read())
         elif fn.endswith(".txt"):
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
                 return f.read()
@@ -311,6 +299,20 @@ async def handle_ai(chat_id: int, is_admin: bool, prompt: str):
 async def handle_document(chat_id: int, document: dict, is_admin: bool):
     file_id = document["file_id"]
     file_name = document.get("file_name", "resume.pdf")
+    
+    fn_lower = file_name.lower()
+    if not (fn_lower.endswith(".pdf") or fn_lower.endswith(".docx") or fn_lower.endswith(".txt")):
+        await send_telegram(
+            chat_id, 
+            "⚠️ *Неподдерживаемый формат файла!*\n\n"
+            "Пожалуйста, отправьте резюме в одном из надежных форматов:\n"
+            "• **PDF** (`.pdf`)\n"
+            "• **Word** (`.docx`)\n"
+            "• **Текст** (`.txt`)", 
+            get_keyboard(is_admin)
+        )
+        return
+
     try:
         async with HTTP.get(f"{TELEGRAM_API}/getFile", params={"file_id": file_id}) as resp:
             file_info = await resp.json()
@@ -325,15 +327,17 @@ async def handle_document(chat_id: int, document: dict, is_admin: bool):
     path = f"tmp_{chat_id}_{file_name}"
     with open(path, "wb") as f:
         f.write(content)
+        
     text_content = await asyncio.to_thread(extract_text, path, file_name)
     if os.path.exists(path):
         os.remove(path)
 
-    if not text_content or not text_content.strip():
-        text_content = "Опыт работы кандидата сохранен в документе."
-    
+    if not text_content or len(text_content.strip()) < 30:
+        await send_telegram(chat_id, "⚠️ Файл оказался пустым или не содержит читаемого текста.", get_keyboard(is_admin))
+        return
+        
     add_resume(chat_id, file_name, text_content)
-    await send_telegram(chat_id, f"✅ Резюме «{file_name}» сохранено и назначено активным!", get_keyboard(is_admin))
+    await send_telegram(chat_id, f"✅ Резюме «{file_name}» успешно распознано и назначено активным!", get_keyboard(is_admin))
 
 
 async def activate_resume(chat_id: int, rid: str):
@@ -353,7 +357,7 @@ async def process_message(msg: dict):
     text = (msg.get("text") or "").strip()
     document = msg.get("document")
 
-    cur.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (chat_id, username))
+    cur.execute("INSERT OR IGNORE INTO users (user_id, username, balance) VALUES (?, ?, 5)", (chat_id, username))
     conn.commit()
     is_admin = ADMIN_ID != 0 and chat_id == ADMIN_ID
 
@@ -364,9 +368,12 @@ async def process_message(msg: dict):
         return
 
     if text.startswith("/start"):
-        await send_telegram(chat_id, "👋 Привет! Твой карьерный агент готов к работе.", get_keyboard(is_admin))
+        await send_telegram(chat_id, "👋 Привет! Твой карьерный агент готов к работе. Используй меню ниже для управления резюме и поиска вакансий.", get_keyboard(is_admin))
     elif text == "ℹ️ Помощь":
-        await send_telegram(chat_id, "💡 Загрузи резюме (PDF, DOCX, DOC, RTF, TXT) и ищи релевантные вакансии.", get_keyboard(is_admin))
+        await send_telegram(chat_id, "💡 *Как пользоваться ботом:*\n1. Загрузи резюме (PDF, DOCX или TXT).\n2. Нажми «🔍 Поиск вакансий» — бот сам определит твой уровень и специальность.\n3. Используй ИИ-инструменты для подготовки к собеседованиям и написания писем.", get_keyboard(is_admin))
+    elif text == "💎 Оплата и Баланс":
+        balance = get_user_balance(chat_id)
+        await send_telegram(chat_id, f"💎 *Твой баланс:* `{balance}` запросов к ИИ.\n\nХочешь расширить возможности? Платный функционал подключается индивидуально.", get_keyboard(is_admin))
     elif text in ("👑 Админ-панель", "/admin"):
         if not is_admin:
             await send_telegram(chat_id, "⛔ Нет доступа.")
@@ -375,7 +382,7 @@ async def process_message(msg: dict):
         total = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM resumes")
         resumes = cur.fetchone()[0]
-        await send_telegram(chat_id, f"👑 *Админ-панель*\n\n👥 Пользователей: `{total}`\n📁 Резюме: `{resumes}`", get_keyboard(is_admin))
+        await send_telegram(chat_id, f"👑 *Админ-панель*\n\n👥 Всего пользователей: `{total}`\n📁 Всего резюме: `{resumes}`", get_keyboard(is_admin))
     elif text == "📁 Мои резюме":
         rows = list_resumes(chat_id)
         if not rows:
@@ -385,14 +392,14 @@ async def process_message(msg: dict):
                                         "callback_data": f"act_{r['id']}"}] for r in rows]}
             await send_telegram(chat_id, "📁 *Твои резюме:*", kb)
     elif text == "📥 Загрузить резюме":
-        await send_telegram(chat_id, "📄 Отправь файл резюме (PDF, DOCX, DOC, RTF или TXT) в чат.", get_keyboard(is_admin))
+        await send_telegram(chat_id, "📄 Отправь файл резюме (PDF, DOCX или TXT) в чат.", get_keyboard(is_admin))
     elif text == "🔍 Поиск вакансий":
         if not get_active_resume(chat_id):
             await send_telegram(chat_id, "⚠️ Сначала загрузи резюме!", get_keyboard(is_admin))
         else:
             bg(handle_search(chat_id, is_admin))
     elif text == "📌 Трекер откликов":
-        await send_telegram(chat_id, "📌 Твои отклики пока пусты.", get_keyboard(is_admin))
+        await send_telegram(chat_id, "📌 Твои отклики пока пусты. Здесь будет история отправленных откликов.", get_keyboard(is_admin))
     else:
         resume = get_active_resume(chat_id)
         if not resume and any(k in text for k in ["Адаптация", "Анализ навыков", "Аудит"]):
