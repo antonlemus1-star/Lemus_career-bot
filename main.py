@@ -9,19 +9,19 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
-from groq import Groq
 from pypdf import PdfReader
 from docx import Document
+from groq import Groq
 
 # --- КОНФИГУРАЦИЯ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY") # Убедись, что этот ключ прописан в Render
 PORT = int(os.getenv("PORT", 10000))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 ai_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-MODEL_NAME = 'llama3-70b-8192' # Отличная модель для работы с русским языком
+MODEL_NAME = 'llama-3.1-70b-versatile' # Актуальная модель Groq
 
 USER_DATA_DIR = "user_data"
 os.makedirs(USER_DATA_DIR, exist_ok=True)
@@ -46,30 +46,23 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print(f"Web server started on port {PORT}")
 
-# --- БРОНЕБОЙНЫЙ ПАРСЕР HH API ---
-def fetch_hh_vacancies_sync(query):
+# --- ПАРСЕР HH API ---
+def fetch_hh_vacancies_sync(query="Руководитель проектов"):
     url = "https://api.hh.ru/vacancies"
-    headers = {
-        "User-Agent": "LemusCareerBot/1.0 (anton@megafon.ru)"
-    }
+    headers = {"User-Agent": "LemusCareerBot/1.0 (anton@megafon.ru)"}
     params = {
         "text": query,
-        "area": "1", # 1 = Москва
+        "area": "1", 
         "per_page": "5",
-        "page": "0",
         "order_by": "publication_time"
     }
     try:
         response = requests.get(url, params=params, headers=headers, timeout=10)
         if response.status_code == 200:
-            data = response.json()
-            return data.get("items", [])
-        else:
-            print(f"Ошибка HH API: {response.status_code}")
+            return response.json().get("items", [])
     except Exception as e:
-        print(f"Сетевая ошибка при поиске: {e}")
+        print(f"Ошибка: {e}")
     return []
 
 # --- ИНТЕРФЕЙС ---
@@ -88,61 +81,30 @@ def get_main_keyboard():
 class CareerState(StatesGroup):
     waiting_for_resume_file = State()
 
-# --- ХЕНДЛЕРЫ БОТА ---
+# --- ХЕНДЛЕРЫ ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("👋 Привет! Я твой карьерный агент. Меню обновлено:", reply_markup=get_main_keyboard())
+    await message.answer("👋 Привет! Я твой карьерный агент.", reply_markup=get_main_keyboard())
 
 @dp.message(F.text == "🔍 Поиск вакансий")
 async def search_vacancies(message: types.Message):
-    user_id = message.from_user.id
-    resume_text = user_resumes.get(user_id)
-    
-    search_query = "Руководитель проектов" # Запрос по умолчанию
-    
-    # УМНЫЙ ПОИСК ЧЕРЕЗ GROQ
-    if resume_text and ai_client:
-        await message.answer("🧠 Анализирую твой опыт в резюме для подбора максимально релевантных вакансий...")
-        prompt = (
-            "Проанализируй текст резюме и выдели ключевую экспертизу кандидата. "
-            "Сформируй идеальный поисковый запрос для сайта вакансий (HeadHunter), "
-            "чтобы найти наиболее подходящие должности. Запрос должен состоять максимум из 3-4 слов "
-            "(например: 'Руководитель проектов B2B' или 'Директор по продажам телеком'). "
-            "Верни ТОЛЬКО текст запроса, без кавычек, точек и пояснений.\n\n"
-            f"Резюме:\n{resume_text[:3000]}"
-        )
-        try:
-            chat_completion = ai_client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model=MODEL_NAME,
-            )
-            if chat_completion.choices[0].message.content:
-                search_query = chat_completion.choices[0].message.content.strip().replace('"', '').replace("'", "")
-        except Exception as e:
-            print(f"Ошибка Groq при генерации запроса: {e}")
-            
-    await message.answer(f"🔍 Ищу вакансии по запросу: *{search_query}*...", parse_mode="Markdown")
-    
-    vacancies = await asyncio.to_thread(fetch_hh_vacancies_sync, search_query)
+    await message.answer("🔍 Ищу актуальные вакансии «Руководитель проектов» на HeadHunter...")
+    vacancies = await asyncio.to_thread(fetch_hh_vacancies_sync, "Руководитель проектов")
     
     if not vacancies:
-        return await message.answer(f"По запросу «{search_query}» ничего не найдено. Попробуй чуть позже.")
+        return await message.answer("Не удалось получить вакансии. Попробуй чуть позже.")
     
-    await message.answer(f"🔥 Нашел свежие позиции под твой опыт ({len(vacancies)}):")
-    
+    await message.answer(f"🔥 Нашел свежие позиции ({len(vacancies)}):")
     for v in vacancies:
         vac_id = str(v.get("id"))
         title = v.get("name", "Вакансия")
         employer = v.get("employer", {}).get("name", "Компания")
         url = v.get("alternate_url", "https://hh.ru")
-        
         temp_vacancies[vac_id] = title
         
         builder = InlineKeyboardBuilder()
         builder.button(text="✍️ Сопроводительное письмо", callback_data=f"gen_{vac_id}")
-        
-        text = f"🏢 **{employer}**\n💼 [{title}]({url})"
-        await message.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown", link_preview_options=types.LinkPreviewOptions(is_disabled=True))
+        await message.answer(f"🏢 **{employer}**\n💼 [{title}]({url})", reply_markup=builder.as_markup(), parse_mode="Markdown")
 
 @dp.message(F.text == "📥 Загрузить резюме")
 async def upload_resume(message: types.Message, state: FSMContext):
@@ -157,65 +119,49 @@ async def process_file(message: types.Message, state: FSMContext):
     
     text = ""
     try:
-        if doc.file_name.endswith('.pdf'):
-            text = "".join([p.extract_text() or "" for p in PdfReader(path).pages])
-        elif doc.file_name.endswith('.docx'):
-            text = "\n".join([p.text for p in Document(path).paragraphs])
+        if doc.file_name.endswith('.pdf'): text = "".join([p.extract_text() or "" for p in PdfReader(path).pages])
+        elif doc.file_name.endswith('.docx'): text = "\n".join([p.text for p in Document(path).paragraphs])
         elif doc.file_name.endswith('.rtf'):
-            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                text = f.read()
-    except Exception as e:
-        text = f"Ошибка чтения: {e}"
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f: text = f.read()
+    except Exception as e: text = f"Ошибка: {e}"
         
     user_resumes[message.from_user.id] = text
-    await message.answer(f"✅ Резюме «{doc.file_name}» успешно сохранено! Теперь поиск вакансий будет адаптирован под твой опыт.", reply_markup=get_main_keyboard())
-    
-    if os.path.exists(path):
-        os.remove(path)
+    await message.answer(f"✅ Резюме успешно сохранено!", reply_markup=get_main_keyboard())
+    if os.path.exists(path): os.remove(path)
     await state.clear()
 
 @dp.callback_query(F.data.startswith("gen_"))
 async def gen_cover(callback: types.CallbackQuery):
     vac_id = callback.data.replace("gen_", "")
     title = temp_vacancies.get(vac_id, "Вакансия")
-    
     await callback.answer("Генерирую письмо...", show_alert=False)
     resume = user_resumes.get(callback.from_user.id, "Опыт: Руководитель проектов.")
     
-    prompt = f"Напиши сильное профессиональное сопроводительное письмо для отклика на позицию '{title}' на основе резюме:\n{resume}"
-    
+    prompt = f"Напиши профессиональное сопроводительное письмо для вакансии '{title}'. Резюме:\n{resume}"
     if ai_client:
-        try:
-            chat_completion = ai_client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model=MODEL_NAME,
-            )
-            letter_text = chat_completion.choices[0].message.content
-        except Exception as e:
-            letter_text = f"Ошибка при генерации письма через Groq: {e}"
+        completion = ai_client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model=MODEL_NAME
+        )
+        letter_text = completion.choices[0].message.content
     else:
-        letter_text = "⚠️ ИИ-клиент Groq не инициализирован."
-        
+        letter_text = "⚠️ ИИ-клиент не инициализирован."
     await callback.message.answer(f"📝 **Сопроводительное письмо:**\n\n{letter_text}", parse_mode="Markdown")
 
 @dp.message(F.text)
 async def chat(message: types.Message):
     if ai_client:
-        try:
-            chat_completion = ai_client.chat.completions.create(
-                messages=[{"role": "user", "content": message.text}],
-                model=MODEL_NAME,
-            )
-            answer = chat_completion.choices[0].message.content
-        except Exception as e:
-            answer = f"Ошибка Groq: {e}"
+        completion = ai_client.chat.completions.create(
+            messages=[{"role": "user", "content": message.text}],
+            model=MODEL_NAME
+        )
+        answer = completion.choices[0].message.content
     else:
         answer = "ИИ временно недоступен."
     await message.answer(answer, reply_markup=get_main_keyboard())
 
 async def main():
     await start_web_server()
-    print("Бот и веб-сервер запущены!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
