@@ -301,10 +301,10 @@ async def telegram_webhook(request):
                 prompt = "Ты интервьюер. Задай мне первый каверзный вопрос для кандидата на позицию Руководитель проектов."
             elif "Трекер" in text:
                 await send_telegram(chat_id, "📌 Твои активные отклики пока пусты.")
-                return
+                return web.Response(text="OK")
             elif text in ["💎 Оплата и Баланс", "🎁 Пригласить друга"]:
                 await send_telegram(chat_id, "ℹ️ Баланс запросов: 30.")
-                return
+                return web.Response(text="OK")
 
             answer = await asyncio.to_thread(ai_generate, prompt)
             await send_telegram(chat_id, answer, get_main_keyboard(is_admin))
