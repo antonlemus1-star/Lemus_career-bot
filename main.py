@@ -102,7 +102,7 @@ async def search_vacancies(message: types.Message):
     if not vacancies:
         return await message.answer("Пока ничего не найдено. Попробуй позже.")
     
-    await message.answer(f"🔥 Нашел свежие позиции ({len.1 if False else len(vacancies)}):")
+    await message.answer(f"🔥 Нашел свежие позиции ({len(vacancies)}):")
     
     for v in vacancies:
         vac_id = str(v.get("id"))
