@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import sqlite3
+import io
 
 import aiohttp
 import requests
@@ -273,6 +274,17 @@ async def send_telegram(chat_id, text: str, reply_markup=None, parse_mode="Markd
     return result
 
 
+async def send_document_bytes(chat_id, file_bytes: bytes, filename: str, caption: str = ""):
+    form = aiohttp.FormData()
+    form.add_field("chat_id", str(chat_id))
+    if caption:
+        form.add_field("caption", caption[:1024])
+        form.add_field("parse_mode", "Markdown")
+    form.add_field("document", file_bytes, filename=filename, content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    async with HTTP.post(f"{TELEGRAM_API}/sendDocument", data=form) as resp:
+        await resp.json()
+
+
 async def http_edit_message_text(chat_id, message_id, text, reply_markup=None):
     payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
     if reply_markup:
@@ -450,6 +462,53 @@ async def run_resume_adaptation(chat_id: int, resume_id: int, vacancy_text: str)
     await send_telegram(chat_id, f"🛠 *Адаптированное резюме:*\n\n{adapted_text}")
 
 
+async def run_resume_audit(chat_id: int):
+    if not spend_balance(chat_id, cost=1):
+        await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.")
+        return
+
+    await send_telegram(chat_id, "📋 Провожу жесткий аудит резюме и формирую улучшенную версию...")
+    resume = get_active_resume(chat_id)
+    if not resume:
+        await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!")
+        return
+
+    # 1. Запрос на текстовый аудит (развернутые комментарии)
+    audit_prompt = f"Ты жесткий IT-рекрутер и C-level менеджер. Сделай подробный аудит резюме, укажи красные флаги и что исправить:\n\n{resume[:8000]}"
+    audit_text = await asyncio.to_thread(ai_generate, audit_prompt)
+
+    # 2. Запрос на генерацию улучшенного текста резюме с сохранением структуры
+    rewrite_prompt = (
+        f"Перепиши и улучши следующее резюме, исправив все ошибки, усилив достижения формулировками с цифрами и результатами. "
+        f"Сохрани исходную структуру блоков (Опыт, Навыки, Образование и т.д.). Выдай ТОЛЬКО готовый текст обновленного резюме без лишних вводных слов:\n\n{resume[:8000]}"
+    )
+    improved_resume_text = await asyncio.to_thread(ai_generate, rewrite_prompt)
+
+    if not audit_text or not improved_resume_text:
+        await send_telegram(chat_id, "⚠️ ИИ временно недоступен, не удалось завершить аудит.")
+        return
+
+    # Отправляем развернутые комментарии в чат
+    await send_telegram(chat_id, f"📋 *Результаты аудита резюме:*\n\n{audit_text}")
+
+    # Создаем Word-файл (.docx) с улучшенным резюме в памяти
+    doc = Document()
+    for paragraph in improved_resume_text.split("\n"):
+        doc.add_paragraph(paragraph)
+    
+    file_stream = io.BytesIO()
+    doc.save(file_stream)
+    file_bytes = file_stream.getvalue()
+
+    # Отправляем файл пользователю прямо в чат
+    await send_document_bytes(
+        chat_id, 
+        file_bytes, 
+        filename="Improved_Resume.docx", 
+        caption="✅ *Ваше улучшенное готовое резюме* (с учетом рекомендаций аудита)"
+    )
+
+
 async def handle_ai(chat_id: int, is_admin: bool, prompt: str):
     if not spend_balance(chat_id, cost=1):
         await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.", get_keyboard(is_admin))
@@ -603,7 +662,7 @@ async def process_message(msg: dict):
             "  • *Мусор* — скрывает неинтересные вакансии из выдачи.\n"
             "🛠 *Адаптация резюме* — выберите одно из своих резюме, скопируйте и вставьте текст вакансии, и ИИ перепишет его под требования работодателя (тратит 1 запрос).\n"
             "📊 *Анализ навыков (Skill Gap)* — находит пробелы в скиллах для выбранной позиции (тратит 1 запрос).\n"
-            "📋 *Аудит резюме* — жесткая критика и профессиональные рекомендации (тратит 1 запрос).\n"
+            "📋 *Аудит резюме* — жесткая критика в чате и **автоматическое создание готового Word-файла (.docx)** с улучшенным резюме (тратит 1 запрос).\n"
             "🎤 *Тренажер собеседований* — симуляция каверзных вопросов на интервью (тратит 1 запрос).\n"
             "📌 *Трекер откликов* — учет отправленных заявок.\n"
             "👥 *Пригласить друга* — реферальная программа (+30 запросов вам и другу).\n"
@@ -619,6 +678,12 @@ async def process_message(msg: dict):
         
         kb = {"inline_keyboard": [[{"text": f"{'✅' if r['active'] else '📄'} {r['name']}", "callback_data": f"adaptsel_{r['id']}"}] for r in rows]}
         await send_telegram(chat_id, "🛠 *Выберите резюме*, которое хотите адаптировать под вакансию:", kb)
+
+    elif text == "📋 Аудит резюме":
+        if not get_active_resume(chat_id):
+            await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!", get_keyboard(is_admin))
+            return
+        bg(run_resume_audit(chat_id))
 
     elif text == "💎 Оплата и Баланс":
         balance = get_user_balance(chat_id)
@@ -677,13 +742,11 @@ async def process_message(msg: dict):
 
     else:
         resume = get_active_resume(chat_id)
-        if not resume and ("Анализ навыков" in text or "Аудит" in text):
+        if not resume and "Анализ навыков" in text:
             await send_telegram(chat_id, "⚠️ Сначала загрузи резюме!", get_keyboard(is_admin))
             return
         if "Анализ навыков" in text:
             prompt = f"Проведи Skill Gap анализ для руководителя проектов:\n\n{resume}"
-        elif "Аудит" in text:
-            prompt = f"Сделай жесткий аудит и дай рекомендации по резюме:\n\n{resume}"
         elif "Тренажер" in text:
             prompt = "Ты жесткий интервьюер. Задай мне первый каверзный вопрос для руководителя проектов."
         else:
