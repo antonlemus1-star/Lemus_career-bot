@@ -67,6 +67,12 @@ CREATE TABLE IF NOT EXISTS hidden_vacancies (
     vacancy_id TEXT,
     PRIMARY KEY (user_id, vacancy_id)
 );
+CREATE TABLE IF NOT EXISTS liked_vacancies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    vacancy_id TEXT,
+    title TEXT
+);
 CREATE TABLE IF NOT EXISTS payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
@@ -162,6 +168,19 @@ def hide_vacancy(user_id: int, vacancy_id: str):
 def is_vacancy_hidden(user_id: int, vacancy_id: str) -> bool:
     cur.execute("SELECT 1 FROM hidden_vacancies WHERE user_id=? AND vacancy_id=?", (user_id, vacancy_id))
     return cur.fetchone() is not None
+
+
+def like_vacancy(user_id: int, vacancy_id: str, title: str):
+    cur.execute("INSERT INTO liked_vacancies (user_id, vacancy_id, title) VALUES (?, ?, ?)", (user_id, vacancy_id, title))
+    conn.commit()
+
+
+def get_user_preferences(user_id: int) -> str:
+    cur.execute("SELECT title FROM liked_vacancies WHERE user_id=? ORDER BY id DESC LIMIT 10", (user_id,))
+    rows = cur.fetchall()
+    if not rows:
+        return "Нет истории предпочтений."
+    return ", ".join([r[0] for r in rows])
 
 
 # ---------------- ИИ-слой ----------------
@@ -389,11 +408,16 @@ async def handle_search(chat_id: int, is_admin: bool):
         await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.", get_keyboard(is_admin))
         return
 
-    await send_telegram(chat_id, "🔍 Анализирую резюме и подбираю вакансии...")
+    await send_telegram(chat_id, "🔍 Анализирую резюме и историю ваших предпочтений...")
     resume = get_active_resume(chat_id)
+    preferences = get_user_preferences(chat_id)
     
-    prompt = (f"Проанализируй текст резюме и напиши только короткое название должности для поиска на hh.ru (2-4 слова, без кавычек). "
-              f"Пример ответа: Руководитель проектов\n\nРезюме: {resume[:2000]}")
+    prompt = (
+        f"Проанализируй текст резюме кандидата и историю его понравившихся позиций. "
+        f"Напиши только короткое название должности для поиска на hh.ru (2-4 слова, без кавычек), основываясь на том, что ему нравится.\n"
+        f"История понравившихся ролей: {preferences}\n\n"
+        f"Резюме: {resume[:2000]}"
+    )
     
     query = await asyncio.to_thread(ai_generate, prompt)
     if not query or len(query.strip()) > 50:
@@ -420,10 +444,11 @@ async def handle_search(chat_id: int, is_admin: bool):
         
         markup = {"inline_keyboard": [
             [
-                {"text": "✍️ Сопроводительное", "callback_data": f"gen_{vid}"},
-                {"text": "📊 Соответствие", "callback_data": f"match_{vid}"}
+                {"text": "👍 Подходит", "callback_data": f"like_{vid}"},
+                {"text": "✍️ Сопроводительное", "callback_data": f"gen_{vid}"}
             ],
             [
+                {"text": "📊 Соответствие", "callback_data": f"match_{vid}"},
                 {"text": "🗑 Мусор", "callback_data": f"hide_{vid}"}
             ]
         ]}
@@ -810,6 +835,11 @@ async def telegram_webhook(request):
                 admin_add_balance(target_uid, amt)
                 await send_telegram(target_uid, f"✅ Администратор подтвердил ваш платеж! Начислено {amt} запросов.")
                 await http_edit_message_text(chat_id, message_id, "✅ Чек одобрен, запросы начислены.")
+            elif data_str.startswith("like_"):
+                vid = data_str[5:]
+                vac = temp_vacancies.get(vid, {"title": "Позиция"})
+                like_vacancy(chat_id, vid, vac["title"])
+                await send_telegram(chat_id, f"👍 Запомнил вакансию «{vac['title']}». Бот будет подбирать похожие!")
             elif data_str.startswith("gen_"):
                 if not spend_balance(chat_id, cost=1):
                     await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
