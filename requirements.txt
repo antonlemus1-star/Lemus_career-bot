@@ -4,3 +4,4 @@ requests
 pypdf
 python-docx
 reportlab==4.2.5
+pymupdf
