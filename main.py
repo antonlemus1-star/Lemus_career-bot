@@ -47,6 +47,8 @@ _working_model = {"name": None}
 HTTP: aiohttp.ClientSession = None
 TASKS = set()
 temp_vacancies = {}
+user_states = {}          # Состояния пользователя (например, ожидания текста вакансии)
+user_adapt_target = {}    # Временное хранение выбранного для адаптации ID резюме
 
 # ---------------- БД ----------------
 conn = sqlite3.connect("tracker.db", check_same_thread=False)
@@ -76,12 +78,10 @@ conn.commit()
 
 
 def register_user(user_id: int, username: str, referrer_id: int = None) -> bool:
-    """Регистрирует пользователя, начисляет 30 запросов по умолчанию. 
-       Если есть реферер и пользователь новый, начисляет бонус обоим."""
     cur.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
     row = cur.fetchone()
     if row:
-        return False  # Пользователь уже существовал
+        return False
 
     if referrer_id == user_id:
         referrer_id = None
@@ -141,6 +141,12 @@ def get_active_resume(user_id: int) -> str:
     return row[0] if row else ""
 
 
+def get_resume_by_id(user_id: int, resume_id: int) -> str:
+    cur.execute("SELECT text FROM resumes WHERE id=? AND user_id=?", (resume_id, user_id))
+    row = cur.fetchone()
+    return row[0] if row else ""
+
+
 def hide_vacancy(user_id: int, vacancy_id: str):
     cur.execute("INSERT OR IGNORE INTO hidden_vacancies (user_id, vacancy_id) VALUES (?, ?)", (user_id, vacancy_id))
     conn.commit()
@@ -165,7 +171,6 @@ def _openai_compat(prompt: str, base: str, key: str, model: str) -> str:
 
 
 def ai_generate(prompt: str):
-    """Возвращает текст или None. Вызывающий ОБЯЗАН проверить результат."""
     if client:
         cands = [_working_model["name"]] if _working_model["name"] else GEMINI_MODEL_CANDIDATES
         for m in cands:
@@ -268,8 +273,10 @@ async def send_telegram(chat_id, text: str, reply_markup=None, parse_mode="Markd
     return result
 
 
-async def http_edit_message_text(chat_id, message_id, text):
+async def http_edit_message_text(chat_id, message_id, text, reply_markup=None):
     payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     async with HTTP.post(f"{TELEGRAM_API}/editMessageText", json=payload) as resp:
         await resp.json()
 
@@ -419,6 +426,30 @@ async def run_vacancy_match(chat_id: int, vac_info: dict):
     await send_telegram(chat_id, f"📊 *Анализ соответствия вакансии:*\n\n{analysis}")
 
 
+async def run_resume_adaptation(chat_id: int, resume_id: int, vacancy_text: str):
+    await send_telegram(chat_id, "🛠 Адаптирую выбранное резюме под указанную вакансию...")
+    resume_text = get_resume_by_id(chat_id, resume_id)
+    if not resume_text:
+        resume_text = get_active_resume(chat_id)
+    
+    if not resume_text:
+        await send_telegram(chat_id, "⚠️ Резюме не найдено! Загрузите файл резюме.")
+        return
+
+    prompt = (
+        f"Перепиши и оптимизируй текст резюме кандидата так, чтобы оно идеально подходило под требования "
+        f"указанной вакансии (выдели ключевые навыки, перефразируй достижения с учетом требований работодателя, "
+        f"сохрани правдивость опыта):\n\n"
+        f"--- ТРЕБОВАНИЯ ВАКАНСИИ ---\n{vacancy_text[:3000]}\n\n"
+        f"--- ИСХОДНОЕ РЕЗЮМЕ ---\n{resume_text[:6000]}"
+    )
+    adapted_text = await asyncio.to_thread(ai_generate, prompt)
+    if not adapted_text:
+        await send_telegram(chat_id, "⚠️ ИИ временно недоступен, не удалось адаптировать резюме.")
+        return
+    await send_telegram(chat_id, f"🛠 *Адаптированное резюме:*\n\n{adapted_text}")
+
+
 async def handle_ai(chat_id: int, is_admin: bool, prompt: str):
     if not spend_balance(chat_id, cost=1):
         await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.", get_keyboard(is_admin))
@@ -500,6 +531,18 @@ async def process_message(msg: dict):
     if not text:
         return
 
+    # Шаг 2 адаптации: пользователь прислал текст вакансии после выбора резюме
+    if user_states.get(chat_id) == "waiting_for_adaptation_vacancy":
+        rid = user_adapt_target.get(chat_id)
+        user_states.pop(chat_id, None)
+        user_adapt_target.pop(chat_id, None)
+
+        if not spend_balance(chat_id, cost=1):
+            await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.", get_keyboard(is_admin))
+            return
+        bg(run_resume_adaptation(chat_id, rid, text))
+        return
+
     if text.startswith("/start"):
         await send_telegram(
             chat_id, 
@@ -531,7 +574,7 @@ async def process_message(msg: dict):
             "  • *Сопроводительное* — генерация персонального письма под конкретную вакансию (тратит 1 запрос).\n"
             "  • *Соответствие* — проверка, насколько ваше резюме подходит к вакансии, и советы по доработке (тратит 1 запрос).\n"
             "  • *Мусор* — скрывает неинтересные вакансии из выдачи.\n"
-            "🛠 *Адаптация резюме* — подстраивает текст вашего резюме под желаемую роль (тратит 1 запрос).\n"
+            "🛠 *Адаптация резюме* — выберите одно из своих резюме, скопируйте и вставьте текст вакансии, и ИИ перепишет его под требования работодателя (тратит 1 запрос).\n"
             "📊 *Анализ навыков (Skill Gap)* — находит пробелы в скиллах для выбранной позиции (тратит 1 запрос).\n"
             "📋 *Аудит резюме* — жесткая критика и профессиональные рекомендации (тратит 1 запрос).\n"
             "🎤 *Тренажер собеседований* — симуляция каверзных вопросов на интервью (тратит 1 запрос).\n"
@@ -540,6 +583,16 @@ async def process_message(msg: dict):
             "💎 *Оплата и Баланс* — проверка остатка запросов и способы пополнения."
         )
         await send_telegram(chat_id, help_text, get_keyboard(is_admin))
+
+    elif text == "🛠 Адаптация резюме":
+        rows = list_resumes(chat_id)
+        if not rows:
+            await send_telegram(chat_id, "⚠️ Сначала загрузите резюме через меню «📥 Загрузить резюме»!", get_keyboard(is_admin))
+            return
+        
+        # Если резюме несколько, предлагаем выбрать через клавиатуру
+        kb = {"inline_keyboard": [[{"text": f"{'✅' if r['active'] else '📄'} {r['name']}", "callback_data": f"adaptsel_{r['id']}"}] for r in rows]}
+        await send_telegram(chat_id, "🛠 *Выберите резюме*, которое хотите адаптировать под вакансию:", kb)
 
     elif text == "💎 Оплата и Баланс":
         balance = get_user_balance(chat_id)
@@ -589,12 +642,10 @@ async def process_message(msg: dict):
 
     else:
         resume = get_active_resume(chat_id)
-        if not resume and ("Адаптация" in text or "Анализ навыков" in text or "Аудит" in text):
+        if not resume and ("Анализ навыков" in text or "Аудит" in text):
             await send_telegram(chat_id, "⚠️ Сначала загрузи резюме!", get_keyboard(is_admin))
             return
-        if "Адаптация" in text:
-            prompt = f"Адаптируй это резюме под позицию руководителя проектов:\n\n{resume}"
-        elif "Анализ навыков" in text:
+        if "Анализ навыков" in text:
             prompt = f"Проведи Skill Gap анализ для руководителя проектов:\n\n{resume}"
         elif "Аудит" in text:
             prompt = f"Сделай жесткий аудит и дай рекомендации по резюме:\n\n{resume}"
@@ -637,6 +688,11 @@ async def telegram_webhook(request):
                 bg(run_vacancy_match(chat_id, dict(v)))
             elif data_str.startswith("act_"):
                 bg(activate_resume(chat_id, data_str[4:]))
+            elif data_str.startswith("adaptsel_"):
+                rid = data_str[9:]
+                user_adapt_target[chat_id] = int(rid)
+                user_states[chat_id] = "waiting_for_adaptation_vacancy"
+                bg(http_edit_message_text(chat_id, message_id, "✅ Резюме выбрано!\n\nТеперь **скопируйте и вставьте текст вакансии** в ответное сообщение."))
             elif data_str.startswith("hide_"):
                 vid = data_str[5:]
                 hide_vacancy(chat_id, vid)
