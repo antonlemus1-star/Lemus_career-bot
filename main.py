@@ -892,7 +892,7 @@ async def main():
             log.info("setWebhook: %s", (await resp.text())[:200])
 
     log.info("🚀 Bot started successfully.")
-    asyncio.Event().wait()
+    await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
