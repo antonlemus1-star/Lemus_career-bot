@@ -23,7 +23,6 @@ if not BOT_TOKEN:
     raise SystemExit("🔴 BOT_TOKEN не задан!")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-OPENROUTER_KEY = os.getenv("OPENROUTER_KEY", "")
 GROQ_KEY = os.getenv("GROQ_KEY", "")
 PORT = int(os.getenv("PORT", "10000"))
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
@@ -36,19 +35,14 @@ GEMINI_MODEL_CANDIDATES = list(dict.fromkeys([
     "gemini-3.5-flash",
     "gemini-3.1-flash-lite",
 ]))
-OPENROUTER_MODELS = [
-    "openai/gpt-oss-20b:free",
-    "google/gemma-4-26b-a4b:free",
-    "openrouter/free",
-]
 GROQ_MODEL = "llama-3.1-8b-instant"
 
 _working_model = {"name": None}
 HTTP: aiohttp.ClientSession = None
 TASKS = set()
 temp_vacancies = {}
-user_states = {}          # Состояния пользователя (например, ожидания текста вакансии)
-user_adapt_target = {}    # Временное хранение выбранного для адаптации ID резюме
+user_states = {}          
+user_adapt_target = {}    
 
 # ---------------- БД ----------------
 conn = sqlite3.connect("tracker.db", check_same_thread=False)
@@ -120,6 +114,17 @@ def spend_balance(user_id: int, cost: int = 1) -> bool:
     return True
 
 
+def admin_add_balance(user_id: int, amount: int) -> int:
+    cur.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, user_id))
+    conn.commit()
+    return get_user_balance(user_id)
+
+
+def admin_set_balance(user_id: int, amount: int):
+    cur.execute("UPDATE users SET balance = ? WHERE user_id=?", (amount, user_id))
+    conn.commit()
+
+
 def add_resume(user_id: int, name: str, text: str):
     cur.execute("UPDATE resumes SET active=0 WHERE user_id=?", (user_id,))
     cur.execute("INSERT INTO resumes (user_id, name, text, active) VALUES (?,?,?,1)",
@@ -157,7 +162,7 @@ def is_vacancy_hidden(user_id: int, vacancy_id: str) -> bool:
     return cur.fetchone() is not None
 
 
-# ---------------- ИИ-слой с фолбэками ----------------
+# ---------------- ИИ-слой с фолбэками (Gemini -> Groq) ----------------
 def _openai_compat(prompt: str, base: str, key: str, model: str) -> str:
     r = requests.post(
         f"{base}/chat/completions",
@@ -184,19 +189,14 @@ def ai_generate(prompt: str):
                     return resp.text
             except Exception as e:
                 log.warning("Gemini %s failed: %s", m, str(e)[:150])
-    if OPENROUTER_KEY:
-        for m in OPENROUTER_MODELS:
-            try:
-                log.info("AI ok: openrouter/%s", m)
-                return _openai_compat(prompt, "https://openrouter.ai/api/v1", OPENROUTER_KEY, m)
-            except Exception as e:
-                log.warning("OpenRouter %s failed: %s", m, str(e)[:150])
+                
     if GROQ_KEY:
         try:
             log.info("AI ok: groq/%s", GROQ_MODEL)
             return _openai_compat(prompt, "https://api.groq.com/openai/v1", GROQ_KEY, GROQ_MODEL)
         except Exception as e:
             log.warning("Groq failed: %s", str(e)[:150])
+            
     return None
 
 
@@ -531,7 +531,35 @@ async def process_message(msg: dict):
     if not text:
         return
 
-    # Шаг 2 адаптации: пользователь прислал текст вакансии после выбора резюме
+    # Админ-команды для управления балансом
+    if is_admin and text.startswith("/add_credits"):
+        parts = text.split()
+        if len(parts) == 3:
+            try:
+                target_id = int(parts[1])
+                amount = int(parts[2])
+                new_bal = admin_add_balance(target_id, amount)
+                await send_telegram(chat_id, f"✅ Пользователю `{target_id}` успешно добавлено запросов ({amount}). Новый баланс: `{new_bal}`")
+            except ValueError:
+                await send_telegram(chat_id, "⚠️ Ошибка в формате. Пример: `/add_credits 123456789 50`")
+        else:
+            await send_telegram(chat_id, "⚠️ Используйте: `/add_credits <user_id> <количество>`")
+        return
+
+    if is_admin and text.startswith("/set_balance"):
+        parts = text.split()
+        if len(parts) == 3:
+            try:
+                target_id = int(parts[1])
+                amount = int(parts[2])
+                admin_set_balance(target_id, amount)
+                await send_telegram(chat_id, f"✅ Пользователю `{target_id}` установлен баланс: `{amount}` запросов.")
+            except ValueError:
+                await send_telegram(chat_id, "⚠️ Ошибка в формате. Пример: `/set_balance 123456789 100`")
+        else:
+            await send_telegram(chat_id, "⚠️ Используйте: `/set_balance <user_id> <количество>`")
+        return
+
     if user_states.get(chat_id) == "waiting_for_adaptation_vacancy":
         rid = user_adapt_target.get(chat_id)
         user_states.pop(chat_id, None)
@@ -590,7 +618,6 @@ async def process_message(msg: dict):
             await send_telegram(chat_id, "⚠️ Сначала загрузите резюме через меню «📥 Загрузить резюме»!", get_keyboard(is_admin))
             return
         
-        # Если резюме несколько, предлагаем выбрать через клавиатуру
         kb = {"inline_keyboard": [[{"text": f"{'✅' if r['active'] else '📄'} {r['name']}", "callback_data": f"adaptsel_{r['id']}"}] for r in rows]}
         await send_telegram(chat_id, "🛠 *Выберите резюме*, которое хотите адаптировать под вакансию:", kb)
 
@@ -616,8 +643,17 @@ async def process_message(msg: dict):
         total = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM resumes")
         resumes = cur.fetchone()[0]
-        await send_telegram(chat_id, f"👑 *Админ-панель*\n\n👥 Пользователей: `{total}`\n📁 Резюме: `{resumes}`",
-                            get_keyboard(is_admin))
+        admin_panel_text = (
+            f"👑 *Админ-панель*\n\n"
+            f"👥 Всего пользователей: `{total}`\n"
+            f"📁 Всего резюме: `{resumes}`\n\n"
+            "⚙️ *Управление балансом пользователей:*\n"
+            "• Добавить бесплатные запросы:\n"
+            "`/add_credits <user_id> <количество>`\n"
+            "• Установить точный баланс (тариф):\n"
+            "`/set_balance <user_id> <количество>`"
+        )
+        await send_telegram(chat_id, admin_panel_text, get_keyboard(is_admin))
 
     elif text == "📁 Мои резюме":
         rows = list_resumes(chat_id)
@@ -710,12 +746,10 @@ def log_startup():
     providers = []
     if GEMINI_API_KEY:
         providers.append("Gemini")
-    if OPENROUTER_KEY:
-        providers.append("OpenRouter")
     if GROQ_KEY:
         providers.append("Groq")
     if providers:
-        log.info("🟢 ИИ-провайдеры активны: %s (%d из 3)", ", ".join(providers), len(providers))
+        log.info("🟢 ИИ-провайдеры активны: %s (%d из 2)", ", ".join(providers), len(providers))
     else:
         log.error("🔴 ВНИМАНИЕ: ни один ИИ-провайдер не настроен!")
     log.info("📋 GEMINI_MODELS=%s", GEMINI_MODEL_CANDIDATES)
