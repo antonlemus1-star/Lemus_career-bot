@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import sqlite3
+import html
 import aiohttp
 import requests
 from aiohttp import web
@@ -360,7 +361,7 @@ def get_keyboard(is_admin=False):
     return {"keyboard": kb, "resize_keyboard": True}
 
 
-# ---------------- hh.ru поиск ----------------
+# ---------------- hh.ru поиск (стабильный гибридный метод) ----------------
 async def hh_api_search(query: str):
     try:
         async with HTTP.get("https://api.hh.ru/vacancies",
@@ -402,7 +403,7 @@ async def hh_scrape_search(query: str):
         return None
 
 
-# ---------------- Фичи ----------------
+# ---------------- Фичи и ИИ-обработка ----------------
 async def handle_search(chat_id: int, is_admin: bool):
     if not spend_balance(chat_id, cost=1):
         await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.", get_keyboard(is_admin))
@@ -410,12 +411,12 @@ async def handle_search(chat_id: int, is_admin: bool):
 
     await send_telegram(chat_id, "🔍 Подбираю вакансии по вашему опыту...")
     
-    queries = ["Руководитель направления", "Руководитель по развитию", "Директор по развитию", "Руководитель проектов"]
+    queries = ["Руководитель проектов", "Руководитель направления", "Директор по развитию"]
     
     items = None
     used_query = ""
     for q in queries:
-        items = await hh_api_search(q) or await hh_scrape_search(q)
+        items = await hh_scrape_search(q) or await hh_api_search(q)
         if items:
             used_query = q
             break
@@ -886,4 +887,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
