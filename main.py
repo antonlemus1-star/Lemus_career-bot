@@ -307,7 +307,7 @@ async def handle_search(chat_id: int, is_admin: bool):
         await send_telegram(chat_id, f"⚠️ Не удалось найти вакансии по запросу «{query}». Попробуй написать должность вручную.", get_keyboard(is_admin))
         return
 
-    # Фильтруем скрытые вакансии
+    # Фильтруем скрытые вакансии (мусор)
     filtered_items = [v for v in items if not is_vacancy_hidden(chat_id, str(v["id"]))]
 
     if not filtered_items:
@@ -321,10 +321,17 @@ async def handle_search(chat_id: int, is_admin: bool):
         name = v.get("name") or "Вакансия"
         comp = v.get("company") or "Компания"
         temp_vacancies[vid] = {"title": name, "employer": comp}
-        markup = {"inline_keyboard": [[
-            {"text": "✍️ Сопроводительное", "callback_data": f"gen_{vid}"},
-            {"text": "🗑 Мусор", "callback_data": f"hide_{vid}"}
-        ]]}
+        
+        # Кнопки под вакансией: Сопроводительное, Соответствие, Мусор
+        markup = {"inline_keyboard": [
+            [
+                {"text": "✍️ Сопроводительное", "callback_data": f"gen_{vid}"},
+                {"text": "📊 Соответствие", "callback_data": f"match_{vid}"}
+            ],
+            [
+                {"text": "🗑 Мусор", "callback_data": f"hide_{vid}"}
+            ]
+        ]}
         await send_telegram(chat_id, f"🏢 *{comp}*\n💼 [{name}]({v.get('url')})", markup)
         await asyncio.sleep(0.2)
 
@@ -341,6 +348,22 @@ async def run_ai_generation(chat_id: int, vac_info: dict):
         await send_telegram(chat_id, "⚠️ ИИ недоступен, письмо не получилось.")
         return
     await send_telegram(chat_id, f"📝 *Сопроводительное письмо:*\n\n{letter}")
+
+
+async def run_vacancy_match(chat_id: int, vac_info: dict):
+    await send_telegram(chat_id, f"📊 Анализирую соответствие вашего резюме вакансии *{vac_info['title']}* в компании *{vac_info['employer']}*...")
+    resume = get_active_resume(chat_id) or "Резюме не найдено."
+    prompt = (
+        f"Проанализируй, насколько резюме кандидата подходит под вакансию '{vac_info['title']}' в компанию '{vac_info['employer']}'. "
+        f"Дай оценку соответствия в процентах, перечисли сильные стороны кандидата для этой роли, "
+        f"а также укажи ключевые пробелы (что нужно исправить или добавить в резюме):\n\n"
+        f"Резюме:\n{resume}"
+    )
+    analysis = await asyncio.to_thread(ai_generate, prompt)
+    if not analysis:
+        await send_telegram(chat_id, "⚠️ ИИ временно недоступен, не удалось провести анализ.")
+        return
+    await send_telegram(chat_id, f"📊 *Анализ соответствия вакансии:*\n\n{analysis}")
 
 
 async def handle_ai(chat_id: int, is_admin: bool, prompt: str):
@@ -416,8 +439,33 @@ async def process_message(msg: dict):
         await send_telegram(chat_id, "👋 Привет! Твой карьерный агент готов к работе.", get_keyboard(is_admin))
 
     elif text == "ℹ️ Помощь":
-        await send_telegram(chat_id, "💡 Загрузи резюме через меню и ищи вакансии. "
-                                     "Все ИИ-функции работают с активным резюме.", get_keyboard(is_admin))
+        help_text = (
+            "ℹ️ *Справка по функционалу бота:*\n\n"
+            "📁 *Мои резюме / Загрузить резюме* — загружайте свои резюме в форматах PDF, DOCX, RTF или TXT, переключайте активные версии.\n"
+            "🔍 *Поиск вакансий* — ИИ автоматически подбирает релевантные вакансии с hh.ru под ваше активное резюме.\n"
+            "  • *Сопроводительное* — генерация персонального письма под конкретную вакансию.\n"
+            "  • *Соответствие* — проверка, насколько ваше резюме подходит к вакансии, и советы по доработке.\n"
+            "  • *Мусор* — скрывает неинтересные вакансии из выдачи.\n"
+            "🛠 *Адаптация резюме* — подстраивает текст вашего резюме под желаемую роль.\n"
+            "📊 *Анализ навыков (Skill Gap)* — находит пробелы в скиллах для выбранной позиции.\n"
+            "📋 *Аудит резюме* — жесткая критика и профессиональные рекомендации.\n"
+            "🎤 *Тренажер собеседований* — симуляция каверзных вопросов на интервью.\n"
+            "📌 *Трекер откликов* — учет отправленных заявок.\n"
+            "💎 *Оплата и Баланс* — пополнение лимита запросов."
+        )
+        await send_telegram(chat_id, help_text, get_keyboard(is_admin))
+
+    elif text == "💎 Оплата и Баланс":
+        balance_text = (
+            "💎 *Оплата и Баланс запросов*\n\n"
+            "В вашем личном кабинете расходуются ИИ-запросы для генерации писем, аудита и поиска.\n\n"
+            "💳 *Как пополнить баланс / докупить запросы:*\n"
+            "1. **Telegram Stars (⭐):** Самый быстрый способ оплаты внутри мессенджера (нажмите кнопку пополнения ниже, если доступно).\n"
+            "2. **Перевод с карты / СБП:** Прямой перевод средств. Для пополнения свяжитесь с администратором: "
+            f"{f'@{ADMIN_ID}' if ADMIN_ID else 'администратором сервиса'}, указав свой ID (`{chat_id}`).\n\n"
+            "После подтверждения перевода баланс запросов будет мгновенно зачислен!"
+        )
+        await send_telegram(chat_id, balance_text, get_keyboard(is_admin))
 
     elif text in ("👑 Админ-панель", "/admin"):
         if not is_admin:
@@ -490,6 +538,9 @@ async def telegram_webhook(request):
             if data_str.startswith("gen_"):
                 v = temp_vacancies.get(data_str[4:], {"title": "Вакансия", "employer": "Компания"})
                 bg(run_ai_generation(chat_id, dict(v)))
+            elif data_str.startswith("match_"):
+                v = temp_vacancies.get(data_str[6:], {"title": "Вакансия", "employer": "Компания"})
+                bg(run_vacancy_match(chat_id, dict(v)))
             elif data_str.startswith("act_"):
                 bg(activate_resume(chat_id, data_str[4:]))
             elif data_str.startswith("hide_"):
