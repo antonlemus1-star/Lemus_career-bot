@@ -531,7 +531,6 @@ async def process_message(msg: dict):
     if not text:
         return
 
-    # Админ-команды для управления балансом
     if is_admin and text.startswith("/add_credits"):
         parts = text.split()
         if len(parts) == 3:
