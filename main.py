@@ -672,7 +672,7 @@ async def run_resume_audit(chat_id: int):
         await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
         return
 
-    await send_telegram(chat_id, "📋 *Провожу C-Level аудит и формирую элитный Word-файл...*")
+    await send_telegram(chat_id, "📋 *Провожу C-Level аудит и формирую обновленный Word-файл...*")
     resume = get_active_resume(chat_id)
     if not resume:
         await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!")
@@ -697,7 +697,7 @@ async def run_resume_audit(chat_id: int):
                 doc.add_paragraph(clean_p)
         stream = io.BytesIO()
         doc.save(stream)
-        await send_document_bytes(chat_id, stream.getvalue(), "C_Level_Resume_Pro.docx", "✅ Ваше элитное резюме (Word).")
+        await send_document_bytes(chat_id, stream.getvalue(), "C_Level_Resume_Pro.docx", "✅ Ваше обновленное резюме (Word).")
     else:
         await send_telegram(chat_id, "⚠️ Ошибка ИИ.")
 
@@ -925,7 +925,8 @@ async def process_message(msg: dict):
     elif text == "ℹ️ Помощь":
         help_text = (
             "ℹ️ *Справка по возможностям карьерного бота:*\n\n"
-            "• 🔍 *Поиск вакансий* — поиск по всему рынку с приоритетным поднятием предложений от топ-компаний (Сбер, Яндекс, МТС, Т-Банк, ВТБ, Альфа и др.).\n"
+            "• 🤖 *Адаптивный ИИ-агент* — бот подстраивается под ваши задачи и обучается на основе выбранных предпочтений.\n"
+            "• 🔍 *Поиск вакансий* — поиск по всему рынку с приоритетным поднятием предложений от топ-компаний (Сбер, Яндекс, МТС, Т-Банк, ВТБ, Альфа и др.). Обязательно пользуйтесь кнопкой **«🗑 Мусор»** для нерелевантных вакансий, чтобы бот точнее настраивал выдачу под вас.\n"
             "• 🛠 *Адаптация резюме* — переработка резюме под требования вакансии. Можно просто отправить ссылку на вакансию hh.ru!\n"
             "• 📊 *Анализ навыков (Skill Gap)* — оценка зон роста и сильных сторон.\n"
             "• 📋 *Аудит резюме* — управленческий разбор профиля.\n"
