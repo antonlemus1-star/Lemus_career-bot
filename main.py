@@ -8,11 +8,11 @@ import sqlite3
 import html
 import aiohttp
 import requests
+import fitz  # PyMuPDF
 from aiohttp import web
 from docx import Document
 from google import genai
 from google.genai import types as gtypes
-from pypdf import PdfReader
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("career_bot")
@@ -24,6 +24,7 @@ if not BOT_TOKEN:
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GROQ_KEY = os.getenv("GROQ_KEY", "")
+OPENROUTER_KEY = os.getenv("OPENROUTER_KEY", "")
 PORT = int(os.getenv("PORT", "10000"))
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
@@ -127,7 +128,6 @@ def get_user_data(user_id: int):
 
 
 def spend_balance(user_id: int, cost: int = 1) -> bool:
-    # У администратора нет лимитов
     if ADMIN_ID != 0 and user_id == ADMIN_ID:
         return True
         
@@ -222,7 +222,7 @@ def get_user_preferences(user_id: int) -> str:
     return ", ".join([r[0] for r in rows])
 
 
-# ---------------- ИИ-слой ----------------
+# ---------------- ИИ-слой (Каскадная защита) ----------------
 def _openai_compat(prompt: str, base: str, key: str, model: str) -> str:
     r = requests.post(
         f"{base}/chat/completions",
@@ -248,14 +248,21 @@ def ai_generate(prompt: str):
                     log.info("AI ok: gemini/%s", m)
                     return resp.text
             except Exception as e:
-                log.warning("Gemini %s failed: %s", m, str(e)[:150])
+                log.warning("Gemini %s failed: %s", m, str(e)[:100])
                 
     if GROQ_KEY:
         try:
             log.info("AI ok: groq/%s", GROQ_MODEL)
             return _openai_compat(prompt, "https://api.groq.com/openai/v1", GROQ_KEY, GROQ_MODEL)
         except Exception as e:
-            log.warning("Groq failed: %s", str(e)[:150])
+            log.warning("Groq failed: %s", str(e)[:100])
+
+    if OPENROUTER_KEY:
+        try:
+            log.info("AI ok: openrouter/qwen")
+            return _openai_compat(prompt, "https://openrouter.ai/api/v1", OPENROUTER_KEY, "qwen/qwen-2.5-7b-instruct:free")
+        except Exception as e:
+            log.warning("OpenRouter failed: %s", str(e)[:100])
             
     return None
 
@@ -274,12 +281,10 @@ def extract_text(path: str, file_name: str) -> str:
     text_content = ""
     try:
         if fn.endswith(".pdf"):
-            reader = PdfReader(path)
+            doc = fitz.open(path)
             pages_text = []
-            for page in reader.pages:
-                t = page.extract_text()
-                if t:
-                    pages_text.append(t)
+            for page in doc:
+                pages_text.append(page.get_text("text"))
             text_content = "\n".join(pages_text)
         elif fn.endswith(".docx"):
             doc = Document(path)
@@ -399,13 +404,12 @@ def get_keyboard(is_admin=False):
     return {"keyboard": kb, "resize_keyboard": True}
 
 
-# ---------------- hh.ru поиск ----------------
+# ---------------- hh.ru поиск и парсинг ----------------
 async def hh_api_search(query: str):
     try:
         async with HTTP.get("https://api.hh.ru/vacancies",
                             params={"text": query, "area": "1", "per_page": "50"},
-                            headers={"User-Agent": "LemusCareerBot/1.0 (career-bot)",
-                                     "HH-User-Agent": "LemusCareerBot/1.0"}) as resp:
+                            headers={"User-Agent": "LemusCareerBot/1.0"}) as resp:
             data = await resp.json()
         items = []
         for i in data.get("items", []):
@@ -439,6 +443,20 @@ async def hh_scrape_search(query: str):
     except Exception as e:
         log.warning("hh scrape failed: %s", str(e)[:150])
         return None
+
+
+async def get_vacancy_details(vacancy_id: str) -> str:
+    try:
+        async with HTTP.get(f"https://api.hh.ru/vacancies/{vacancy_id}",
+                            headers={"User-Agent": "LemusCareerBot/1.0"}) as resp:
+            data = await resp.json()
+            
+        description = re.sub(r'<[^>]+>', '', data.get("description", ""))
+        skills = ", ".join([s.get("name", "") for s in data.get("key_skills", [])])
+        return f"Требования и описание:\n{description}\n\nКлючевые навыки: {skills}"
+    except Exception as e:
+        log.error(f"Failed to fetch vacancy details {vacancy_id}: {e}")
+        return ""
 
 
 # ---------------- Фичи бота ----------------
@@ -585,6 +603,13 @@ async def run_resume_adaptation(chat_id: int, resume_id: int, vacancy_text: str)
         await send_telegram(chat_id, "⚠️ Резюме не найдено! Загрузите файл резюме.")
         return
 
+    match = re.search(r'hh\.ru/vacancy/(\d+)', vacancy_text)
+    if match:
+        vac_id = match.group(1)
+        fetched_text = await get_vacancy_details(vac_id)
+        if fetched_text:
+            vacancy_text = fetched_text
+
     prompt_resume = (
         "Ты — элитный карьерный стратег. Перепиши и оптимизируй резюме кандидата строго под требования вакансии. "
         "Сохрани правдивость фактов (компании, даты), но полностью репозиционируй опыт так, чтобы он закрывал требования вакансии.\n"
@@ -610,7 +635,7 @@ async def run_resume_adaptation(chat_id: int, resume_id: int, vacancy_text: str)
     cover_letter = await asyncio.to_thread(ai_generate, prompt_letter)
 
     if not adapted_text:
-        await send_telegram(chat_id, "⚠️ ИИ недоступен.")
+        await send_telegram(chat_id, "⚠️ ИИ недоступен. Попробуйте еще раз.")
         return
 
     if "---" in adapted_text:
@@ -751,7 +776,6 @@ async def process_message(msg: dict):
     register_user(chat_id, username, referrer_id)
     is_admin = (ADMIN_ID != 0 and chat_id == ADMIN_ID)
 
-    # Обработка ответов администратора через /reply <user_id> <текст>
     if is_admin and text.startswith("/reply"):
         parts = text.split(maxsplit=2)
         if len(parts) >= 3:
@@ -766,7 +790,6 @@ async def process_message(msg: dict):
             await send_telegram(chat_id, "⚠️ Формат: `/reply <user_id> <текст>`")
         return
 
-    # Обработка отправки сообщения обратной связи
     if user_states.get(chat_id) == "waiting_for_feedback":
         user_states.pop(chat_id, None)
         cur.execute("INSERT INTO feedback (user_id, username, message) VALUES (?, ?, ?)", (chat_id, username, text))
@@ -885,7 +908,7 @@ async def process_message(msg: dict):
             await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!", get_keyboard(is_admin))
             return
         kb = {"inline_keyboard": [[{"text": f"📄 {r['name']}", "callback_data": f"adaptsel_{r['id']}"}] for r in rows]}
-        await send_telegram(chat_id, "🛠 *Выберите резюме* для адаптации, генерации файла и сопроводительного письма:", kb)
+        await send_telegram(chat_id, "🛠 *Выберите резюме* для адаптации.\n\nВы можете вставить **полный текст вакансии** ИЛИ просто **скинуть ссылку на hh.ru**, и бот сам все выкачает!", kb)
 
     elif text == "📋 Аудит резюме":
         if not get_active_resume(chat_id):
@@ -902,13 +925,12 @@ async def process_message(msg: dict):
     elif text == "ℹ️ Помощь":
         help_text = (
             "ℹ️ *Справка по возможностям карьерного бота:*\n\n"
-            "• 🔍 *Поиск вакансий* — интеллектуальный поиск по всему рынку с приоритетным поднятием предложений от топ-компаний (Сбер, Яндекс, МТС, Т-Банк, ВТБ, Альфа и др.) с фильтрацией линейного мусора.\n"
-            "• 🛠 *Адаптация резюме* — переработка вашего резюме под конкретные требования выбранной вакансии с мгновенной генерацией чистого файла `.docx`.\n"
-            "• 📊 *Анализ навыков (Skill Gap)* — глубокая оценка сильных сторон, зон роста и матрица компетенций под управленческие роли C-level.\n"
-            "• 📋 *Аудит резюме* — жесткий управленческий разбор профиля и формирование элитного Word-документа.\n"
-            "• 👍 *Обучение на лайках* — бот запоминает выбранные вами вакансии и настраивает выдачу под ваши предпочтения.\n"
-            "• 💬 *Обратная связь* — прямая связь с разработчиком/администратором через форму в боте.\n"
-            "• 💎 *Оплата и Баланс* — гибкие тарифы (пакеты запросов или безлимит на 10 дней) через Telegram Stars или перевод по карте."
+            "• 🔍 *Поиск вакансий* — поиск по всему рынку с приоритетным поднятием предложений от топ-компаний (Сбер, Яндекс, МТС, Т-Банк, ВТБ, Альфа и др.).\n"
+            "• 🛠 *Адаптация резюме* — переработка резюме под требования вакансии. Можно просто отправить ссылку на вакансию hh.ru!\n"
+            "• 📊 *Анализ навыков (Skill Gap)* — оценка зон роста и сильных сторон.\n"
+            "• 📋 *Аудит резюме* — управленческий разбор профиля.\n"
+            "• 💬 *Обратная связь* — связь с администратором.\n"
+            "• 💎 *Оплата и Баланс* — гибкие тарифы через Telegram Stars или перевод по карте."
         )
         await send_telegram(chat_id, help_text, get_keyboard(is_admin))
 
@@ -1009,7 +1031,7 @@ async def telegram_webhook(request):
                 parts = data_str.split("_")
                 target_uid = int(parts[1])
                 admin_set_unlimited(target_uid, 10)
-                await send_telegram(target_uid, "✅ Администратор подтвердил ваш платеж! Активирован безлимит на 10 дней.")
+                await send_telegram(target_uid, f"✅ Администратор подтвердил ваш платеж! Активирован безлимит на 10 дней.")
                 await http_edit_message_text(chat_id, message_id, "✅ Чек одобрен, безлимит активирован.")
             elif data_str.startswith("like_"):
                 vid = data_str[5:]
@@ -1034,7 +1056,7 @@ async def telegram_webhook(request):
                 rid = data_str[9:]
                 user_adapt_target[chat_id] = int(rid)
                 user_states[chat_id] = "waiting_for_adaptation_vacancy"
-                bg(http_edit_message_text(chat_id, message_id, "✅ Резюме выбрано!\n\nТеперь **скопируйте и вставьте текст вакансии** в ответное сообщение."))
+                bg(http_edit_message_text(chat_id, message_id, "✅ Резюме выбрано!\n\nТеперь отправьте мне **текст вакансии** или просто **ссылку на вакансию с hh.ru**."))
             elif data_str.startswith("hide_"):
                 vid = data_str[5:]
                 hide_vacancy(chat_id, vid)
