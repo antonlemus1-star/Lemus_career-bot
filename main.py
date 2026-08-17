@@ -365,7 +365,7 @@ def get_keyboard(is_admin=False):
 async def hh_api_search(query: str):
     try:
         async with HTTP.get("https://api.hh.ru/vacancies",
-                            params={"text": query, "area": "1", "per_page": "20"},
+                            params={"text": query, "area": "1", "per_page": "50"},
                             headers={"User-Agent": "LemusCareerBot/1.0 (career-bot)",
                                      "HH-User-Agent": "LemusCareerBot/1.0"}) as resp:
             data = await resp.json()
@@ -392,7 +392,7 @@ async def hh_scrape_search(query: str):
         data = json.loads(html.unescape(match.group(1)))
         items = (data.get("vacancySearchResult") or {}).get("vacancies") or []
         out = []
-        for it in items[:20]:
+        for it in items:
             vid = it.get("vacancyId") or it.get("id")
             out.append({"id": vid, "name": it.get("name"),
                         "company": (it.get("company") or {}).get("name"),
@@ -403,13 +403,13 @@ async def hh_scrape_search(query: str):
         return None
 
 
-# ---------------- Фичи и Умный поиск с защитой от мусора ----------------
+# ---------------- Поиск по всему рынку с приоритетом топ-компаний ----------------
 async def handle_search(chat_id: int, is_admin: bool):
     if not spend_balance(chat_id, cost=1):
         await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.", get_keyboard(is_admin))
         return
 
-    await send_telegram(chat_id, "🔍 Ищу вакансии управленческого уровня...")
+    await send_telegram(chat_id, "🔍 Ищу вакансии по всему рынку (с приоритетом для топ-компаний)...")
     
     queries = [
         "Руководитель направления", 
@@ -419,42 +419,58 @@ async def handle_search(chat_id: int, is_admin: bool):
         "Руководитель отдела продаж"
     ]
     
-    items = None
-    used_query = ""
+    all_items = []
     for q in queries:
-        items = await hh_scrape_search(q) or await hh_api_search(q)
-        if items:
-            used_query = q
-            break
+        res = await hh_scrape_search(q) or await hh_api_search(q)
+        if res:
+            all_items.extend(res)
 
-    if not items:
+    if not all_items:
         await send_telegram(chat_id, "⚠️ Не удалось найти вакансии. Попробуйте повторить запрос чуть позже.", get_keyboard(is_admin))
         return
 
     stop_words = ["сборщик", "упаковщик", "кассир", "повар", "официант", "курьер", "продавец-консультант", "сотрудник ресторана"]
-    
-    filtered_items = []
-    for v in items:
+    top_companies = ["сбер", "мтс", "яндекс", "т-банк", "тинькофф", "втб", "альфа", "билайн", "мегафон", "ростелеком", "первый бит"]
+
+    unique_items = {}
+    for v in all_items:
         vid = str(v["id"])
+        if vid in unique_items:
+            continue
+            
         name_lower = (v.get("name") or "").lower()
-        
         if any(sw in name_lower for sw in stop_words):
             continue
         if is_vacancy_hidden(chat_id, vid):
             continue
             
-        filtered_items.append(v)
+        unique_items[vid] = v
 
-    if not filtered_items:
-        await send_telegram(chat_id, f"⚠️ Все подходящие вакансии по запросу «{used_query}» скрыты или отфильтрованы.", get_keyboard(is_admin))
+    filtered_list = list(unique_items.values())
+
+    # Сортировка: вакансии топ-компаний поднимаются наверх
+    def sort_priority(item):
+        comp_lower = (item.get("company") or "").lower()
+        is_top = any(tc in comp_lower for tc in top_companies)
+        return (0 if is_top else 1)
+
+    filtered_list.sort(key=sort_priority)
+
+    if not filtered_list:
+        await send_telegram(chat_id, "⚠️ Все подходящие вакансии скрыты или отфильтрованы.", get_keyboard(is_admin))
         return
 
-    await send_telegram(chat_id, f"🔥 Нашел позиций по запросу «{used_query}» (доступно: {len(filtered_items)}):", get_keyboard(is_admin))
-    for v in filtered_items[:15]:
+    await send_telegram(chat_id, f"🔥 Нашел вакансии (вверху списка — предложения от топ-компаний, доступно: {len(filtered_list)}):", get_keyboard(is_admin))
+    
+    for v in filtered_list[:15]:
         vid = str(v["id"])
         name = v.get("name") or "Вакансия"
         comp = v.get("company") or "Компания"
         temp_vacancies[vid] = {"title": name, "employer": comp}
+        
+        comp_lower = comp.lower()
+        is_top = any(tc in comp_lower for tc in top_companies)
+        badge = "⭐ *[ТОП-КОМПАНИЯ]*\n" if is_top else ""
         
         markup = {"inline_keyboard": [
             [
@@ -466,7 +482,7 @@ async def handle_search(chat_id: int, is_admin: bool):
                 {"text": "🗑 Мусор", "callback_data": f"hide_{vid}"}
             ]
         ]}
-        await send_telegram(chat_id, f"🏢 *{comp}*\n💼 [{name}]({v.get('url')})", markup)
+        await send_telegram(chat_id, f"{badge}🏢 *{comp}*\n💼 [{name}]({v.get('url')})", markup)
         await asyncio.sleep(0.2)
 
 
