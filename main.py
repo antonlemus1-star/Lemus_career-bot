@@ -413,27 +413,26 @@ async def handle_search(chat_id: int, is_admin: bool):
     preferences = get_user_preferences(chat_id)
     
     prompt = (
-        "Ты — технический хедхантер высшей квалификации. Проанализируй опыт кандидата (управление B2B-продажами, SaaS, IoT, телеком, цифровые продукты) "
-        "и его понравившиеся вакансии. Сформируй ТОЧНЫЙ профессиональный поисковый запрос для hh.ru (2-4 слова, без кавычек), "
-        "который точно отражает его грейд и деятельность (например: Руководитель направления B2B, Директор по развитию SaaS, Head of Business Development, Руководитель проектов IoT).\n"
-        "Запрещено использовать общие слова вроде 'Руководитель' или 'Директор' без уточнения сферы. Запрос должен отсекать лишний мусор.\n"
+        "Ты — технический хедхантер высшей квалификации. Проанализируй опыт кандидата и его понравившиеся вакансии. "
+        "Сформируй ТОЧНЫЙ профессиональный поисковый запрос для hh.ru (2-3 слова, СТРОГО в Именительном падеже, без кавычек), "
+        "например: Руководитель направления, Директор по развитию, Head of Business Development, Руководитель проектов.\n"
         f"Понравившиеся роли кандидата: {preferences}\n\n"
         f"Резюме: {resume[:3000]}"
     )
     
     query = await asyncio.to_thread(ai_generate, prompt)
     if not query or len(query.strip()) > 50:
-        query = "Руководитель направления B2B"
+        query = "Руководитель проектов"
     query = query.strip().strip('"').strip()
 
     items = await hh_api_search(query) or await hh_scrape_search(query)
     
     if not items:
-        query = "Руководитель по развитию"
+        query = "Руководитель проектов"
         items = await hh_api_search(query) or await hh_scrape_search(query)
 
     if not items:
-        await send_telegram(chat_id, f"⚠️ Не удалось найти вакансии по запросу «{query}». Попробуйте уточнить должность вручную.", get_keyboard(is_admin))
+        await send_telegram(chat_id, "⚠️ Не удалось найти вакансии. Попробуйте обновить резюме или повторить запрос.", get_keyboard(is_admin))
         return
 
     filtered_items = [v for v in items if not is_vacancy_hidden(chat_id, str(v["id"]))]
@@ -441,7 +440,7 @@ async def handle_search(chat_id: int, is_admin: bool):
         await send_telegram(chat_id, f"⚠️ Все найденные вакансии по запросу «{query}» находятся в вашем черном списке.", get_keyboard(is_admin))
         return
 
-    await send_telegram(chat_id, f"🔥 Нашел позиций по профильному запросу «{query}» (доступно: {len(filtered_items)}):", get_keyboard(is_admin))
+    await send_telegram(chat_id, f"🔥 Нашел позиций по запросу «{query}» (доступно: {len(filtered_items)}):", get_keyboard(is_admin))
     for v in filtered_items[:15]:
         vid = str(v["id"])
         name = v.get("name") or "Вакансия"
@@ -893,7 +892,7 @@ async def main():
             log.info("setWebhook: %s", (await resp.text())[:200])
 
     log.info("🚀 Bot started successfully.")
-    await asyncio.Event().wait()
+    asyncio.Event().wait()
 
 
 if __name__ == "__main__":
