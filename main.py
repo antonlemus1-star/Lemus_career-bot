@@ -361,7 +361,7 @@ def get_keyboard(is_admin=False):
     return {"keyboard": kb, "resize_keyboard": True}
 
 
-# ---------------- hh.ru поиск (стабильный гибридный метод) ----------------
+# ---------------- hh.ru поиск ----------------
 async def hh_api_search(query: str):
     try:
         async with HTTP.get("https://api.hh.ru/vacancies",
@@ -403,34 +403,46 @@ async def hh_scrape_search(query: str):
         return None
 
 
-# ---------------- Фичи и ИИ-обработка ----------------
+# ---------------- Фичи и Умный поиск ----------------
 async def handle_search(chat_id: int, is_admin: bool):
     if not spend_balance(chat_id, cost=1):
         await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.", get_keyboard(is_admin))
         return
 
-    await send_telegram(chat_id, "🔍 Подбираю вакансии по вашему опыту...")
+    await send_telegram(chat_id, "🔍 Анализирую ваше резюме и подбираю релевантные позиции...")
+    resume = get_active_resume(chat_id)
+    preferences = get_user_preferences(chat_id)
     
-    queries = ["Руководитель проектов", "Руководитель направления", "Директор по развитию"]
+    prompt = (
+        "Ты — элитный технический хедхантер. Проанализируй текст резюме кандидата (управление направлениями, B2B, SaaS, телеком) "
+        "и историю его понравившихся позиций. Сформируй ОДИН точный профессиональный поисковый запрос для hh.ru (2-3 слова, СТРОГО в Именительном падеже, без кавычек), "
+        "который отражает его управленческий уровень Head / Director (например: Руководитель направления, Директор по развитию, Head of Business Development).\n"
+        "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать общие слова вроде 'менеджер', 'продавец', 'специалист' или 'руководитель' без уточнения сферы, чтобы не выдавать линейный персонал.\n"
+        f"История предпочтений кандидата: {preferences}\n\n"
+        f"Резюме: {resume[:3000]}"
+    )
     
-    items = None
-    used_query = ""
-    for q in queries:
-        items = await hh_scrape_search(q) or await hh_api_search(q)
-        if items:
-            used_query = q
-            break
+    query = await asyncio.to_thread(ai_generate, prompt)
+    if not query or len(query.strip()) > 50:
+        query = "Руководитель направления"
+    query = query.strip().strip('"').strip()
+
+    items = await hh_scrape_search(query) or await hh_api_search(query)
+    
+    if not items:
+        query = "Руководитель по развитию"
+        items = await hh_scrape_search(query) or await hh_api_search(query)
 
     if not items:
-        await send_telegram(chat_id, "⚠️ Не удалось найти вакансии. Попробуйте повторить запрос чуть позже.", get_keyboard(is_admin))
+        await send_telegram(chat_id, f"⚠️ Не удалось найти вакансии по запросу «{query}». Попробуйте обновить резюме.", get_keyboard(is_admin))
         return
 
     filtered_items = [v for v in items if not is_vacancy_hidden(chat_id, str(v["id"]))]
     if not filtered_items:
-        await send_telegram(chat_id, f"⚠️ Все найденные вакансии по запросу «{used_query}» находятся в вашем черном списке.", get_keyboard(is_admin))
+        await send_telegram(chat_id, f"⚠️ Все найденные вакансии по запросу «{query}» находятся в вашем черном списке.", get_keyboard(is_admin))
         return
 
-    await send_telegram(chat_id, f"🔥 Нашел позиций по запросу «{used_query}» (доступно: {len(filtered_items)}):", get_keyboard(is_admin))
+    await send_telegram(chat_id, f"🔥 Нашел позиций по запросу «{query}» (доступно: {len(filtered_items)}):", get_keyboard(is_admin))
     for v in filtered_items[:15]:
         vid = str(v["id"])
         name = v.get("name") or "Вакансия"
@@ -886,4 +898,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.main() if hasattr(asyncio, "main") else asyncio.run(main())
