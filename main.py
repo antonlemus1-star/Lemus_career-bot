@@ -484,18 +484,21 @@ async def run_resume_audit(chat_id: int):
         await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.")
         return
 
-    await send_telegram(chat_id, "📋 *Провожу глубокий аудит резюме...*\n\n1. Анализирую красные флаги и ошибки.\n2. Формирую готовый Word-файл с исправленным текстом.")
+    await send_telegram(chat_id, "📋 *Провожу глубокий аудит и формирую профессиональный файл...*")
     resume = get_active_resume(chat_id)
     if not resume:
         await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!")
         return
 
-    audit_prompt = f"Ты жесткий IT-рекрутер и C-level менеджер. Сделай структурированный и профессиональный аудит резюме.\nУкажи:\n1. Главные Deal-breakers.\n2. Топ-4 красных флага.\n3. Краткий разбор опыта.\n4. Четкий план действий.\n\nОбязательно доведи разбор до логического финала:\n\n{resume[:8000]}"
+    audit_prompt = f"Ты опытный HR-директор крупных холдингов. Сделай жесткий аудит этого резюме. Очни опыт не только в телекоме, но и в бизнесе в целом. Укажи на ошибки позиционирования:\n\n{resume[:8000]}"
     audit_text = await asyncio.to_thread(ai_generate, audit_prompt)
 
     rewrite_prompt = (
-        "Перепиши резюме для Senior позиции. Обязательно добавь навыки: Agile, Jira, Confluence, LTV, CAC, ARPU, SaaS, IoT, M2M, B2B Sales. "
-        "Сохрани структуру (Контакты, Summary, Навыки, Опыт, Образование). Выдай ТОЛЬКО текст без лишних знаков:\n\n"
+        "Перепиши резюме для Senior позиции (Head of Sales / Business Development / Product). "
+        "ОБЯЗАТЕЛЬНО добавь в навыки: Agile, Scrum, Kanban, Jira, Confluence, LTV, CAC, ARPU, Churn Rate, SaaS, IoT, M2M, Enterprise Sales, Revenue Assurance, Financial Planning, P&L management, Team Leadership, Cross-functional communication. "
+        "Усиливай каждое достижение результатами (цифрами, процентами, деньгами). "
+        "Сделай упор на универсальный менеджмент, а не только на узкую отрасль. "
+        "НИКАКИХ звездочек, решеток или декоративных знаков. Выдай только чистый текст:\n\n"
         f"{resume[:8000]}"
     )
     improved_text = await asyncio.to_thread(ai_generate, rewrite_prompt)
@@ -504,14 +507,14 @@ async def run_resume_audit(chat_id: int):
         await send_telegram(chat_id, f"📋 *Результаты аудита резюме:*\n\n{audit_text}")
         doc = Document()
         for p in improved_text.split("\n"):
-            clean_p = p.replace("*", "").replace("#", "")
-            if clean_p.strip():
+            clean_p = re.sub(r'[*#]', '', p).strip()
+            if clean_p:
                 doc.add_paragraph(clean_p)
         stream = io.BytesIO()
         doc.save(stream)
-        await send_document_bytes(chat_id, stream.getvalue(), "Improved_Resume.docx", "✅ Ваше профессиональное резюме.")
+        await send_document_bytes(chat_id, stream.getvalue(), "Improved_Resume_Pro.docx", "✅ Профессиональное резюме готово.")
     else:
-        await send_telegram(chat_id, "⚠️ ИИ недоступен.")
+        await send_telegram(chat_id, "⚠️ Ошибка ИИ.")
 
 
 async def handle_ai(chat_id: int, is_admin: bool, prompt: str):
