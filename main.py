@@ -52,7 +52,12 @@ temp_vacancies = {}
 conn = sqlite3.connect("tracker.db", check_same_thread=False)
 cur = conn.cursor()
 cur.executescript("""
-CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT);
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY, 
+    username TEXT,
+    balance INTEGER DEFAULT 30,
+    referred_by INTEGER
+);
 CREATE TABLE IF NOT EXISTS resumes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -68,6 +73,51 @@ CREATE TABLE IF NOT EXISTS hidden_vacancies (
 );
 """)
 conn.commit()
+
+
+def register_user(user_id: int, username: str, referrer_id: int = None) -> bool:
+    """Регистрирует пользователя, начисляет 30 запросов по умолчанию. 
+       Если есть реферер и пользователь новый, начисляет бонус обоим."""
+    cur.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+    row = cur.fetchone()
+    if row:
+        return False  # Пользователь уже существовал
+
+    if referrer_id == user_id:
+        referrer_id = None
+
+    if referrer_id:
+        cur.execute("SELECT 1 FROM users WHERE user_id=?", (referrer_id,))
+        if not cur.fetchone():
+            referrer_id = None
+
+    initial_balance = 30
+    cur.execute(
+        "INSERT INTO users (user_id, username, balance, referred_by) VALUES (?, ?, ?, ?)",
+        (user_id, username, initial_balance, referrer_id)
+    )
+    conn.commit()
+
+    if referrer_id:
+        cur.execute("UPDATE users SET balance = balance + 30 WHERE user_id=?", (referrer_id,))
+        conn.commit()
+    
+    return True
+
+
+def get_user_balance(user_id: int) -> int:
+    cur.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+    row = cur.fetchone()
+    return row[0] if row else 30
+
+
+def spend_balance(user_id: int, cost: int = 1) -> bool:
+    balance = get_user_balance(user_id)
+    if balance < cost:
+        return False
+    cur.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (cost, user_id))
+    conn.commit()
+    return True
 
 
 def add_resume(user_id: int, name: str, text: str):
@@ -239,7 +289,8 @@ def get_keyboard(is_admin=False):
         [{"text": "🔍 Поиск вакансий"}, {"text": "🛠 Адаптация резюме"}],
         [{"text": "📊 Анализ навыков (Skill Gap)"}, {"text": "📋 Аудит резюме"}],
         [{"text": "🎤 Тренажер собеседований"}, {"text": "📌 Трекер откликов"}],
-        [{"text": "💎 Оплата и Баланс"}, {"text": "ℹ️ Помощь"}],
+        [{"text": "👥 Пригласить друга"}, {"text": "💎 Оплата и Баланс"}],
+        [{"text": "ℹ️ Помощь"}],
     ]
     if is_admin:
         kb.append([{"text": "👑 Админ-панель"}])
@@ -290,6 +341,10 @@ async def hh_scrape_search(query: str):
 
 # ---------------- Фичи ----------------
 async def handle_search(chat_id: int, is_admin: bool):
+    if not spend_balance(chat_id, cost=1):
+        await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.", get_keyboard(is_admin))
+        return
+
     await send_telegram(chat_id, "🔍 Анализирую резюме и подбираю вакансии...")
     resume = get_active_resume(chat_id)
     
@@ -307,7 +362,6 @@ async def handle_search(chat_id: int, is_admin: bool):
         await send_telegram(chat_id, f"⚠️ Не удалось найти вакансии по запросу «{query}». Попробуй написать должность вручную.", get_keyboard(is_admin))
         return
 
-    # Фильтруем скрытые вакансии (мусор)
     filtered_items = [v for v in items if not is_vacancy_hidden(chat_id, str(v["id"]))]
 
     if not filtered_items:
@@ -322,7 +376,6 @@ async def handle_search(chat_id: int, is_admin: bool):
         comp = v.get("company") or "Компания"
         temp_vacancies[vid] = {"title": name, "employer": comp}
         
-        # Кнопки под вакансией: Сопроводительное, Соответствие, Мусор
         markup = {"inline_keyboard": [
             [
                 {"text": "✍️ Сопроводительное", "callback_data": f"gen_{vid}"},
@@ -367,6 +420,10 @@ async def run_vacancy_match(chat_id: int, vac_info: dict):
 
 
 async def handle_ai(chat_id: int, is_admin: bool, prompt: str):
+    if not spend_balance(chat_id, cost=1):
+        await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.", get_keyboard(is_admin))
+        return
+
     await send_telegram(chat_id, "⏳ Думаю над ответом...")
     answer = await asyncio.to_thread(ai_generate, prompt)
     if not answer:
@@ -425,8 +482,16 @@ async def process_message(msg: dict):
     text = (msg.get("text") or "").strip()
     document = msg.get("document")
 
-    cur.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (chat_id, username))
-    conn.commit()
+    referrer_id = None
+    if text.startswith("/start"):
+        parts = text.split()
+        if len(parts) > 1:
+            try:
+                referrer_id = int(parts[1])
+            except ValueError:
+                pass
+
+    register_user(chat_id, username, referrer_id)
     is_admin = ADMIN_ID != 0 and chat_id == ADMIN_ID
 
     if document:
@@ -436,32 +501,55 @@ async def process_message(msg: dict):
         return
 
     if text.startswith("/start"):
-        await send_telegram(chat_id, "👋 Привет! Твой карьерный агент готов к работе.", get_keyboard(is_admin))
+        await send_telegram(
+            chat_id, 
+            "👋 Привет! Твой карьерный агент готов к работе.\n\n"
+            "🎁 Вам начислено *30 приветственных запросов*!\n"
+            "Приглашайте друзей через кнопку «👥 Пригласить друга» и получайте по 30 запросов за каждого участника.", 
+            get_keyboard(is_admin)
+        )
+
+    elif text == "👥 Пригласить друга":
+        bot_info = await HTTP.get(f"{TELEGRAM_API}/getMe")
+        bot_data = await bot_info.json()
+        bot_username = bot_data.get("result", {}).get("username", "bot")
+        ref_link = f"https://t.me/{bot_username}?start={chat_id}"
+        
+        ref_text = (
+            "👥 *Реферальная система «Приведи друга»*\n\n"
+            "Поделитесь своей ссылкой с друзьями. Как только друг перейдет по ней и запустит бота, "
+            "**и вы, и он получите по 30 бесплатных запросов**!\n\n"
+            f"🔗 Ваша реферальная ссылка:\n`{ref_link}`"
+        )
+        await send_telegram(chat_id, ref_text, get_keyboard(is_admin))
 
     elif text == "ℹ️ Помощь":
         help_text = (
             "ℹ️ *Справка по функционалу бота:*\n\n"
             "📁 *Мои резюме / Загрузить резюме* — загружайте свои резюме в форматах PDF, DOCX, RTF или TXT, переключайте активные версии.\n"
-            "🔍 *Поиск вакансий* — ИИ автоматически подбирает релевантные вакансии с hh.ru под ваше активное резюме.\n"
-            "  • *Сопроводительное* — генерация персонального письма под конкретную вакансию.\n"
-            "  • *Соответствие* — проверка, насколько ваше резюме подходит к вакансии, и советы по доработке.\n"
+            "🔍 *Поиск вакансий* — ИИ автоматически подбирает релевантные вакансии с hh.ru под ваше активное резюме (тратит 1 запрос).\n"
+            "  • *Сопроводительное* — генерация персонального письма под конкретную вакансию (тратит 1 запрос).\n"
+            "  • *Соответствие* — проверка, насколько ваше резюме подходит к вакансии, и советы по доработке (тратит 1 запрос).\n"
             "  • *Мусор* — скрывает неинтересные вакансии из выдачи.\n"
-            "🛠 *Адаптация резюме* — подстраивает текст вашего резюме под желаемую роль.\n"
-            "📊 *Анализ навыков (Skill Gap)* — находит пробелы в скиллах для выбранной позиции.\n"
-            "📋 *Аудит резюме* — жесткая критика и профессиональные рекомендации.\n"
-            "🎤 *Тренажер собеседований* — симуляция каверзных вопросов на интервью.\n"
+            "🛠 *Адаптация резюме* — подстраивает текст вашего резюме под желаемую роль (тратит 1 запрос).\n"
+            "📊 *Анализ навыков (Skill Gap)* — находит пробелы в скиллах для выбранной позиции (тратит 1 запрос).\n"
+            "📋 *Аудит резюме* — жесткая критика и профессиональные рекомендации (тратит 1 запрос).\n"
+            "🎤 *Тренажер собеседований* — симуляция каверзных вопросов на интервью (тратит 1 запрос).\n"
             "📌 *Трекер откликов* — учет отправленных заявок.\n"
-            "💎 *Оплата и Баланс* — пополнение лимита запросов."
+            "👥 *Пригласить друга* — реферальная программа (+30 запросов вам и другу).\n"
+            "💎 *Оплата и Баланс* — проверка остатка запросов и способы пополнения."
         )
         await send_telegram(chat_id, help_text, get_keyboard(is_admin))
 
     elif text == "💎 Оплата и Баланс":
+        balance = get_user_balance(chat_id)
         balance_text = (
-            "💎 *Оплата и Баланс запросов*\n\n"
-            "В вашем личном кабинете расходуются ИИ-запросы для генерации писем, аудита и поиска.\n\n"
-            "💳 *Как пополнить баланс / докупить запросы:*\n"
-            "1. **Telegram Stars (⭐):** Самый быстрый способ оплаты внутри мессенджера (нажмите кнопку пополнения ниже, если доступно).\n"
-            "2. **Перевод с карты / СБП:** Прямой перевод средств. Для пополнения свяжитесь с администратором: "
+            f"💎 *Оплата и Баланс запросов*\n\n"
+            f"📊 Ваш текущий баланс: `{balance} запросов`\n\n"
+            "💳 *Как пополнить баланс:*\n"
+            "1. **Реферальная программа:** Нажмите «👥 Пригласить друга» и получайте по **30 запросов** за каждого приглашенного.\n"
+            "2. **Telegram Stars (⭐):** Оплата внутренней валютой Telegram.\n"
+            "3. **Перевод с карты / СБП:** Прямой перевод средств. Для пополнения свяжитесь с администратором: "
             f"{f'@{ADMIN_ID}' if ADMIN_ID else 'администратором сервиса'}, указав свой ID (`{chat_id}`).\n\n"
             "После подтверждения перевода баланс запросов будет мгновенно зачислен!"
         )
@@ -536,9 +624,15 @@ async def telegram_webhook(request):
         bg(answer_callback(cb.get("id", "")))
         if chat_id:
             if data_str.startswith("gen_"):
+                if not spend_balance(chat_id, cost=1):
+                    await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.")
+                    return
                 v = temp_vacancies.get(data_str[4:], {"title": "Вакансия", "employer": "Компания"})
                 bg(run_ai_generation(chat_id, dict(v)))
             elif data_str.startswith("match_"):
+                if not spend_balance(chat_id, cost=1):
+                    await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.")
+                    return
                 v = temp_vacancies.get(data_str[6:], {"title": "Вакансия", "employer": "Компания"})
                 bg(run_vacancy_match(chat_id, dict(v)))
             elif data_str.startswith("act_"):
