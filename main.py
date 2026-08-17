@@ -61,6 +61,11 @@ CREATE TABLE IF NOT EXISTS resumes (
     active INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS hidden_vacancies (
+    user_id INTEGER,
+    vacancy_id TEXT,
+    PRIMARY KEY (user_id, vacancy_id)
+);
 """)
 conn.commit()
 
@@ -84,6 +89,16 @@ def get_active_resume(user_id: int) -> str:
         cur.execute("SELECT text FROM resumes WHERE user_id=? ORDER BY id DESC LIMIT 1", (user_id,))
         row = cur.fetchone()
     return row[0] if row else ""
+
+
+def hide_vacancy(user_id: int, vacancy_id: str):
+    cur.execute("INSERT OR IGNORE INTO hidden_vacancies (user_id, vacancy_id) VALUES (?, ?)", (user_id, vacancy_id))
+    conn.commit()
+
+
+def is_vacancy_hidden(user_id: int, vacancy_id: str) -> bool:
+    cur.execute("SELECT 1 FROM hidden_vacancies WHERE user_id=? AND vacancy_id=?", (user_id, vacancy_id))
+    return cur.fetchone() is not None
 
 
 # ---------------- ИИ-слой с фолбэками ----------------
@@ -203,6 +218,12 @@ async def send_telegram(chat_id, text: str, reply_markup=None, parse_mode="Markd
     return result
 
 
+async def http_edit_message_text(chat_id, message_id, text):
+    payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
+    async with HTTP.post(f"{TELEGRAM_API}/editMessageText", json=payload) as resp:
+        await resp.json()
+
+
 async def answer_callback(cb_id: str):
     try:
         async with HTTP.post(f"{TELEGRAM_API}/answerCallbackQuery",
@@ -286,14 +307,24 @@ async def handle_search(chat_id: int, is_admin: bool):
         await send_telegram(chat_id, f"⚠️ Не удалось найти вакансии по запросу «{query}». Попробуй написать должность вручную.", get_keyboard(is_admin))
         return
 
-    await send_telegram(chat_id, f"🔥 Нашел позиций по запросу «{query}»: {len(items)}. Вывожу первые 15:",
+    # Фильтруем скрытые вакансии
+    filtered_items = [v for v in items if not is_vacancy_hidden(chat_id, str(v["id"]))]
+
+    if not filtered_items:
+        await send_telegram(chat_id, f"⚠️ Все найденные вакансии по запросу «{query}» находятся в вашем черном списке.", get_keyboard(is_admin))
+        return
+
+    await send_telegram(chat_id, f"🔥 Нашел позиций по запросу «{query}» (доступно: {len(filtered_items)}):",
                         get_keyboard(is_admin))
-    for v in items[:15]:
+    for v in filtered_items[:15]:
         vid = str(v["id"])
         name = v.get("name") or "Вакансия"
         comp = v.get("company") or "Компания"
         temp_vacancies[vid] = {"title": name, "employer": comp}
-        markup = {"inline_keyboard": [[{"text": "✍️ Сопроводительное письмо", "callback_data": f"gen_{vid}"}]]}
+        markup = {"inline_keyboard": [[
+            {"text": "✍️ Сопроводительное", "callback_data": f"gen_{vid}"},
+            {"text": "🗑 Мусор", "callback_data": f"hide_{vid}"}
+        ]]}
         await send_telegram(chat_id, f"🏢 *{comp}*\n💼 [{name}]({v.get('url')})", markup)
         await asyncio.sleep(0.2)
 
@@ -452,6 +483,7 @@ async def telegram_webhook(request):
     if "callback_query" in data:
         cb = data["callback_query"]
         chat_id = (cb.get("message") or {}).get("chat", {}).get("id")
+        message_id = (cb.get("message") or {}).get("message_id")
         data_str = cb.get("data", "") or ""
         bg(answer_callback(cb.get("id", "")))
         if chat_id:
@@ -460,6 +492,10 @@ async def telegram_webhook(request):
                 bg(run_ai_generation(chat_id, dict(v)))
             elif data_str.startswith("act_"):
                 bg(activate_resume(chat_id, data_str[4:]))
+            elif data_str.startswith("hide_"):
+                vid = data_str[5:]
+                hide_vacancy(chat_id, vid)
+                bg(http_edit_message_text(chat_id, message_id, "🗑 Вакансия помечена как мусор и больше не будет показываться."))
         return web.Response(text="OK")
 
     if "message" in data:
