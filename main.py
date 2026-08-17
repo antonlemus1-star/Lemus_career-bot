@@ -12,10 +12,6 @@ from docx import Document
 from google import genai
 from google.genai import types as gtypes
 from pypdf import PdfReader
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib import colors
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("career_bot")
@@ -345,29 +341,6 @@ def get_keyboard(is_admin=False):
     return {"keyboard": kb, "resize_keyboard": True}
 
 
-# ---------------- PDF Генератор по структуре hh.ru ----------------
-def generate_hh_pdf(text_content: str) -> bytes:
-    stream = io.BytesIO()
-    doc = SimpleDocTemplate(stream, pagesize=letter, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
-    styles = getSampleStyleSheet()
-    normal_style = ParagraphStyle('HHNormal', parent=styles['Normal'], fontSize=10, leading=14, textColor=colors.HexColor('#333333'))
-    title_style = ParagraphStyle('HHTitle', parent=styles['Heading1'], fontSize=13, leading=17, spaceAfter=8, textColor=colors.HexColor('#111111'))
-
-    story = []
-    for line in text_content.split('\n'):
-        line = line.strip()
-        if not line:
-            story.append(Spacer(1, 6))
-            continue
-        if line.isupper() or line.startswith(('#', 'Желаемая', 'Контакты', 'Summary', 'Опыт', 'Навыки', 'Образование')):
-            story.append(Paragraph(line.replace('#', ''), title_style))
-        else:
-            story.append(Paragraph(line, normal_style))
-    
-    doc.build(story)
-    return stream.getvalue()
-
-
 # ---------------- hh.ru поиск ----------------
 async def hh_api_search(query: str):
     try:
@@ -486,40 +459,63 @@ async def run_vacancy_match(chat_id: int, vac_info: dict):
 
 
 async def run_resume_adaptation(chat_id: int, resume_id: int, vacancy_text: str):
-    await send_telegram(chat_id, "🛠 *Адаптирую резюме под специфику вакансии и генерирую PDF...*")
+    await send_telegram(chat_id, "🛠 *Адаптирую резюме под специфику вакансии и генерирую готовый DOCX файл...*")
     resume_text = get_resume_by_id(chat_id, resume_id) or get_active_resume(chat_id)
     
     if not resume_text:
         await send_telegram(chat_id, "⚠️ Резюме не найдено! Загрузите файл резюме.")
         return
 
-    prompt = (
+    # 1. Запрос на адаптацию текста резюме
+    prompt_resume = (
         "Ты — элитный карьерный стратег. Перепиши и оптимизируй резюме кандидата строго под требования вакансии. "
-        "Сохрани правдивость фактов (компании, даты), но полностью репозиционируй опыт так, чтобы он закрывал требования вакансии.\n"
-        "Сформируй резюме строго по структуре hh.ru:\n"
-        "1. Желаемая должность\n2. Контакты\n3. Summary\n4. Ключевые навыки\n5. Опыт работы\n6. Образование\n\n"
+        "Сохрани правдивость фактов (компании, даты), но полностью репозиционируй опыт так, чтобы он идеально закрывал требования вакансии.\n"
+        "Сформируй резюме строго по структуре: Контакты, Summary, Навыки, Опыт работы, Образование.\n\n"
         f"--- ТРЕБОВАНИЯ ВАКАНСИИ ---\n{vacancy_text[:3000]}\n\n"
         f"--- ИСХОДНОЕ РЕЗЮМЕ КАНДИДАТА ---\n{resume_text[:6000]}"
     )
-    adapted_text = await asyncio.to_thread(ai_generate, prompt)
-    if not adapted_text:
-        await send_telegram(chat_id, "⚠️ ИИ временно недоступен.")
-        return
-    
-    await send_telegram(chat_id, f"🛠 *Адаптированное резюме:*\n\n{adapted_text}")
+    adapted_text = await asyncio.to_thread(ai_generate, prompt_resume)
 
+    # 2. Запрос на генерацию короткого мощного сопроводительного письма
+    prompt_letter = (
+        "Напиши короткое, емкое и профессиональное сопроводительное письмо к этой вакансии от лица кандидата. "
+        "Письмо должно быть выдержано в деловом стиле C-level, подчеркивать релевантный управленческий опыт и достижения, "
+        "без воды и штампов (до 1000 знаков).\n\n"
+        f"--- ТРЕБОВАНИЯ ВАКАНСИИ ---\n{vacancy_text[:2000]}\n\n"
+        f"--- РЕЗЮМЕ КАНДИДАТА ---\n{resume_text[:4000]}"
+    )
+    cover_letter = await asyncio.to_thread(ai_generate, prompt_letter)
+
+    if not adapted_text:
+        await send_telegram(chat_id, "⚠️ ИИ недоступен, не удалось адаптировать резюме.")
+        return
+
+    # Отправляем сопроводительное письмо отдельным сообщением
+    if cover_letter:
+        await send_telegram(chat_id, f"📝 *Готовое сопроводительное письмо для работодателя:*\n\n{cover_letter}")
+
+    # Создаем чистый Word-документ (.docx) для отправки работодателю
     try:
-        pdf_bytes = generate_hh_pdf(adapted_text)
+        doc = Document()
+        for p in adapted_text.split("\n"):
+            clean_p = re.sub(r'[*#]', '', p).strip()
+            if clean_p:
+                doc.add_paragraph(clean_p)
+        
+        stream = io.BytesIO()
+        doc.save(stream)
+        file_bytes = stream.getvalue()
+
         await send_document_bytes(
             chat_id, 
-            pdf_bytes, 
-            filename="Adapted_Resume_HH.pdf", 
-            caption="📄 *Ваше адаптированное резюме в формате PDF (структура hh.ru)*",
-            content_type="application/pdf"
+            file_bytes, 
+            filename="Adapted_Resume.docx", 
+            caption="📄 *Ваше адаптированное резюме (формат DOCX, готов к отправке работодателю)*",
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
     except Exception as e:
-        log.error("PDF generation failed: %s", e)
-        await send_telegram(chat_id, "⚠️ Текст успешно адаптирован, но при формировании PDF произошла ошибка.")
+        log.error("DOCX generation failed: %s", e)
+        await send_telegram(chat_id, "⚠️ Текст успешно адаптирован, но при формировании файла произошла ошибка.")
 
 
 async def run_resume_audit(chat_id: int):
@@ -716,7 +712,7 @@ async def process_message(msg: dict):
             await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!", get_keyboard(is_admin))
             return
         kb = {"inline_keyboard": [[{"text": f"📄 {r['name']}", "callback_data": f"adaptsel_{r['id']}"}] for r in rows]}
-        await send_telegram(chat_id, "🛠 *Выберите резюме* для адаптации и генерации PDF:", kb)
+        await send_telegram(chat_id, "🛠 *Выберите резюме* для адаптации, генерации PDF и сопроводительного письма:", kb)
 
     elif text == "📋 Аудит резюме":
         if not get_active_resume(chat_id):
@@ -828,7 +824,7 @@ async def telegram_webhook(request):
                 user_adapt_target[chat_id] = int(rid)
                 user_states[chat_id] = "waiting_for_adaptation_vacancy"
                 bg(http_edit_message_text(chat_id, message_id, "✅ Резюме выбрано!\n\nТеперь **скопируйте и вставьте текст вакансии** в ответное сообщение."))
-            elif data_str.startswith("hide_"):
+            elif data_str.startswith("hide_", 0):
                 vid = data_str[5:]
                 hide_vacancy(chat_id, vid)
                 bg(http_edit_message_text(chat_id, message_id, "🗑 Вакансия скрыта."))
