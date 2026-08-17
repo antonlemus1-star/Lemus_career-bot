@@ -408,28 +408,32 @@ async def handle_search(chat_id: int, is_admin: bool):
         await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.", get_keyboard(is_admin))
         return
 
-    await send_telegram(chat_id, "🔍 Анализирую ваш опыт, деятельность и историю предпочтений...")
+    await send_telegram(chat_id, "🔍 Анализирую ваш опыт, ключевые компетенции и историю предпочтений...")
     resume = get_active_resume(chat_id)
     preferences = get_user_preferences(chat_id)
     
     prompt = (
-        "Ты — элитный карьерный консультант. Проанализируй реальный опыт кандидата в резюме (управление направлениями, развитие бизнеса, B2B, SaaS, телеком) "
-        "и историю его понравившихся позиций. На основе ВСЕЙ его деятельности составь ТОЛЬКО ОДИН наиболее эффективный и широкий поисковый запрос для hh.ru (2-4 слова, без кавычек), "
-        "который отражает его уровень Head / Director (например: Руководитель по развитию, Head of Business Development, Руководитель направления).\n"
-        "Не зацикливайся на узком 'Руководитель отдела продаж', если опыт шире.\n"
-        f"История понравившихся ролей: {preferences}\n\n"
+        "Ты — технический хедхантер высшей квалификации. Проанализируй опыт кандидата (управление B2B-продажами, SaaS, IoT, телеком, цифровые продукты) "
+        "и его понравившиеся вакансии. Сформируй ТОЧНЫЙ профессиональный поисковый запрос для hh.ru (2-4 слова, без кавычек), "
+        "который точно отражает его грейд и деятельность (например: Руководитель направления B2B, Директор по развитию SaaS, Head of Business Development, Руководитель проектов IoT).\n"
+        "Запрещено использовать общие слова вроде 'Руководитель' или 'Директор' без уточнения сферы. Запрос должен отсекать лишний мусор.\n"
+        f"Понравившиеся роли кандидата: {preferences}\n\n"
         f"Резюме: {resume[:3000]}"
     )
     
     query = await asyncio.to_thread(ai_generate, prompt)
     if not query or len(query.strip()) > 50:
-        await send_telegram(chat_id, "⚠️ Не удалось автоматически подобрать запрос. Напиши, какую должность ты ищешь?", get_keyboard(is_admin))
-        return
+        query = "Руководитель направления B2B"
     query = query.strip().strip('"').strip()
 
     items = await hh_api_search(query) or await hh_scrape_search(query)
+    
     if not items:
-        await send_telegram(chat_id, f"⚠️ Не удалось найти вакансии по запросу «{query}». Попробуй написать должность вручную.", get_keyboard(is_admin))
+        query = "Руководитель по развитию"
+        items = await hh_api_search(query) or await hh_scrape_search(query)
+
+    if not items:
+        await send_telegram(chat_id, f"⚠️ Не удалось найти вакансии по запросу «{query}». Попробуйте уточнить должность вручную.", get_keyboard(is_admin))
         return
 
     filtered_items = [v for v in items if not is_vacancy_hidden(chat_id, str(v["id"]))]
@@ -437,7 +441,7 @@ async def handle_search(chat_id: int, is_admin: bool):
         await send_telegram(chat_id, f"⚠️ Все найденные вакансии по запросу «{query}» находятся в вашем черном списке.", get_keyboard(is_admin))
         return
 
-    await send_telegram(chat_id, f"🔥 Нашел позиций по запросу «{query}» (доступно: {len(filtered_items)}):", get_keyboard(is_admin))
+    await send_telegram(chat_id, f"🔥 Нашел позиций по профильному запросу «{query}» (доступно: {len(filtered_items)}):", get_keyboard(is_admin))
     for v in filtered_items[:15]:
         vid = str(v["id"])
         name = v.get("name") or "Вакансия"
