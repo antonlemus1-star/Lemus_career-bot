@@ -484,27 +484,35 @@ async def run_resume_audit(chat_id: int):
         await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.")
         return
 
-    await send_telegram(chat_id, "📋 *Провожу глубокий аудит и формирую профессиональный файл...*")
+    await send_telegram(chat_id, "📋 *Провожу C-Level аудит и формирую элитное резюме...*")
     resume = get_active_resume(chat_id)
     if not resume:
         await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!")
         return
 
-    audit_prompt = f"Ты опытный HR-директор крупных холдингов. Сделай жесткий аудит этого резюме. Очни опыт не только в телекоме, но и в бизнесе в целом. Укажи на ошибки позиционирования:\n\n{resume[:8000]}"
+    # Элитный C-Level разбор для чата
+    audit_prompt = (
+        "Ты опытный HRD и управляющий партнер консалтингового агентства. Сделай жесткий, глубокий и беспощадный аудит этого резюме с позиции C-level. "
+        "Оцени опыт с точки зрения бизнес-результатов, масштаба, юнит-экономики и рисков для нанимающего директора (job-hopping, позиционирование). "
+        "Пиши аргументированно, без воды, в стиле дорогого карьерного консультанта:\n\n"
+        f"{resume[:8000]}"
+    )
     audit_text = await asyncio.to_thread(ai_generate, audit_prompt)
 
+    # Генерация элитного текста для DOCX файла
     rewrite_prompt = (
-        "Перепиши резюме для Senior позиции (Head of Sales / Business Development / Product). "
-        "ОБЯЗАТЕЛЬНО добавь в навыки: Agile, Scrum, Kanban, Jira, Confluence, LTV, CAC, ARPU, Churn Rate, SaaS, IoT, M2M, Enterprise Sales, Revenue Assurance, Financial Planning, P&L management, Team Leadership, Cross-functional communication. "
-        "Усиливай каждое достижение результатами (цифрами, процентами, деньгами). "
-        "Сделай упор на универсальный менеджмент, а не только на узкую отрасль. "
-        "НИКАКИХ звездочек, решеток или декоративных знаков. Выдай только чистый текст:\n\n"
+        "Перепиши это резюме для позиций уровня Head of Sales / Business Development / Commercial Director в крупном бизнесе (IT, SaaS, Enterprise). "
+        "Текст должен звучать языком Совета директоров и P&L. Убери всю мелкую операционку (вроде написания скриптов или воркшопов). "
+        "Преврати каждую задачу в стратегическое достижение (рост маржинальности, масштабирование каналов, оптимизация юнит-экономики, управление P&L). "
+        "В блок 'Навыки' обязательно структурированно включи: P&L Management, Go-to-Market Strategy, Sales Operations, Cross-functional Leadership, Digital Transformation, LTV, CAC, ARPU, Churn Rate, Agile, Scrum, Kanban, Jira, Confluence, Enterprise Sales. "
+        "Сохрани строгую структуру (Контакты, Summary, Навыки, Опыт работы, Образование). "
+        "НИКАКИХ звездочек (*), решеток (#) или декоративных знаков. Выдай ТОЛЬКО чистый текст:\n\n"
         f"{resume[:8000]}"
     )
     improved_text = await asyncio.to_thread(ai_generate, rewrite_prompt)
 
     if audit_text and improved_text:
-        await send_telegram(chat_id, f"📋 *Результаты аудита резюме:*\n\n{audit_text}")
+        await send_telegram(chat_id, f"📋 *C-Level Аудит резюме:*\n\n{audit_text}")
         doc = Document()
         for p in improved_text.split("\n"):
             clean_p = re.sub(r'[*#]', '', p).strip()
@@ -512,7 +520,7 @@ async def run_resume_audit(chat_id: int):
                 doc.add_paragraph(clean_p)
         stream = io.BytesIO()
         doc.save(stream)
-        await send_document_bytes(chat_id, stream.getvalue(), "Improved_Resume_Pro.docx", "✅ Профессиональное резюме готово.")
+        await send_document_bytes(chat_id, stream.getvalue(), "C_Level_Resume_Pro.docx", "✅ Ваше элитное резюме готово.")
     else:
         await send_telegram(chat_id, "⚠️ Ошибка ИИ.")
 
@@ -657,7 +665,7 @@ async def process_message(msg: dict):
             "  • *Мусор* — скрывает вакансию из выдачи.\n"
             "🛠 *Адаптация резюме* — переработка выбранного резюме под текст вакансии (1 запрос).\n"
             "📊 *Анализ навыков (Skill Gap)* — выявление пробелов в навыках (1 запрос).\n"
-            "📋 *Аудит резюме* — жесткая критика в чате и формирование готового Word-файла (.docx) с улучшениями (1 запрос).\n"
+            "📋 *Аудит резюме* — глубокий C-Level разбор в чате и формирование элитного Word-файла (.docx) (1 запрос).\n"
             "🎤 *Тренажер собеседований* — симуляция каверзных вопросов (1 запрос).\n"
             "📌 *Трекер откликов* — учет отправленных заявок.\n"
             "💎 *Оплата и Баланс* — проверка остатка запросов и способы пополнения."
