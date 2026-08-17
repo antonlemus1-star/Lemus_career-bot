@@ -52,6 +52,9 @@ CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY, 
     username TEXT,
     balance INTEGER DEFAULT 30,
+    unlimited_until TIMESTAMP,
+    daily_count INTEGER DEFAULT 0,
+    last_active_date TEXT,
     referred_by INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -108,14 +111,48 @@ def register_user(user_id: int, username: str, referrer_id: int = None) -> bool:
     return True
 
 
-def get_user_balance(user_id: int) -> int:
-    cur.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+def get_user_data(user_id: int):
+    cur.execute("SELECT balance, unlimited_until, daily_count, last_active_date FROM users WHERE user_id=?", (user_id,))
     row = cur.fetchone()
-    return row[0] if row else 30
+    if not row:
+        return {"balance": 30, "unlimited_until": None, "daily_count": 0, "last_active_date": ""}
+    return {"balance": row[0], "unlimited_until": row[1], "daily_count": row[2], "last_active_date": row[3]}
 
 
 def spend_balance(user_id: int, cost: int = 1) -> bool:
-    balance = get_user_balance(user_id)
+    # У администратора нет лимитов
+    if ADMIN_ID != 0 and user_id == ADMIN_ID:
+        return True
+        
+    data = get_user_data(user_id)
+    today = str(asyncio.get_event_loop().time())[:10] # упрощенная дата для проверки дня
+    
+    # Проверяем безлимит по подписке (до 50 запросов в день)
+    unlimited_until = data["unlimited_until"]
+    if unlimited_until:
+        # Простая проверка активности безлимита (можно расширить по датам, здесь держим структуру)
+        cur.execute("SELECT datetime('now') < datetime(?)", (unlimited_until,))
+        is_active_sub = cur.fetchone()[0]
+        if is_active_sub:
+            # Проверяем дневной лимит в 50 запросов
+            last_date = data["last_active_date"]
+            daily_count = data["daily_count"]
+            import datetime
+            today_str = datetime.date.today().isoformat()
+            
+            if last_date != today_str:
+                cur.execute("UPDATE users SET daily_count=1, last_active_date=? WHERE user_id=?", (today_str, user_id))
+                conn.commit()
+                return True
+            elif daily_count < 50:
+                cur.execute("UPDATE users SET daily_count = daily_count + 1 WHERE user_id=?", (user_id,))
+                conn.commit()
+                return True
+            else:
+                return False # Превышен дневной лимит безлимита (50 запросов)
+
+    # Обычное списание запросов с баланса
+    balance = data["balance"]
     if balance < cost:
         return False
     cur.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (cost, user_id))
@@ -126,11 +163,11 @@ def spend_balance(user_id: int, cost: int = 1) -> bool:
 def admin_add_balance(user_id: int, amount: int) -> int:
     cur.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, user_id))
     conn.commit()
-    return get_user_balance(user_id)
+    return get_user_data(user_id)["balance"]
 
 
-def admin_set_balance(user_id: int, amount: int):
-    cur.execute("UPDATE users SET balance = ? WHERE user_id=?", (amount, user_id))
+def admin_set_unlimited(user_id: int, days: int = 10):
+    cur.execute("UPDATE users SET unlimited_until = datetime('now', '+' || ? || ' days') WHERE user_id=?", (days, user_id))
     conn.commit()
 
 
@@ -315,7 +352,7 @@ async def send_telegram(chat_id, text: str, reply_markup=None, parse_mode="Markd
         
     for i, p in enumerate(parts):
         markup = reply_markup if i == len(parts) - 1 else None
-        await send_single_message(chat_id, p, markup, parse_mode)
+        await send_telegram(chat_id, p, markup, parse_mode)
         await asyncio.sleep(0.3)
 
 
@@ -403,7 +440,7 @@ async def hh_scrape_search(query: str):
         return None
 
 
-# ---------------- Поиск по всему рынку с приоритетом топ-компаний ----------------
+# ---------------- Фичи бота ----------------
 async def handle_search(chat_id: int, is_admin: bool):
     if not spend_balance(chat_id, cost=1):
         await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.", get_keyboard(is_admin))
@@ -448,7 +485,6 @@ async def handle_search(chat_id: int, is_admin: bool):
 
     filtered_list = list(unique_items.values())
 
-    # Сортировка: вакансии топ-компаний поднимаются наверх
     def sort_priority(item):
         comp_lower = (item.get("company") or "").lower()
         is_top = any(tc in comp_lower for tc in top_companies)
@@ -484,6 +520,33 @@ async def handle_search(chat_id: int, is_admin: bool):
         ]}
         await send_telegram(chat_id, f"{badge}🏢 *{comp}*\n💼 [{name}]({v.get('url')})", markup)
         await asyncio.sleep(0.2)
+
+
+async def run_skill_gap_analysis(chat_id: int):
+    if not spend_balance(chat_id, cost=1):
+        await send_telegram(chat_id, "⚠️ Недостаточно запросов для анализа навыков!")
+        return
+
+    await send_telegram(chat_id, "📊 *Провожу анализ навыков (Skill Gap) и формирую матрицу компетенций...*")
+    resume = get_active_resume(chat_id)
+    if not resume:
+        await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!")
+        return
+
+    prompt = (
+        "Ты — экспертный карьерный консультант уровня C-level. Проведи глубокий анализ навыков (Skill Gap Analysis) для этого кандидата, "
+        "претендующего на позиции Head of / Директор по развитию / Руководитель направления.\n"
+        "Выдели:\n"
+        "1. Сильные управленческие и технические компетенции (что уже отлично развито).\n"
+        "2. Зоны роста и пробелы (каких навыков, методологий или метрик может не хватать для топовых позиций в крупных экосистемах вроде Сбера или Яндекса).\n"
+        "3. Рекомендации по развитию на ближайшие 3–6 месяцев.\n\n"
+        f"Резюме кандидата:\n{resume[:8000]}"
+    )
+    analysis = await asyncio.to_thread(ai_generate, prompt)
+    if not analysis:
+        await send_telegram(chat_id, "⚠️ ИИ временно недоступен, не удалось провести анализ навыков.")
+        return
+    await send_telegram(chat_id, f"📊 *Анализ навыков (Skill Gap):*\n\n{analysis}")
 
 
 async def run_ai_generation(chat_id: int, vac_info: dict):
@@ -613,19 +676,6 @@ async def run_resume_audit(chat_id: int):
         await send_telegram(chat_id, "⚠️ Ошибка ИИ.")
 
 
-async def handle_ai(chat_id: int, is_admin: bool, prompt: str):
-    if not spend_balance(chat_id, cost=1):
-        await send_telegram(chat_id, "⚠️ Недостаточно запросов!", get_keyboard(is_admin))
-        return
-
-    await send_telegram(chat_id, "⏳ Думаю над ответом...")
-    answer = await asyncio.to_thread(ai_generate, prompt)
-    if not answer:
-        await send_telegram(chat_id, "⚠️ ИИ недоступен.", get_keyboard(is_admin))
-    else:
-        await send_telegram(chat_id, answer, get_keyboard(is_admin))
-
-
 async def handle_document(chat_id: int, document: dict, is_admin: bool):
     file_id = document["file_id"]
     file_name = document.get("file_name", "resume.pdf")
@@ -669,14 +719,14 @@ async def activate_resume(chat_id: int, rid: str):
 
 
 # ---------------- Система оплаты ----------------
-async def send_stars_invoice(chat_id):
+async def send_stars_invoice(chat_id, amount_stars: int, title: str, payload: str):
     await HTTP.post(f"{TELEGRAM_API}/sendInvoice", json={
         "chat_id": chat_id,
-        "title": "Пакет 50 запросов",
-        "description": "Пополнение баланса бота с помощью Telegram Stars",
-        "payload": "credits_50",
+        "title": title,
+        "description": "Пополнение баланса карьерного агента",
+        "payload": payload,
         "currency": "XTR",
-        "prices": [{"label": "Stars", "amount": 100}]
+        "prices": [{"label": "Stars", "amount": amount_stars}]
     })
 
 
@@ -703,10 +753,18 @@ async def process_message(msg: dict):
     if photo and user_states.get(chat_id) == "waiting_for_receipt":
         user_states.pop(chat_id, None)
         await send_telegram(chat_id, "✅ Чек отправлен администратору на проверку. Ожидайте зачисления!")
+        
+        # Кнопки в админке для начисления пакета или безлимита
+        admin_markup = {
+            "inline_keyboard": [
+                [{"text": "✅ +50 запросов", "callback_data": f"paycred_{chat_id}_50"}],
+                [{"text": "⭐ Безлимит 10 дней", "callback_data": f"payunl_{chat_id}"}]
+            ]
+        }
         await send_telegram(
             ADMIN_ID, 
             f"📸 *Новый чек на проверку!*\nОт: @{username or 'нет_юзера'} (ID: `{chat_id}`)",
-            reply_markup={"inline_keyboard": [[{"text": "✅ Начислить 50 запросов", "callback_data": f"paycred_{chat_id}_50"}]]}
+            reply_markup=admin_markup
         )
         return
 
@@ -750,18 +808,28 @@ async def process_message(msg: dict):
         await send_telegram(chat_id, f"👥 *Реферальная программа*\nПриглашайте друзей и получайте по 30 запросов!\n\n🔗 Ссылка:\n`{ref_link}`", get_keyboard(is_admin))
 
     elif text == "💎 Оплата и Баланс":
-        balance = get_user_balance(chat_id)
+        data = get_user_data(chat_id)
+        balance = data["balance"]
+        unl = data["unlimited_until"]
+        status_str = f"📊 Баланс: `{balance} запросов`"
+        if unl:
+            status_str = f"⭐ Активен безлимит (до 50 запросов в день) до: `{unl}`"
+
         balance_text = (
             f"💎 *Оплата и Баланс*\n\n"
-            f"📊 Ваш баланс: `{balance} запросов`\n\n"
-            "💳 *Способы пополнения:*\n"
-            "1. **Telegram Stars (⭐):** Быстрая оплата внутри Telegram.\n"
-            "2. **Перевод на карту / СБП:** Переведите по номеру и пришлите скриншот чека в ответ на это сообщение (предварительно нажав кнопку ниже)."
+            f"{status_str}\n\n"
+            "💳 *Тарифы и способы пополнения:*\n"
+            "1️⃣ **Пакет «50 запросов»:** 100 ⭐ (Telegram Stars) ИЛИ 200 руб.\n"
+            "2️⃣ **Пакет «Безлимит на 10 дней»** (до 50 запросов в сутки): 500 ⭐ ИЛИ 500 руб.\n\n"
+            "🏦 **Реквизиты для перевода (СБП / Карта):**\n"
+            "`2202208459089018`\n"
+            "_После перевода нажмите кнопку ниже и отправьте скриншот чека в чат._"
         )
         kb = {
             "inline_keyboard": [
-                [{"text": "⭐ Оплатить 50 запросов (Звезды)", "callback_data": "buy_stars"}],
-                [{"text": "📄 Отправить чек об оплате (СБП/Карта)", "callback_data": "send_receipt"}]
+                [{"text": "⭐ Оплатить 50 запросов (100 Звезд)", "callback_data": "buy_pack_stars"}],
+                [{"text": "⭐ Безлимит 10 дней (500 Звезд)", "callback_data": "buy_unl_stars"}],
+                [{"text": "📄 Отправить чек об оплате (Карта/СБП)", "callback_data": "send_receipt"}]
             ]
         }
         await send_telegram(chat_id, balance_text, kb)
@@ -779,6 +847,24 @@ async def process_message(msg: dict):
             await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!", get_keyboard(is_admin))
             return
         bg(run_resume_audit(chat_id))
+
+    elif text == "📊 Анализ навыков (Skill Gap)":
+        if not get_active_resume(chat_id):
+            await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!", get_keyboard(is_admin))
+            return
+        bg(run_skill_gap_analysis(chat_id))
+
+    elif text == "ℹ️ Помощь":
+        help_text = (
+            "ℹ️ *Справка по возможностям карьерного бота:*\n\n"
+            "• 🔍 *Поиск вакансий* — интеллектуальный поиск по всему рынку с приоритетным поднятием предложений от топ-компаний (Сбер, Яндекс, МТС, Т-Банк, ВТБ, Альфа и др.) с фильтрацией линейного мусора.\n"
+            "• 🛠 *Адаптация резюме* — переработка вашего резюме под конкретные требования выбранной вакансии с мгновенной генерацией чистого файла `.docx`.\n"
+            "• 📊 *Анализ навыков (Skill Gap)* — глубокая оценка сильных сторон, зон роста и матрица компетенций под управленческие роли C-level.\n"
+            "• 📋 *Аудит резюме* — жесткий управленческий разбор профиля и формирование элитного Word-документа.\n"
+            "• 👍 *Обучение на лайках* — бот запоминает выбранные вами вакансии и настраивает выдачу под ваши предпочтения.\n"
+            "• 💎 *Оплата и Баланс* — гибкие тарифы (пакеты запросов или безлимит на 10 дней) через Telegram Stars или перевод по карте."
+        )
+        await send_telegram(chat_id, help_text, get_keyboard(is_admin))
 
     elif text in ("👑 Админ-панель", "/admin"):
         if not is_admin:
@@ -840,8 +926,13 @@ async def telegram_webhook(request):
         msg = data["message"]
         if msg.get("successful_payment"):
             uid = msg["chat"]["id"]
-            admin_add_balance(uid, 50)
-            await send_telegram(uid, "🎉 Оплата прошла успешно! Начислено 50 запросов.")
+            payload = msg["successful_payment"].get("invoice_payload", "")
+            if "unl" in payload:
+                admin_set_unlimited(uid, 10)
+                await send_telegram(uid, "🎉 Оплата прошла успешно! Вам активирован безлимит на 10 дней.")
+            else:
+                admin_add_balance(uid, 50)
+                await send_telegram(uid, "🎉 Оплата прошла успешно! Начислено 50 запросов.")
         else:
             bg(process_message(msg))
 
@@ -853,8 +944,10 @@ async def telegram_webhook(request):
         bg(answer_callback(cb.get("id", "")))
         
         if chat_id:
-            if data_str == "buy_stars":
-                bg(send_stars_invoice(chat_id))
+            if data_str == "buy_pack_stars":
+                bg(send_stars_invoice(chat_id, 100, "Пакет 50 запросов", "credits_50"))
+            elif data_str == "buy_unl_stars":
+                bg(send_stars_invoice(chat_id, 500, "Безлимит на 10 дней", "unl_10d"))
             elif data_str == "send_receipt":
                 user_states[chat_id] = "waiting_for_receipt"
                 await send_telegram(chat_id, "📸 Пожалуйста, отправьте **фотографию или скриншот чека** прямо в этот чат.")
@@ -865,6 +958,12 @@ async def telegram_webhook(request):
                 admin_add_balance(target_uid, amt)
                 await send_telegram(target_uid, f"✅ Администратор подтвердил ваш платеж! Начислено {amt} запросов.")
                 await http_edit_message_text(chat_id, message_id, "✅ Чек одобрен, запросы начислены.")
+            elif data_str.startswith("payunl_"):
+                parts = data_str.split("_")
+                target_uid = int(parts[1])
+                admin_set_unlimited(target_uid, 10)
+                await send_telegram(target_uid, "✅ Администратор подтвердил ваш платеж! Активирован безлимит на 10 дней.")
+                await http_edit_message_text(chat_id, message_id, "✅ Чек одобрен, безлимит активирован.")
             elif data_str.startswith("like_"):
                 vid = data_str[5:]
                 vac = temp_vacancies.get(vid, {"title": "Позиция"})
@@ -872,13 +971,13 @@ async def telegram_webhook(request):
                 await send_telegram(chat_id, f"👍 Запомнил вакансию «{vac['title']}». Бот будет подбирать похожие!")
             elif data_str.startswith("gen_"):
                 if not spend_balance(chat_id, cost=1):
-                    await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
+                    await send_telegram(chat_id, "⚠️ Недостаточно запросов или исчерпан лимит на сегодня!")
                     return
                 v = temp_vacancies.get(data_str[4:], {"title": "Вакансия", "employer": "Компания"})
                 bg(run_ai_generation(chat_id, dict(v)))
             elif data_str.startswith("match_"):
                 if not spend_balance(chat_id, cost=1):
-                    await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
+                    await send_telegram(chat_id, "⚠️ Недостаточно запросов или исчерпан лимит на сегодня!")
                     return
                 v = temp_vacancies.get(data_str[6:], {"title": "Вакансия", "employer": "Компания"})
                 bg(run_vacancy_match(chat_id, dict(v)))
