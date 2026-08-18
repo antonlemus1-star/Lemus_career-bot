@@ -44,6 +44,7 @@ TASKS = set()
 temp_vacancies = {}
 user_states = {}          
 user_adapt_target = {}    
+user_search_cache = {}    # Кеш результатов поиска для пагинации
 
 # ---------------- БД ----------------
 conn = sqlite3.connect("tracker.db", check_same_thread=False)
@@ -460,6 +461,63 @@ async def get_vacancy_details(vacancy_id: str) -> str:
         return ""
 
 
+# ---------------- Вывод порции вакансий с пагинацией ----------------
+async def send_vacancies_page(chat_id: int, page: int = 0):
+    cached = user_search_cache.get(chat_id)
+    if not cached or not cached.get("items"):
+        await send_telegram(chat_id, "⚠️ Список вакансий устарел или не найден. Запустите новый поиск через меню.")
+        return
+
+    items = cached["items"]
+    page_size = 15
+    start = page * page_size
+    end = start + page_size
+    chunk = items[start:end]
+
+    top_companies = ["сбер", "мтс", "яндекс", "т-банк", "тинькофф", "втб", "альфа", "билайн", "мегафон", "ростелеком", "первый бит"]
+
+    if not chunk:
+        await send_telegram(chat_id, "🏁 Больше нет новых вакансий в этой выдаче.")
+        return
+
+    await send_telegram(chat_id, f"📄 Показаны вакансии с {start + 1} по min({end}, {len(items)}) из {len(items)}:")
+
+    for v in chunk:
+        vid = str(v["id"])
+        name = v.get("name") or "Вакансия"
+        comp = v.get("company") or "Компания"
+        temp_vacancies[vid] = {"title": name, "employer": comp}
+        
+        comp_lower = comp.lower()
+        is_top = any(tc in comp_lower for tc in top_companies)
+        badge = "⭐ *[ТОП-КОМПАНИЯ]*\n" if is_top else ""
+        
+        markup = {"inline_keyboard": [
+            [
+                {"text": "👍 Подходит", "callback_data": f"like_{vid}"},
+                {"text": "✍️ Сопроводительное", "callback_data": f"gen_{vid}"}
+            ],
+            [
+                {"text": "📊 Соответствие", "callback_data": f"match_{vid}"},
+                {"text": "🗑 Мусор", "callback_data": f"hide_{vid}"}
+            ]
+        ]}
+        await send_telegram(chat_id, f"{badge}🏢 *{comp}*\n💼 [{name}]({v.get('url')})", markup)
+        await asyncio.sleep(0.2)
+
+    # Если есть еще вакансии дальше, показываем кнопку "Далее"
+    if end < len(items):
+        next_page = page + 1
+        more_markup = {
+            "inline_keyboard": [
+                [{"text": "▶️ Далее (следующие 15)", "callback_data": f"page_{next_page}"}]
+            ]
+        }
+        await send_telegram(chat_id, f"Осталось еще {len(items) - end} вакансий в списке.", more_markup)
+    else:
+        await send_telegram(chat_id, "🎉 Вы просмотрели все найденные вакансии по этому запросу!")
+
+
 # ---------------- Фичи бота ----------------
 async def handle_search(chat_id: int, is_admin: bool):
     if not spend_balance(chat_id, cost=1):
@@ -516,30 +574,13 @@ async def handle_search(chat_id: int, is_admin: bool):
         await send_telegram(chat_id, "⚠️ Все подходящие вакансии скрыты или отфильтрованы.", get_keyboard(is_admin))
         return
 
-    await send_telegram(chat_id, f"🔥 Нашел вакансии (вверху списка — предложения от топ-компаний, доступно: {len(filtered_list)}):", get_keyboard(is_admin))
+    # Сохраняем в кеш для пагинации
+    user_search_cache[chat_id] = {"items": filtered_list}
+
+    await send_telegram(chat_id, f"🔥 Нашел вакансии (вверху списка — предложения от топ-компаний, всего доступно: {len(filtered_list)}):", get_keyboard(is_admin))
     
-    for v in filtered_list[:15]:
-        vid = str(v["id"])
-        name = v.get("name") or "Вакансия"
-        comp = v.get("company") or "Компания"
-        temp_vacancies[vid] = {"title": name, "employer": comp}
-        
-        comp_lower = comp.lower()
-        is_top = any(tc in comp_lower for tc in top_companies)
-        badge = "⭐ *[ТОП-КОМПАНИЯ]*\n" if is_top else ""
-        
-        markup = {"inline_keyboard": [
-            [
-                {"text": "👍 Подходит", "callback_data": f"like_{vid}"},
-                {"text": "✍️ Сопроводительное", "callback_data": f"gen_{vid}"}
-            ],
-            [
-                {"text": "📊 Соответствие", "callback_data": f"match_{vid}"},
-                {"text": "🗑 Мусор", "callback_data": f"hide_{vid}"}
-            ]
-        ]}
-        await send_telegram(chat_id, f"{badge}🏢 *{comp}*\n💼 [{name}]({v.get('url')})", markup)
-        await asyncio.sleep(0.2)
+    # Выводим первую страницу (0)
+    await send_vacancies_page(chat_id, page=0)
 
 
 async def run_skill_gap_analysis(chat_id: int):
@@ -928,7 +969,7 @@ async def process_message(msg: dict):
             "ℹ️ *Справка по возможностям карьерного бота:*\n\n"
             "• 🤖 *Адаптивный ИИ-агент* — бот подстраивается под ваши задачи и обучается на основе выбранных предпочтений.\n"
             "• 🚀 *Запустить бота* — кнопка перезапуска (аналог команды `/start`), обновляет интерфейс и приветствие.\n"
-            "• 🔍 *Поиск вакансий* — поиск по всему рынку с приоритетным поднятием предложений от топ-компаний. Обязательно пользуйтесь кнопкой **«🗑 Мусор»** для нерелевантных вакансий, чтобы бот точнее настраивал выдачу под вас.\n"
+            "• 🔍 *Поиск вакансий* — поиск по всему рынку с приоритетным поднятием предложений от топ-компаний. Используйте кнопку **«▶️ Далее»** под выдачей, чтобы листать следующие страницы, и **«🗑 Мусор»**, чтобы настраивать выдачу под себя.\n"
             "• 🛠 *Адаптация резюме* — переработка резюме под требования вакансии. Можно просто отправить ссылку на вакансию hh.ru!\n"
             "• 📊 *Анализ навыков (Skill Gap)* — оценка зон роста и сильных сторон.\n"
             "• 📋 *Аудит резюме* — управленческий разбор профиля.\n"
@@ -1016,7 +1057,10 @@ async def telegram_webhook(request):
         bg(answer_callback(cb.get("id", "")))
         
         if chat_id:
-            if data_str == "buy_pack_stars":
+            if data_str.startswith("page_"):
+                page_num = int(data_str.split("_")[1])
+                bg(send_vacancies_page(chat_id, page=page_num))
+            elif data_str == "buy_pack_stars":
                 bg(send_stars_invoice(chat_id, 100, "Пакет 50 запросов", "credits_50"))
             elif data_str == "buy_unl_stars":
                 bg(send_stars_invoice(chat_id, 500, "Безлимит на 10 дней", "unl_10d"))
