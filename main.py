@@ -162,6 +162,9 @@ def is_user_premium(user_id: int) -> bool:
 
 
 def can_use_feature(user_id: int, feature: str) -> tuple[bool, str]:
+    if ADMIN_ID != 0 and user_id == ADMIN_ID:
+        return True, ""
+        
     if is_user_premium(user_id):
         return True, ""
     
@@ -176,6 +179,9 @@ def can_use_feature(user_id: int, feature: str) -> tuple[bool, str]:
 
 
 def increment_feature_usage(user_id: int, feature: str):
+    if ADMIN_ID != 0 and user_id == ADMIN_ID:
+        return
+        
     if feature == "adapt":
         cur.execute("UPDATE users SET trial_adapt_count = trial_adapt_count + 1 WHERE user_id=?", (user_id,))
     elif feature == "skill_gap":
@@ -965,7 +971,8 @@ async def process_message(msg: dict):
         return
 
     if text.startswith("/start") or text == "🚀 Запустить бота":
-        await send_telegram(chat_id, "👋 Привет! Твой карьерный агент готов к работе.\n\n🎁 Вам начислено *30 приветственных запросов* (в пробном периоде включено: 2 адаптации резюме и 2 анализа навыков)!", get_keyboard(is_admin))
+        greeting = "👋 Привет, администратор! У вас активирован полный неограниченный доступ ко всем возможностям бота." if is_admin else "👋 Привет! Твой карьерный агент готов к работе.\n\n🎁 Вам начислено *30 приветственных запросов* (в пробном периоде включено: 2 адаптации резюме и 2 анализа навыков)!"
+        await send_telegram(chat_id, greeting, get_keyboard(is_admin))
 
     elif text == "👥 Пригласить друга":
         bot_info = await HTTP.get(f"{TELEGRAM_API}/getMe")
@@ -993,6 +1000,15 @@ async def process_message(msg: dict):
         await send_telegram(chat_id, feedbacks_msg)
 
     elif text == "💎 Оплата и Баланс":
+        if is_admin:
+            balance_text = (
+                "👑 *Статус Администратора*\n\n"
+                "📊 Баланс: `♾️ Безлимит`\n"
+                "🎯 Все лимиты и ограничения пробного периода для вашего аккаунта отключены."
+            )
+            await send_telegram(chat_id, balance_text, get_keyboard(is_admin))
+            return
+
         data = get_user_data(chat_id)
         balance = data["balance"]
         unl = data["unlimited_until"]
