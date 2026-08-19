@@ -44,7 +44,7 @@ TASKS = set()
 temp_vacancies = {}
 user_states = {}          
 user_adapt_target = {}    
-user_search_cache = {}
+user_search_cache = {}    
 
 # ---------------- БД ----------------
 conn = sqlite3.connect("tracker.db", check_same_thread=False)
@@ -58,9 +58,6 @@ CREATE TABLE IF NOT EXISTS users (
     daily_count INTEGER DEFAULT 0,
     last_active_date TEXT,
     referred_by INTEGER,
-    trial_adapt_count INTEGER DEFAULT 0,
-    trial_skill_count INTEGER DEFAULT 0,
-    is_paid INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS resumes (
@@ -96,16 +93,14 @@ CREATE TABLE IF NOT EXISTS payments (
     status TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS social_shares (
+    user_id INTEGER,
+    network TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, network)
+);
 """)
 conn.commit()
-
-# Миграция колонок для существующих БД
-for col in ["trial_adapt_count INTEGER DEFAULT 0", "trial_skill_count INTEGER DEFAULT 0", "is_paid INTEGER DEFAULT 0"]:
-    try:
-        cur.execute(f"ALTER TABLE users ADD COLUMN {col}")
-        conn.commit()
-    except Exception:
-        pass
 
 
 def register_user(user_id: int, username: str, referrer_id: int = None) -> bool:
@@ -121,7 +116,7 @@ def register_user(user_id: int, username: str, referrer_id: int = None) -> bool:
             referrer_id = None
     initial_balance = 30
     cur.execute(
-        "INSERT INTO users (user_id, username, balance, referred_by, trial_adapt_count, trial_skill_count, is_paid) VALUES (?, ?, ?, ?, 0, 0, 0)",
+        "INSERT INTO users (user_id, username, balance, referred_by) VALUES (?, ?, ?, ?)",
         (user_id, username, initial_balance, referrer_id)
     )
     conn.commit()
@@ -132,61 +127,11 @@ def register_user(user_id: int, username: str, referrer_id: int = None) -> bool:
 
 
 def get_user_data(user_id: int):
-    cur.execute("SELECT balance, unlimited_until, daily_count, last_active_date, trial_adapt_count, trial_skill_count, is_paid FROM users WHERE user_id=?", (user_id,))
+    cur.execute("SELECT balance, unlimited_until, daily_count, last_active_date FROM users WHERE user_id=?", (user_id,))
     row = cur.fetchone()
     if not row:
-        return {
-            "balance": 30, "unlimited_until": None, "daily_count": 0,
-            "last_active_date": "", "trial_adapt_count": 0, "trial_skill_count": 0, "is_paid": 0
-        }
-    return {
-        "balance": row[0], "unlimited_until": row[1], "daily_count": row[2],
-        "last_active_date": row[3], "trial_adapt_count": row[4] or 0,
-        "trial_skill_count": row[5] or 0, "is_paid": row[6] or 0
-    }
-
-
-def is_user_premium(user_id: int) -> bool:
-    if ADMIN_ID != 0 and user_id == ADMIN_ID:
-        return True
-    data = get_user_data(user_id)
-    if data["is_paid"] == 1:
-        return True
-    unlimited_until = data["unlimited_until"]
-    if unlimited_until:
-        cur.execute("SELECT datetime('now') < datetime(?)", (unlimited_until,))
-        res = cur.fetchone()
-        if res and res[0]:
-            return True
-    return False
-
-
-def can_use_feature(user_id: int, feature: str) -> tuple[bool, str]:
-    if ADMIN_ID != 0 and user_id == ADMIN_ID:
-        return True, ""
-        
-    if is_user_premium(user_id):
-        return True, ""
-    
-    data = get_user_data(user_id)
-    if feature == "adapt":
-        if data["trial_adapt_count"] >= 2:
-            return False, "⚠️ Вы исчерпали лимит пробного периода на адаптацию резюме (доступно 2 шт).\n\nДля снятия ограничений пополните баланс в меню «💎 Оплата и Баланс»."
-    elif feature == "skill_gap":
-        if data["trial_skill_count"] >= 2:
-            return False, "⚠️ Вы исчерпали лимит пробного периода на анализ навыков Skill Gap (доступно 2 проверки).\n\nДля снятия ограничений пополните баланс в меню «💎 Оплата и Баланс»."
-    return True, ""
-
-
-def increment_feature_usage(user_id: int, feature: str):
-    if ADMIN_ID != 0 and user_id == ADMIN_ID:
-        return
-        
-    if feature == "adapt":
-        cur.execute("UPDATE users SET trial_adapt_count = trial_adapt_count + 1 WHERE user_id=?", (user_id,))
-    elif feature == "skill_gap":
-        cur.execute("UPDATE users SET trial_skill_count = trial_skill_count + 1 WHERE user_id=?", (user_id,))
-    conn.commit()
+        return {"balance": 30, "unlimited_until": None, "daily_count": 0, "last_active_date": ""}
+    return {"balance": row[0], "unlimited_until": row[1], "daily_count": row[2], "last_active_date": row[3]}
 
 
 def spend_balance(user_id: int, cost: int = 1) -> bool:
@@ -224,13 +169,13 @@ def spend_balance(user_id: int, cost: int = 1) -> bool:
 
 
 def admin_add_balance(user_id: int, amount: int) -> int:
-    cur.execute("UPDATE users SET balance = balance + ?, is_paid = 1 WHERE user_id=?", (amount, user_id))
+    cur.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, user_id))
     conn.commit()
     return get_user_data(user_id)["balance"]
 
 
 def admin_set_unlimited(user_id: int, days: int = 10):
-    cur.execute("UPDATE users SET unlimited_until = datetime('now', '+' || ? || ' days'), is_paid = 1 WHERE user_id=?", (days, user_id))
+    cur.execute("UPDATE users SET unlimited_until = datetime('now', '+' || ? || ' days') WHERE user_id=?", (days, user_id))
     conn.commit()
 
 
@@ -457,7 +402,8 @@ def get_keyboard(is_admin=False):
         [{"text": "📁 Мои резюме"}, {"text": "📥 Загрузить резюме"}],
         [{"text": "🔍 Поиск вакансий"}, {"text": "🛠 Адаптация резюме"}],
         [{"text": "📊 Анализ навыков (Skill Gap)"}, {"text": "📋 Аудит резюме"}],
-        [{"text": "👥 Пригласить друга"}, {"text": "💎 Оплата и Баланс"}],
+        [{"text": "🎤 Тренажер собеседований"}, {"text": "📌 Трекер откликов"}],
+        [{"text": "🎁 Бонусы (Репост & Друзья)"}, {"text": "💎 Оплата и Баланс"}],
         [{"text": "🚀 Запустить бота"}, {"text": "💬 Обратная связь"}],
         [{"text": "ℹ️ Помощь"}],
     ]
@@ -521,7 +467,7 @@ async def get_vacancy_details(vacancy_id: str) -> str:
         return ""
 
 
-# ---------------- Вывод вакансий с пагинацией ----------------
+# ---------------- Вывод порции вакансий с пагинацией ----------------
 async def send_vacancies_page(chat_id: int, page: int = 0):
     cached = user_search_cache.get(chat_id)
     if not cached or not cached.get("items"):
@@ -540,7 +486,7 @@ async def send_vacancies_page(chat_id: int, page: int = 0):
         await send_telegram(chat_id, "🏁 Больше нет новых вакансий в этой выдаче.")
         return
 
-    await send_telegram(chat_id, f"📄 Показаны вакансии с {start + 1} по {min(end, len(items))} из {len(items)}:")
+    await send_telegram(chat_id, f"📄 Показаны вакансии с {start + 1} по min({end}, {len(items)}) из {len(items)}:")
 
     for v in chunk:
         vid = str(v["id"])
@@ -634,16 +580,12 @@ async def handle_search(chat_id: int, is_admin: bool):
         return
 
     user_search_cache[chat_id] = {"items": filtered_list}
+
     await send_telegram(chat_id, f"🔥 Нашел вакансии (вверху списка — предложения от топ-компаний, всего доступно: {len(filtered_list)}):", get_keyboard(is_admin))
     await send_vacancies_page(chat_id, page=0)
 
 
 async def run_skill_gap_analysis(chat_id: int):
-    allowed, msg = can_use_feature(chat_id, "skill_gap")
-    if not allowed:
-        await send_telegram(chat_id, msg)
-        return
-
     if not spend_balance(chat_id, cost=1):
         await send_telegram(chat_id, "⚠️ Недостаточно запросов для анализа навыков!")
         return
@@ -667,8 +609,6 @@ async def run_skill_gap_analysis(chat_id: int):
     if not analysis:
         await send_telegram(chat_id, "⚠️ ИИ временно недоступен, не удалось провести анализ навыков.")
         return
-        
-    increment_feature_usage(chat_id, "skill_gap")
     await send_telegram(chat_id, f"📊 *Анализ навыков (Skill Gap):*\n\n{analysis}")
 
 
@@ -700,11 +640,6 @@ async def run_vacancy_match(chat_id: int, vac_info: dict):
 
 
 async def run_resume_adaptation(chat_id: int, resume_id: int, vacancy_text: str):
-    allowed, msg = can_use_feature(chat_id, "adapt")
-    if not allowed:
-        await send_telegram(chat_id, msg)
-        return
-
     await send_telegram(chat_id, "🛠 *Адаптирую резюме под специфику вакансии и формирую чистый файл...*")
     resume_text = get_resume_by_id(chat_id, resume_id) or get_active_resume(chat_id)
     
@@ -747,8 +682,6 @@ async def run_resume_adaptation(chat_id: int, resume_id: int, vacancy_text: str)
         await send_telegram(chat_id, "⚠️ ИИ недоступен. Попробуйте еще раз.")
         return
 
-    increment_feature_usage(chat_id, "adapt")
-
     if "---" in adapted_text:
         adapted_text = adapted_text.split("---")[-1].strip()
 
@@ -789,19 +722,7 @@ async def run_resume_audit(chat_id: int):
         await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!")
         return
 
-    audit_prompt = (
-        "Ты — требовательный карьерный аудитор и HRD топ-уровня. Сделай жесткий, глубокий аудит этого резюме с позиции C-level.\n"
-        "ВАЖНОЕ ПРАВИЛО ПО ДАТАМ:\n"
-        "Внимательно проверяй хронологию. НЕ пиши про 'наложение или пересечение дат', если периоды работы идут последовательно, "
-        "относятся к разным проектам внутри одного холдинга или кандидат переходил из одной структуры в другую без прямого конфликта сроков. "
-        "Указывай только реальные фактологические ошибки, если они действительно очевидны.\n\n"
-        "Оцени резюме по пунктам:\n"
-        "1. Читаемость и структура (Summary, фокус на масштабе бизнеса).\n"
-        "2. Оцифровка результатов (метрики, выручка, ROI, оптимизация затрат, команды).\n"
-        "3. Формулировки (устранение операционной рутины в пользу стратегических решений).\n"
-        "4. Итоговые рекомендации по улучшению.\n\n"
-        f"Текст резюме:\n{resume[:8000]}"
-    )
+    audit_prompt = f"Сделай жесткий, глубокий аудит этого резюме с позиции C-level:\n\n{resume[:8000]}"
     audit_text = await asyncio.to_thread(ai_generate, audit_prompt)
 
     rewrite_prompt = (
@@ -924,8 +845,41 @@ async def process_message(msg: dict):
         )
         return
 
+    if user_states.get(chat_id) == "waiting_for_repost":
+        user_states.pop(chat_id, None)
+        
+        urls = re.findall(r'(https?://[^\s]+)', text) if text else []
+        
+        if urls:
+            url = urls[0].lower()
+            network = "Other"
+            if "vk.com" in url: network = "VK"
+            elif "linkedin" in url: network = "LinkedIn"
+            elif "tenchat" in url: network = "TenChat"
+            elif "setka" in url or "hh.ru" in url: network = "Сетка"
+            elif "t.me" in url: network = "Telegram"
+            
+            cur.execute("SELECT 1 FROM social_shares WHERE user_id=? AND network=?", (chat_id, network))
+            if cur.fetchone():
+                await send_telegram(chat_id, f"⚠️ Вы уже получали бонус за репост в платформе: {network}.")
+            else:
+                cur.execute("INSERT INTO social_shares (user_id, network) VALUES (?, ?)", (chat_id, network))
+                conn.commit()
+                admin_add_balance(chat_id, 20)
+                await send_telegram(chat_id, f"🎉 Отлично! Ссылка распознана. Вам автоматически начислено 20 запросов за пост в {network}.")
+                await send_telegram(ADMIN_ID, f"📢 Пользователь @{username or 'нет'} (ID: `{chat_id}`) получил авто-бонус за ссылку ({network}):\n{url}")
+            return
+        
+        await send_telegram(chat_id, "⚠️ Ошибка: ссылка не найдена. Бот принимает **только прямые ссылки** на посты (начинаются с http:// или https://). Скриншоты и картинки не обрабатываются.\n\nСкопируйте ссылку на ваш пост, нажмите кнопку отправки еще раз и вставьте её в чат.")
+        return
+
     if photo and user_states.get(chat_id) == "waiting_for_receipt":
         user_states.pop(chat_id, None)
+        await HTTP.post(f"{TELEGRAM_API}/forwardMessage", json={
+            "chat_id": ADMIN_ID, 
+            "from_chat_id": chat_id, 
+            "message_id": msg["message_id"]
+        })
         await send_telegram(chat_id, "✅ Чек отправлен администратору на проверку. Ожидайте зачисления!")
         
         admin_markup = {
@@ -971,15 +925,30 @@ async def process_message(msg: dict):
         return
 
     if text.startswith("/start") or text == "🚀 Запустить бота":
-        greeting = "👋 Привет, администратор! У вас активирован полный неограниченный доступ ко всем возможностям бота." if is_admin else "👋 Привет! Твой карьерный агент готов к работе.\n\n🎁 Вам начислено *30 приветственных запросов* (в пробном периоде включено: 2 адаптации резюме и 2 анализа навыков)!"
-        await send_telegram(chat_id, greeting, get_keyboard(is_admin))
+        await send_telegram(chat_id, "👋 Привет! Твой карьерный агент готов к работе.\n\n🎁 Вам начислено *30 приветственных запросов*!", get_keyboard(is_admin))
 
-    elif text == "👥 Пригласить друга":
+    elif text in ("👥 Пригласить друга", "🎁 Бонусы (Репост & Друзья)"):
         bot_info = await HTTP.get(f"{TELEGRAM_API}/getMe")
         bot_data = await bot_info.json()
         bot_username = bot_data.get("result", {}).get("username", "bot")
         ref_link = f"https://t.me/{bot_username}?start={chat_id}"
-        await send_telegram(chat_id, f"👥 *Реферальная программа*\nПриглашайте друзей и получайте по 30 запросов!\n\n🔗 Ссылка:\n`{ref_link}`", get_keyboard(is_admin))
+        
+        bonus_text = (
+            "🎁 *Программа лояльности и бонусы*\n\n"
+            "👥 *1. Пригласить друга (+30 запросов)*\n"
+            f"Ваша персональная ссылка:\n`{ref_link}`\n\n"
+            "📢 *2. Поделиться в соцсетях (+20 запросов за каждую)*\n"
+            "Опубликуйте короткий отзыв о боте в Сетке, TenChat, LinkedIn, VK или своем Telegram-канале и получите 20 бесплатных запросов за каждую площадку (1 раз за соцсеть).\n\n"
+            "📝 *Шаблон для поста (можете скопировать или изменить под себя):*\n"
+            "> Делюсь полезной находкой для топ-менеджеров и руководителей. Протестировал карьерного ИИ-бота — он делает глубокий аудит резюме (Skill Gap) и автоматически адаптирует опыт под профиль вакансий с hh.ru. Отлично экономит время на рутине. Кому актуально усилить позиции на рынке — рекомендую: @LemusCareerBot \n\n"
+            "_Опубликовали пост? Нажмите кнопку ниже и отправьте мне прямую ссылку на него! (Скриншоты не принимаются)_"
+        )
+        kb = {
+            "inline_keyboard": [
+                [{"text": "🔗 Отправить ссылку на репост", "callback_data": "send_repost_proof"}]
+            ]
+        }
+        await send_telegram(chat_id, bonus_text, kb)
 
     elif text == "💬 Обратная связь":
         user_states[chat_id] = "waiting_for_feedback"
@@ -1000,15 +969,6 @@ async def process_message(msg: dict):
         await send_telegram(chat_id, feedbacks_msg)
 
     elif text == "💎 Оплата и Баланс":
-        if is_admin:
-            balance_text = (
-                "👑 *Статус Администратора*\n\n"
-                "📊 Баланс: `♾️ Безлимит`\n"
-                "🎯 Все лимиты и ограничения пробного периода для вашего аккаунта отключены."
-            )
-            await send_telegram(chat_id, balance_text, get_keyboard(is_admin))
-            return
-
         data = get_user_data(chat_id)
         balance = data["balance"]
         unl = data["unlimited_until"]
@@ -1016,17 +976,9 @@ async def process_message(msg: dict):
         if unl:
             status_str = f"⭐ Активен безлимит (до 50 запросов в день) до: `{unl}`"
 
-        trial_info = ""
-        if not is_user_premium(chat_id):
-            trial_info = (
-                f"\n\n🎯 *Пробный период:*\n"
-                f"• Адаптаций резюме: {data['trial_adapt_count']}/2 использовано\n"
-                f"• Skill Gap проверок: {data['trial_skill_count']}/2 использовано\n"
-            )
-
         balance_text = (
             f"💎 *Оплата и Баланс*\n\n"
-            f"{status_str}{trial_info}\n\n"
+            f"{status_str}\n\n"
             "💳 *Тарифы и способы пополнения:*\n"
             "1️⃣ **Пакет «50 запросов» (навсегда):** 100 ⭐ ИЛИ 200 руб.\n"
             "2️⃣ **Пакет «Безлимит на 10 дней»** (до 50 запросов в сутки): 500 ⭐ ИЛИ 500 руб.\n\n"
@@ -1044,11 +996,6 @@ async def process_message(msg: dict):
         await send_telegram(chat_id, balance_text, kb)
 
     elif text == "🛠 Адаптация резюме":
-        allowed, msg = can_use_feature(chat_id, "adapt")
-        if not allowed:
-            await send_telegram(chat_id, msg, get_keyboard(is_admin))
-            return
-
         rows = list_resumes(chat_id)
         if not rows:
             await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!", get_keyboard(is_admin))
@@ -1063,11 +1010,6 @@ async def process_message(msg: dict):
         bg(run_resume_audit(chat_id))
 
     elif text == "📊 Анализ навыков (Skill Gap)":
-        allowed, msg = can_use_feature(chat_id, "skill_gap")
-        if not allowed:
-            await send_telegram(chat_id, msg, get_keyboard(is_admin))
-            return
-
         if not get_active_resume(chat_id):
             await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!", get_keyboard(is_admin))
             return
@@ -1076,12 +1018,14 @@ async def process_message(msg: dict):
     elif text == "ℹ️ Помощь":
         help_text = (
             "ℹ️ *Справка по возможностям карьерного бота:*\n\n"
-            "• 🎁 *Пробный период*: при регистрации вам доступно 30 приветственных запросов, из которых **2 адаптации резюме** и **2 анализа навыков (Skill Gap)**. После пополнения баланса все ограничения снимаются.\n"
-            "• 🔍 *Поиск вакансий* — подбор вакансий с hh.ru с приоритизацией экосистем и топ-работодателей. Доступна постраничная навигация (по 15 вакансий) и фильтрация кнопкой «🗑 Мусор».\n"
-            "• 🛠 *Адаптация резюме* — точечная переработка опыта под вакансию (поддерживается отправка ссылок hh.ru) с генерацией чистого `.docx` и письма.\n"
-            "• 📋 *Аудит резюме* — стратегическая C-Level проверка с формированием оптимизированной Word-версии.\n"
-            "• 📊 *Skill Gap Analysis* — аудит матрицы компетенций кандидата и план роста.\n"
-            "• 💎 *Оплата*: доступна нативная оплата через **Telegram Stars** (моментально) или **перевод по номеру карты / СБП** с отправкой фото чека."
+            "• 🤖 *Адаптивный ИИ-агент* — бот подстраивается под ваши задачи и обучается на основе выбранных предпочтений.\n"
+            "• 🚀 *Запустить бота* — кнопка перезапуска (аналог команды `/start`), обновляет интерфейс и приветствие.\n"
+            "• 🔍 *Поиск вакансий* — поиск по всему рынку с приоритетным поднятием предложений от топ-компаний. Используйте кнопку **«▶️ Далее»** под выдачей, чтобы листать следующие страницы, и **«🗑 Мусор»**, чтобы настраивать выдачу под себя.\n"
+            "• 🛠 *Адаптация резюме* — переработка резюме под требования вакансии. Можно просто отправить ссылку на вакансию hh.ru!\n"
+            "• 📊 *Анализ навыков (Skill Gap)* — оценка зон роста и сильных сторон.\n"
+            "• 📋 *Аудит резюме* — управленческий разбор профиля.\n"
+            "• 💬 *Обратная связь* — связь с администратором для отправки вопросов и отзывов.\n"
+            "• 💎 *Оплата и Баланс* — гибкие тарифы через Telegram Stars или перевод по карте."
         )
         await send_telegram(chat_id, help_text, get_keyboard(is_admin))
 
@@ -1174,6 +1118,9 @@ async def telegram_webhook(request):
             elif data_str == "send_receipt":
                 user_states[chat_id] = "waiting_for_receipt"
                 await send_telegram(chat_id, "📸 Пожалуйста, отправьте **фотографию или скриншот чека** прямо в этот чат.")
+            elif data_str == "send_repost_proof":
+                user_states[chat_id] = "waiting_for_repost"
+                await send_telegram(chat_id, "🔗 Пожалуйста, отправьте **только прямую ссылку** на ваш пост прямо в этот чат (начинается с http/https). Скриншоты не принимаются.")
             elif data_str.startswith("paycred_"):
                 parts = data_str.split("_")
                 target_uid = int(parts[1])
