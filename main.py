@@ -135,6 +135,7 @@ def get_user_data(user_id: int):
 
 
 def spend_balance(user_id: int, cost: int = 1) -> bool:
+    # Администратор всегда имеет безлимит на вызовы функций
     if ADMIN_ID != 0 and user_id == ADMIN_ID:
         return True
         
@@ -925,14 +926,17 @@ async def process_message(msg: dict):
         return
 
     if text.startswith("/start") or text == "🚀 Запустить бота":
-        welcome_text = (
-            "👋 Привет! Твой карьерный агент готов к работе.\n\n"
-            "📌 *Короткий дисклеймер:*\n"
-            "Проект создан на энтузиазме и пока работает на бесплатных серверах. "
-            "Если ко мне давно не обращались, мне нужно около 30–60 секунд, чтобы «проснуться». "
-            "Немного подождите после первой команды — дальше всё будет летать! 🚀\n\n"
-            "🎁 Вам начислено *30 приветственных запросов*!"
-        )
+        if is_admin:
+            welcome_text = "👋 Привет, администратор! У вас активирован полный неограниченный доступ ко всем возможностям бота."
+        else:
+            welcome_text = (
+                "👋 Привет! Твой карьерный агент готов к работе.\n\n"
+                "📌 *Короткий дисклеймер:*\n"
+                "Проект создан на энтузиазме и пока работает на бесплатных серверах. "
+                "Если ко мне давно не обращались, мне нужно около 30–60 секунд, чтобы «проснуться». "
+                "Немного подождите после первой команды — дальше всё будет летать! 🚀\n\n"
+                "🎁 Вам начислено *30 приветственных запросов*!"
+            )
         await send_telegram(chat_id, welcome_text, get_keyboard(is_admin))
 
     elif text in ("👥 Пригласить друга", "🎁 Бонусы (Репост & Друзья)"):
@@ -977,12 +981,15 @@ async def process_message(msg: dict):
         await send_telegram(chat_id, feedbacks_msg)
 
     elif text == "💎 Оплата и Баланс":
-        data = get_user_data(chat_id)
-        balance = data["balance"]
-        unl = data["unlimited_until"]
-        status_str = f"📊 Баланс: `{balance} запросов`"
-        if unl:
-            status_str = f"⭐ Активен безлимит (до 50 запросов в день) до: `{unl}`"
+        if is_admin:
+            status_str = "📊 Баланс: `∞ Безлимит`\n⭐ Вы администратор, любые лимиты отключены."
+        else:
+            data = get_user_data(chat_id)
+            balance = data["balance"]
+            unl = data["unlimited_until"]
+            status_str = f"📊 Баланс: `{balance} запросов`"
+            if unl:
+                status_str = f"⭐ Активен безлимит (до 50 запросов в день) до: `{unl}`"
 
         balance_text = (
             f"💎 *Оплата и Баланс*\n\n"
