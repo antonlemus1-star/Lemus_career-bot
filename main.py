@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import html
+import datetime
 import aiohttp
 import requests
 import fitz  # PyMuPDF
@@ -147,7 +148,6 @@ def spend_balance(user_id: int, cost: int = 1) -> bool:
         if is_active_sub:
             last_date = data["last_active_date"]
             daily_count = data["daily_count"]
-            import datetime
             today_str = datetime.date.today().isoformat()
             
             if last_date != today_str:
@@ -594,12 +594,14 @@ async def run_skill_gap_analysis(chat_id: int):
     await send_telegram(chat_id, "📊 *Провожу анализ навыков (Skill Gap) и формирую матрицу компетенций...*")
     resume = get_active_resume(chat_id)
     if not resume:
-        await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!")
+        await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!\n\nОтправьте файл с вашим резюме (форматы: PDF, DOCX, RTF или TXT) прямо в этот чат.")
         return
 
+    current_date = datetime.date.today().strftime("%d.%m.%Y")
     prompt = (
-        "Ты — экспертный карьерный консультант уровня C-level. Проведи глубокий анализ навыков (Skill Gap Analysis) для этого кандидата, "
+        f"Текущая дата: {current_date}. Ты — экспертный карьерный консультант уровня C-level. Проведи глубокий анализ навыков (Skill Gap Analysis) для этого кандидата, "
         "претендующего на позиции Head of / Директор по развитию / Руководитель направления.\n"
+        "ВАЖНО: Оценивай гибридные роли (например, CPO + CMO) как современное преимущество и широту компетенций.\n"
         "Выдели:\n"
         "1. Сильные управленческие и технические компетенции (что уже отлично развито).\n"
         "2. Зоны роста и пробелы (каких навыков, методологий или метрик может не хватать для топовых позиций в крупных экосистемах вроде Сбера или Яндекса).\n"
@@ -645,7 +647,7 @@ async def run_resume_adaptation(chat_id: int, resume_id: int, vacancy_text: str)
     resume_text = get_resume_by_id(chat_id, resume_id) or get_active_resume(chat_id)
     
     if not resume_text:
-        await send_telegram(chat_id, "⚠️ Резюме не найдено! Загрузите файл резюме.")
+        await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!\n\nОтправьте файл с вашим резюме (форматы: PDF, DOCX, RTF или TXT) прямо в этот чат.")
         return
 
     match = re.search(r'hh\.ru/vacancy/(\d+)', vacancy_text)
@@ -655,8 +657,9 @@ async def run_resume_adaptation(chat_id: int, resume_id: int, vacancy_text: str)
         if fetched_text:
             vacancy_text = fetched_text
 
+    current_date = datetime.date.today().strftime("%d.%m.%Y")
     prompt_resume = (
-        "Ты — элитный карьерный стратег. Перепиши и оптимизируй резюме кандидата строго под требования вакансии. "
+        f"Текущая дата: {current_date}. Ты — элитный карьерный стратег. Перепиши и оптимизируй резюме кандидата строго под требования вакансии. "
         "Сохрани правдивость фактов (компании, даты), но полностью репозиционируй опыт так, чтобы он закрывал требования вакансии.\n"
         "ВАЖНО: Выдай ТОЛЬКО текст резюме, начиная сразу с ФИО. Никаких вступительных фраз вроде 'Вот ваше резюме' или 'Для того чтобы ваше резюме...'.\n"
         "Сформируй резюме строго по структуре:\n"
@@ -720,10 +723,17 @@ async def run_resume_audit(chat_id: int):
     await send_telegram(chat_id, "📋 *Провожу C-Level аудит и формирую обновленный Word-файл...*")
     resume = get_active_resume(chat_id)
     if not resume:
-        await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!")
+        await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!\n\nОтправьте файл с вашим резюме (форматы: PDF, DOCX, RTF или TXT) прямо в этот чат.")
         return
 
-    audit_prompt = f"Сделай жесткий, глубокий аудит этого резюме с позиции C-level:\n\n{resume[:8000]}"
+    current_date = datetime.date.today().strftime("%d.%m.%Y")
+    audit_prompt = (
+        f"Текущая дата: {current_date}. Сделай жесткий, глубокий аудит этого резюме с позиции C-level.\n\n"
+        "ВАЖНЫЕ ПРАВИЛА ДЛЯ АНАЛИЗА:\n"
+        "1. Не критикуй математику дат и стажа. Автосчетчики сайтов (например, hh.ru) часто считают с ошибками (особенно период 'по настоящее время'), это не вина кандидата.\n"
+        "2. Гибридные роли (например, CPO + CMO или Product + Project) оценивай как сильную сторону и широту экспертизы, а не как расфокус. Это современный тренд.\n\n"
+        f"Анализируй бизнес-результаты, метрики и подачу:\n\n{resume[:8000]}"
+    )
     audit_text = await asyncio.to_thread(ai_generate, audit_prompt)
 
     rewrite_prompt = (
@@ -772,10 +782,18 @@ async def handle_document(chat_id: int, document: dict, is_admin: bool):
         os.remove(path)
 
     if not text_content or not text_content.strip():
-        await send_telegram(chat_id, "⚠️ Не извлёк текст.", get_keyboard(is_admin))
+        await send_telegram(chat_id, "⚠️ Не удалось извлечь текст из файла. Попробуйте другой формат (лучше PDF или DOCX).", get_keyboard(is_admin))
         return
+        
     add_resume(chat_id, file_name, text_content)
-    await send_telegram(chat_id, f"✅ Резюме «{file_name}» успешно распознано и назначено активным!", get_keyboard(is_admin))
+    
+    success_text = (
+        f"✅ Резюме «{file_name}» успешно распознано и загружено в базу!\n\n"
+        "👉 *Что делать дальше?*\n"
+        "1️⃣ Нажмите *«📋 Аудит резюме»*, чтобы ИИ разобрал ваши ошибки и сильные стороны.\n"
+        "2️⃣ Или нажмите *«🔍 Поиск вакансий»*, чтобы оценить, какие топовые позиции сейчас есть на рынке под ваш профиль."
+    )
+    await send_telegram(chat_id, success_text, get_keyboard(is_admin))
 
 
 async def activate_resume(chat_id: int, rid: str):
@@ -927,15 +945,20 @@ async def process_message(msg: dict):
 
     if text.startswith("/start") or text == "🚀 Запустить бота":
         if is_admin:
-            welcome_text = "👋 Привет, администратор! У вас активирован полный неограниченный доступ ко всем возможностям бота."
+            welcome_text = "👋 Привет, администратор! У вас активирован полный неограниченный доступ ко всем возможностям бота.\nДля старта работы загрузите файл резюме (PDF/DOCX) в чат."
         else:
             welcome_text = (
-                "👋 Привет! Твой карьерный агент готов к работе.\n\n"
+                "👋 Привет! Я — твой личный ИИ-карьерный агент.\n\n"
+                "Я помогу тебе переупаковать опыт под Enterprise и найти работу мечты. Вот что я умею:\n"
+                "📋 *Аудит резюме* — жесткий C-level разбор профиля.\n"
+                "📊 *Skill Gap* — найду пробелы в навыках.\n"
+                "🛠 *Адаптация* — перепишу резюме под конкретную вакансию.\n"
+                "🔍 *Поиск* — подберу вакансии с hh.ru (приоритет топ-компаниям).\n\n"
+                "🎯 *С чего начать?*\n"
+                "Для работы мне нужно твое резюме. Нажми *«📥 Загрузить резюме»* или просто отправь файл (*PDF, DOCX или RTF*) прямо в этот чат.\n\n"
                 "📌 *Короткий дисклеймер:*\n"
-                "Проект создан на энтузиазме и пока работает на бесплатных серверах. "
-                "Если ко мне давно не обращались, мне нужно около 30–60 секунд, чтобы «проснуться». "
-                "Немного подождите после первой команды — дальше всё будет летать! 🚀\n\n"
-                "🎁 Вам начислено *30 приветственных запросов*!"
+                "Проект создан на энтузиазме и пока работает на бесплатных серверах. Если ко мне давно не обращались, мне нужно около 30–60 секунд, чтобы «проснуться». Немного подождите после первой команды — дальше всё будет летать! 🚀\n\n"
+                "🎁 Тебе начислено *30 приветственных запросов*!"
             )
         await send_telegram(chat_id, welcome_text, get_keyboard(is_admin))
 
@@ -1013,20 +1036,20 @@ async def process_message(msg: dict):
     elif text == "🛠 Адаптация резюме":
         rows = list_resumes(chat_id)
         if not rows:
-            await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!", get_keyboard(is_admin))
+            await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!\n\nОтправьте файл с вашим резюме (форматы: PDF, DOCX, RTF или TXT) прямо в этот чат.", get_keyboard(is_admin))
             return
         kb = {"inline_keyboard": [[{"text": f"📄 {r['name']}", "callback_data": f"adaptsel_{r['id']}"}] for r in rows]}
         await send_telegram(chat_id, "🛠 *Выберите резюме* для адаптации.\n\nВы можете вставить **полный текст вакансии** ИЛИ просто **скинуть ссылку на hh.ru**, и бот сам все выкачает!", kb)
 
     elif text == "📋 Аудит резюме":
         if not get_active_resume(chat_id):
-            await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!", get_keyboard(is_admin))
+            await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!\n\nОтправьте файл с вашим резюме (форматы: PDF, DOCX, RTF или TXT) прямо в этот чат.", get_keyboard(is_admin))
             return
         bg(run_resume_audit(chat_id))
 
     elif text == "📊 Анализ навыков (Skill Gap)":
         if not get_active_resume(chat_id):
-            await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!", get_keyboard(is_admin))
+            await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!\n\nОтправьте файл с вашим резюме (форматы: PDF, DOCX, RTF или TXT) прямо в этот чат.", get_keyboard(is_admin))
             return
         bg(run_skill_gap_analysis(chat_id))
 
@@ -1074,11 +1097,11 @@ async def process_message(msg: dict):
             await send_telegram(chat_id, "📁 *Твои резюме:*", kb)
 
     elif text == "📥 Загрузить резюме":
-        await send_telegram(chat_id, "📄 Отправь файл резюме (PDF, DOCX, RTF или TXT) в чат.", get_keyboard(is_admin))
+        await send_telegram(chat_id, "📄 Отправь файл резюме (лучше всего PDF или DOCX) прямо в этот чат.", get_keyboard(is_admin))
 
     elif text == "🔍 Поиск вакансий":
         if not get_active_resume(chat_id):
-            await send_telegram(chat_id, "⚠️ Сначала загрузи резюме!", get_keyboard(is_admin))
+            await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!\n\nОтправьте файл с вашим резюме (форматы: PDF, DOCX, RTF или TXT) прямо в этот чат.", get_keyboard(is_admin))
         else:
             bg(handle_search(chat_id, is_admin))
 
