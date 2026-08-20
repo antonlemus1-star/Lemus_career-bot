@@ -9,11 +9,15 @@ import html
 import datetime
 import aiohttp
 import requests
-import fitz  # PyMuPDF
 from aiohttp import web
 from docx import Document
 from google import genai
 from google.genai import types as gtypes
+
+try:
+    import pymupdf as fitz
+except ImportError:
+    import fitz  # Fallback
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("career_bot")
@@ -136,7 +140,6 @@ def get_user_data(user_id: int):
 
 
 def spend_balance(user_id: int, cost: int = 1) -> bool:
-    # Администратор всегда имеет безлимит на вызовы функций
     if ADMIN_ID != 0 and user_id == ADMIN_ID:
         return True
         
@@ -312,7 +315,18 @@ def extract_text(path: str, file_name: str) -> str:
 def bg(coro):
     t = asyncio.create_task(coro)
     TASKS.add(t)
-    t.add_done_callback(TASKS.discard)
+    
+    def _handle_task_result(task):
+        TASKS.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            coro_name = getattr(coro, '__name__', str(coro))
+            log.error(f"Фоновая ошибка в задаче {coro_name}: {e}", exc_info=True)
+            
+    t.add_done_callback(_handle_task_result)
     return t
 
 
