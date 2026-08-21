@@ -1033,13 +1033,16 @@ async def process_message(msg: dict):
         return
 
     if text.startswith("/start") or text == "🚀 Запустить бота":
-        welcome_text = (
-            "👋 Привет, Антон! Я — твой личный ИИ-карьерный агент (Версия 1.5).\n\n"
-            "💡 *Быстрый старт (Онбординг):*\n"
-            "1️⃣ Отправь файл резюме (*PDF или DOCX*) прямо в этот чат.\n"
-            "2️⃣ Используй меню ниже для аудита, поиска вакансий с hh.ru и тренировки на собеседованиях.\n\n"
-            "🎁 Тебе начислено *7 приветственных запросов*!"
-        )
+        if is_admin:
+            welcome_text = "👋 Привет, Антон! У тебя активирован бесконечный безлимитный доступ (Админ-режим).\nДля работы отправь файл резюме в чат."
+        else:
+            welcome_text = (
+                "👋 Привет! Я — твой личный ИИ-карьерный агент (Версия 1.5).\n\n"
+                "💡 *Быстрый старт (Онбординг):*\n"
+                "1️⃣ Отправь файл резюме (*PDF или DOCX*) прямо в этот чат.\n"
+                "2️⃣ Используй меню ниже для аудита, поиска вакансий с hh.ru и тренировки на собеседованиях.\n\n"
+                "🎁 Тебе начислено *7 приветственных запросов*!"
+            )
         await send_telegram(chat_id, welcome_text, get_keyboard(is_admin))
 
     elif text in ("👥 Пригласить друга", "🎁 Бонусы (Репост & Друзья)"):
@@ -1077,7 +1080,7 @@ async def process_message(msg: dict):
 
     elif text == "💎 Оплата и Баланс":
         if is_admin:
-            status_str = "📊 Баланс: `∞ Безлимит` (Администратор)"
+            status_str = "📊 Баланс: `∞ Безлимит` (Администратор — лимиты отключены)"
         else:
             data = get_user_data(chat_id)
             balance = data["balance"]
@@ -1238,7 +1241,7 @@ async def telegram_webhook(request):
             elif data_str.startswith("payunl_"):
                 parts = data_str.split("_")
                 admin_set_unlimited(int(parts[1]), 10)
-                await send_telegram(int(parts[1]), "✅ Платеж подтвержден! Активирован безлимит.")
+                await send_telegram(int(parts[1]), f"✅ Платеж подтвержден! Активирован безлимит.")
                 await http_edit_message_text(chat_id, message_id, "✅ Чек одобрен.")
             elif data_str.startswith("like_"):
                 vid = data_str[5:]
@@ -1287,7 +1290,7 @@ async def main():
         async with HTTP.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}") as resp:
             log.info("setWebhook: %s", (await resp.text())[:200])
 
-    log.info("🚀 Bot v1.5 with 7-limit Onboarding started successfully.")
+    log.info("🚀 Bot v1.5 with 7-limit & Admin bypass started successfully.")
     await asyncio.Event().wait()
 
 
