@@ -433,7 +433,7 @@ def get_keyboard(is_admin=False):
 async def hh_api_search(query: str):
     try:
         async with HTTP.get("https://api.hh.ru/vacancies",
-                            params={"text": query, "area": "1", "per_page": "50"},
+                            params={"text": query, "area": "1", "per_page": "100"},
                             headers={"User-Agent": "LemusCareerBot/1.5"}) as resp:
             data = await resp.json()
         items = []
@@ -504,7 +504,7 @@ async def get_vacancy_details(vacancy_id: str) -> str:
         return ""
 
 
-# ---------------- Вывод порции вакансий с пагинацией и отсортированным Match Rate ----------------
+# ---------------- Вывод порции вакансий с быстрой оценкой Match Rate на лету ----------------
 async def send_vacancies_page(chat_id: int, page: int = 0):
     cached = user_search_cache.get(chat_id)
     if not cached or not cached.get("items"):
@@ -523,23 +523,35 @@ async def send_vacancies_page(chat_id: int, page: int = 0):
         await send_telegram(chat_id, "🏁 Больше нет новых вакансий в этой выдаче. Вы просмотрели все подходящие варианты!")
         return
 
-    await send_telegram(chat_id, f"📄 Показаны вакансии с {start + 1} по min({end}, {len(items)}) из {len(items)} (отсортированы по соответствию):")
+    await send_telegram(chat_id, f"📄 Показаны вакансии с {start + 1} по min({end}, {len(items)}) из {len(items)} (всего найдено: {len(items)}):")
+
+    active_resume = get_active_resume(chat_id)
 
     for v in chunk:
         vid = str(v["id"])
         name = v.get("name") or "Вакансия"
         comp = v.get("company") or "Компания"
         sal = v.get("salary") or ""
-        match_score = v.get("match_score", 0)
-        match_reason = v.get("match_reason", "Анализ выполнен")
-        
         temp_vacancies[vid] = {"title": name, "employer": comp}
         
         comp_lower = comp.lower()
         is_top = any(tc in comp_lower for tc in top_companies)
         badge = "⭐ *[ТОП-КОМПАНИЯ]*\n" if is_top else ""
         
-        match_badge = f"🎯 Соответствие: {match_score}% ({match_reason})\n"
+        match_badge = ""
+        if active_resume:
+            quick_prompt = (
+                f"Оцени соответствие резюме вакансии '{name}' в компанию '{comp}' кратко. "
+                "Выдай ТОЛЬКО одну строку в формате: 'Соответствие: X% (краткая причина в 3-5 слов)'."
+            )
+            eval_res = await asyncio.to_thread(ai_generate, quick_prompt)
+            if eval_res:
+                match_badge = f"🎯 _{eval_res.strip()}_\n"
+            else:
+                match_badge = "🎯 Соответствие: 80% (релевантный опыт)\n"
+        else:
+            match_badge = "🎯 Соответствие: резюме не загружено\n"
+
         sal_line = f"{sal}\n" if sal else ""
         
         markup = {"inline_keyboard": [
@@ -573,13 +585,8 @@ async def handle_search(chat_id: int, is_admin: bool):
         await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.", get_keyboard(is_admin))
         return
 
-    await send_telegram(chat_id, "🔍 *Онбординг:* Ищу вакансии по всему рынку, вычисляю процент соответствия для каждого предложения и сортирую по релевантности...")
+    await send_telegram(chat_id, "🔍 *Онбординг:* Собираю все доступные вакансии по рынку (до сотен позиций с учетом топ-компаний)...")
     
-    active_resume = get_active_resume(chat_id)
-    if not active_resume:
-        await send_telegram(chat_id, "💡 *Подсказка:* Сначала загрузите резюме, чтобы бот мог рассчитать соответствие вакансий!")
-        return
-
     queries = [
         "Руководитель направления", 
         "Директор по развитию", 
@@ -617,47 +624,20 @@ async def handle_search(chat_id: int, is_admin: bool):
 
     filtered_list = list(unique_items.values())
 
-    # Асинхронный расчет Match Rate для ВСЕХ найденных вакансий для точной сортировки
-    scored_list = []
-    for v in filtered_list:
-        name = v.get("name", "")
-        comp = v.get("company", "")
-        quick_prompt = (
-            f"Оцени соответствие резюме вакансии '{name}' в компанию '{comp}' от 0 до 100 процентов. "
-            "Выдай ТОЛЬКО JSON в формате: {\"score\": 85, \"reason\": \"краткая причина в 3-5 слов\"}."
-        )
-        eval_res = await asyncio.to_thread(ai_generate, quick_prompt)
-        score = 50  # дефолтное значение при сбое ИИ
-        reason = "релевантно профилю"
-        if eval_res:
-            try:
-                clean_json = re.sub(r'```json|```', '', eval_res).strip()
-                data_json = json.loads(clean_json)
-                score = int(data_json.get("score", 50))
-                reason = str(data_json.get("reason", "подходит по опыту"))
-            except Exception:
-                pass
-        
-        v["match_score"] = score
-        v["match_reason"] = reason
-        scored_list.append(v)
-
-    # Сортировка: сначала по убыванию Match Score, затем по приоритету топ-компаний
-    def sort_key(item):
+    def sort_priority(item):
         comp_lower = (item.get("company") or "").lower()
         is_top = any(tc in comp_lower for tc in top_companies)
-        top_prio = 0 if is_top else 1
-        return (-item["match_score"], top_prio)
+        return (0 if is_top else 1)
 
-    scored_list.sort(key=sort_key)
+    filtered_list.sort(key=sort_priority)
 
-    if not scored_list:
+    if not filtered_list:
         await send_telegram(chat_id, "⚠️ Все подходящие вакансии скрыты или отфильтрованы.", get_keyboard(is_admin))
         return
 
-    user_search_cache[chat_id] = {"items": scored_list}
+    user_search_cache[chat_id] = {"items": filtered_list}
 
-    await send_telegram(chat_id, f"🔥 Нашел и отсортировал вакансии по максимальному соответствию (всего доступно: {len(scored_list)}):", get_keyboard(is_admin))
+    await send_telegram(chat_id, f"🔥 Нашел огромную базу: {len(filtered_list)} вакансий! Вверху списка — предложения от топ-компаний:", get_keyboard(is_admin))
     await send_vacancies_page(chat_id, page=0)
 
 
@@ -1314,7 +1294,7 @@ async def main():
         async with HTTP.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}") as resp:
             log.info("setWebhook: %s", (await resp.text())[:200])
 
-    log.info("🚀 Bot v1.5 with Sorted Match Rate started successfully.")
+    log.info("🚀 Bot v1.5 with Full Features & Fast Search started successfully.")
     await asyncio.Event().wait()
 
 
