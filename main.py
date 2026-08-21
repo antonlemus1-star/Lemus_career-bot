@@ -702,7 +702,7 @@ async def run_vacancy_match(chat_id: int, vac_info: dict):
 
 
 async def run_resume_adaptation(chat_id: int, resume_id: int, vacancy_text: str):
-    await send_telegram(chat_id, "🛠 *Онбординг:* Адаптирую резюме под специфику вакансии и формирую чистый файл Word...")
+    await send_telegram(chat_id, "🛠 *Онбординг:* Адаптирую резюме под специфику вакансии, пишу сопроводительное письмо и формирую чистый файл Word...")
     resume_text = get_resume_by_id(chat_id, resume_id) or get_active_resume(chat_id)
     
     if not resume_text:
@@ -728,7 +728,8 @@ async def run_resume_adaptation(chat_id: int, resume_id: int, vacancy_text: str)
     adapted_text = await asyncio.to_thread(ai_generate, prompt_resume)
 
     prompt_letter = (
-        "Напиши короткое, емкое и профессиональное сопроводительное письмо к этой вакансии от лица кандидата (до 1000 знаков).\n\n"
+        "Напиши короткое, емкое и профессиональное сопроводительное письмо к этой вакансии от лица кандидата (до 1000 знаков). "
+        "Письмо должно подчеркивать управленческий опыт и релевантные достижения.\n\n"
         f"--- ТРЕБОВАНИЯ ВАКАНСИИ ---\n{vacancy_text[:2000]}\n\n"
         f"--- РЕЗЮМЕ КАНДИДАТА ---\n{resume_text[:4000]}"
     )
@@ -741,8 +742,9 @@ async def run_resume_adaptation(chat_id: int, resume_id: int, vacancy_text: str)
     if "---" in adapted_text:
         adapted_text = adapted_text.split("---")[-1].strip()
 
+    # Автоматически отправляем сопроводительное письмо в чат перед отправкой файла
     if cover_letter:
-        await send_telegram(chat_id, f"📝 *Сопроводительное письмо:*\n\n{cover_letter}")
+        await send_telegram(chat_id, f"📝 *Готовое сопроводительное письмо для работодателя:*\n\n{cover_letter}")
 
     try:
         doc = Document()
@@ -757,7 +759,7 @@ async def run_resume_adaptation(chat_id: int, resume_id: int, vacancy_text: str)
 
         await send_document_bytes(
             chat_id, file_bytes, filename="Adapted_Resume.docx", 
-            caption="📄 *Готово! Ваше адаптированное резюме (Word) прикреплено выше. Смело отправляйте его работодателю!*",
+            caption="📄 *Готово! Ваше адаптированное резюме (Word) прикреплено выше.*",
             content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
     except Exception as e:
@@ -1298,7 +1300,7 @@ async def main():
         async with HTTP.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}") as resp:
             log.info("setWebhook: %s", (await resp.text())[:200])
 
-    log.info("🚀 Bot v1.5 with Validated Match Rate & Onboarding started successfully.")
+    log.info("🚀 Bot v1.5 with Auto Cover Letter & Full Features started successfully.")
     await asyncio.Event().wait()
 
 
