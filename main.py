@@ -59,7 +59,7 @@ cur.executescript("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY, 
     username TEXT,
-    balance INTEGER DEFAULT 30,
+    balance INTEGER DEFAULT 7,
     unlimited_until TIMESTAMP,
     daily_count INTEGER DEFAULT 0,
     last_active_date TEXT,
@@ -121,14 +121,14 @@ def register_user(user_id: int, username: str, referrer_id: int = None) -> bool:
         cur.execute("SELECT 1 FROM users WHERE user_id=?", (referrer_id,))
         if not cur.fetchone():
             referrer_id = None
-    initial_balance = 30
+    initial_balance = 7
     cur.execute(
         "INSERT INTO users (user_id, username, balance, referred_by) VALUES (?, ?, ?, ?)",
         (user_id, username, initial_balance, referrer_id)
     )
     conn.commit()
     if referrer_id:
-        cur.execute("UPDATE users SET balance = balance + 30 WHERE user_id=?", (referrer_id,))
+        cur.execute("UPDATE users SET balance = balance + 7 WHERE user_id=?", (referrer_id,))
         conn.commit()
     return True
 
@@ -137,7 +137,7 @@ def get_user_data(user_id: int):
     cur.execute("SELECT balance, unlimited_until, daily_count, last_active_date FROM users WHERE user_id=?", (user_id,))
     row = cur.fetchone()
     if not row:
-        return {"balance": 30, "unlimited_until": None, "daily_count": 0, "last_active_date": ""}
+        return {"balance": 7, "unlimited_until": None, "daily_count": 0, "last_active_date": ""}
     return {"balance": row[0], "unlimited_until": row[1], "daily_count": row[2], "last_active_date": row[3]}
 
 
@@ -1038,7 +1038,7 @@ async def process_message(msg: dict):
             "💡 *Быстрый старт (Онбординг):*\n"
             "1️⃣ Отправь файл резюме (*PDF или DOCX*) прямо в этот чат.\n"
             "2️⃣ Используй меню ниже для аудита, поиска вакансий с hh.ru и тренировки на собеседованиях.\n\n"
-            "🎁 Тебе начислено *30 приветственных запросов*!"
+            "🎁 Тебе начислено *7 приветственных запросов*!"
         )
         await send_telegram(chat_id, welcome_text, get_keyboard(is_admin))
 
@@ -1050,7 +1050,7 @@ async def process_message(msg: dict):
         
         bonus_text = (
             "🎁 *Программа лояльности и бонусы*\n\n"
-            "👥 *1. Пригласить друга (+30 запросов)*\n"
+            "👥 *1. Пригласить друга (+7 запросов)*\n"
             f"Ваша персональная ссылка:\n`{ref_link}`\n\n"
             "📢 *2. Поделиться в соцсетях (+20 запросов)*\n"
             "Опубликуйте пост о боте в LinkedIn, TenChat, VK, Сетке или Telegram и пришлите ссылку."
@@ -1287,7 +1287,7 @@ async def main():
         async with HTTP.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}") as resp:
             log.info("setWebhook: %s", (await resp.text())[:200])
 
-    log.info("🚀 Bot v1.5 with Onboarding started successfully.")
+    log.info("🚀 Bot v1.5 with 7-limit Onboarding started successfully.")
     await asyncio.Event().wait()
 
 
