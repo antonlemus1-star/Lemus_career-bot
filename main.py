@@ -20,7 +20,7 @@ except ImportError:
     import fitz  # Fallback
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("career_bot_v16")
+log = logging.getLogger("career_bot")
 
 # ---------------- Конфиг ----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -36,12 +36,10 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# Добавлена поддержка Gemini 3.6 Flash в приоритет
 GEMINI_MODEL_CANDIDATES = list(dict.fromkeys([
-    os.getenv("GEMINI_MODEL", "gemini-3.6-flash"),
-    "gemini-3.6-flash",
+    os.getenv("GEMINI_MODEL", "gemini-flash-latest"),
     "gemini-3.5-flash",
-    "gemini-flash-latest",
+    "gemini-3.1-flash-lite",
 ]))
 GROQ_MODEL = "llama-3.1-8b-instant"
 
@@ -52,7 +50,6 @@ temp_vacancies = {}
 user_states = {}          
 user_adapt_target = {}    
 user_search_cache = {}    
-interview_sessions = {}   # Хранилище сессий тренажера собеседований
 
 # ---------------- БД ----------------
 conn = sqlite3.connect("tracker.db", check_same_thread=False)
@@ -61,7 +58,7 @@ cur.executescript("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY, 
     username TEXT,
-    balance INTEGER DEFAULT 7,
+    balance INTEGER DEFAULT 30,
     unlimited_until TIMESTAMP,
     daily_count INTEGER DEFAULT 0,
     last_active_date TEXT,
@@ -85,8 +82,7 @@ CREATE TABLE IF NOT EXISTS liked_vacancies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
     vacancy_id TEXT,
-    title TEXT,
-    status TEXT DEFAULT 'Откликнулся'
+    title TEXT
 );
 CREATE TABLE IF NOT EXISTS feedback (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,14 +119,14 @@ def register_user(user_id: int, username: str, referrer_id: int = None) -> bool:
         cur.execute("SELECT 1 FROM users WHERE user_id=?", (referrer_id,))
         if not cur.fetchone():
             referrer_id = None
-    initial_balance = 7
+    initial_balance = 30
     cur.execute(
         "INSERT INTO users (user_id, username, balance, referred_by) VALUES (?, ?, ?, ?)",
         (user_id, username, initial_balance, referrer_id)
     )
     conn.commit()
     if referrer_id:
-        cur.execute("UPDATE users SET balance = balance + 7 WHERE user_id=?", (referrer_id,))
+        cur.execute("UPDATE users SET balance = balance + 30 WHERE user_id=?", (referrer_id,))
         conn.commit()
     return True
 
@@ -139,7 +135,7 @@ def get_user_data(user_id: int):
     cur.execute("SELECT balance, unlimited_until, daily_count, last_active_date FROM users WHERE user_id=?", (user_id,))
     row = cur.fetchone()
     if not row:
-        return {"balance": 7, "unlimited_until": None, "daily_count": 0, "last_active_date": ""}
+        return {"balance": 30, "unlimited_until": None, "daily_count": 0, "last_active_date": ""}
     return {"balance": row[0], "unlimited_until": row[1], "daily_count": row[2], "last_active_date": row[3]}
 
 
@@ -225,7 +221,7 @@ def is_vacancy_hidden(user_id: int, vacancy_id: str) -> bool:
 
 
 def like_vacancy(user_id: int, vacancy_id: str, title: str):
-    cur.execute("INSERT INTO liked_vacancies (user_id, vacancy_id, title, status) VALUES (?, ?, ?, 'Откликнулся')", (user_id, vacancy_id, title))
+    cur.execute("INSERT INTO liked_vacancies (user_id, vacancy_id, title) VALUES (?, ?, ?)", (user_id, vacancy_id, title))
     conn.commit()
 
 
@@ -237,7 +233,7 @@ def get_user_preferences(user_id: int) -> str:
     return ", ".join([r[0] for r in rows])
 
 
-# ---------------- ИИ-слой (Каскадная защита с Gemini 3.6 Flash) ----------------
+# ---------------- ИИ-слой (Каскадная защита) ----------------
 def _openai_compat(prompt: str, base: str, key: str, model: str) -> str:
     r = requests.post(
         f"{base}/chat/completions",
@@ -263,7 +259,7 @@ def ai_generate(prompt: str):
                     log.info("AI ok: gemini/%s", m)
                     return resp.text
             except Exception as e:
-                log.warning("Gemini model %s failed: %s", m, str(e)[:100])
+                log.warning("Gemini %s failed: %s", m, str(e)[:100])
                 
     if GROQ_KEY:
         try:
@@ -435,28 +431,14 @@ def get_keyboard(is_admin=False):
 async def hh_api_search(query: str):
     try:
         async with HTTP.get("https://api.hh.ru/vacancies",
-                            params={"text": query, "area": "1", "per_page": "100"},
-                            headers={"User-Agent": "LemusCareerBot/1.6"}) as resp:
+                            params={"text": query, "area": "1", "per_page": "50"},
+                            headers={"User-Agent": "LemusCareerBot/1.0"}) as resp:
             data = await resp.json()
         items = []
         for i in data.get("items", []):
-            salary = i.get("salary")
-            sal_str = ""
-            if salary:
-                frm = salary.get("from")
-                to = salary.get("to")
-                cur_s = salary.get("currency", "RUR")
-                if frm and to: sal_str = f"💰 {frm} – {to} {cur_s}"
-                elif frm: sal_str = f"💰 от {frm} {cur_s}"
-                elif to: sal_str = f"💰 до {to} {cur_s}"
-            
-            items.append({
-                "id": i.get("id"), 
-                "name": i.get("name"),
-                "company": (i.get("employer") or {}).get("name"),
-                "salary": sal_str,
-                "url": i.get("alternate_url") or f"https://hh.ru/vacancy/{i.get('id')}"
-            })
+            items.append({"id": i.get("id"), "name": i.get("name"),
+                          "company": (i.get("employer") or {}).get("name"),
+                          "url": i.get("alternate_url") or f"https://hh.ru/vacancy/{i.get('id')}"})
         return items or None
     except Exception as e:
         log.warning("hh API failed: %s", str(e)[:150])
@@ -477,15 +459,9 @@ async def hh_scrape_search(query: str):
         out = []
         for it in items:
             vid = it.get("vacancyId") or it.get("id")
-            sal = it.get("salary")
-            sal_str = f"💰 {sal}" if sal else ""
-            out.append({
-                "id": vid, 
-                "name": it.get("name"),
-                "company": (it.get("company") or {}).get("name"),
-                "salary": sal_str,
-                "url": f"https://hh.ru/vacancy/{vid}"
-            })
+            out.append({"id": vid, "name": it.get("name"),
+                        "company": (it.get("company") or {}).get("name"),
+                        "url": f"https://hh.ru/vacancy/{vid}"})
         return out or None
     except Exception as e:
         log.warning("hh scrape failed: %s", str(e)[:150])
@@ -495,7 +471,7 @@ async def hh_scrape_search(query: str):
 async def get_vacancy_details(vacancy_id: str) -> str:
     try:
         async with HTTP.get(f"https://api.hh.ru/vacancies/{vacancy_id}",
-                            headers={"User-Agent": "LemusCareerBot/1.6"}) as resp:
+                            headers={"User-Agent": "LemusCareerBot/1.0"}) as resp:
             data = await resp.json()
             
         description = re.sub(r'<[^>]+>', '', data.get("description", ""))
@@ -506,11 +482,11 @@ async def get_vacancy_details(vacancy_id: str) -> str:
         return ""
 
 
-# ---------------- Вывод порции вакансий с отсортированным по процентам Match Rate ----------------
+# ---------------- Вывод порции вакансий с пагинацией ----------------
 async def send_vacancies_page(chat_id: int, page: int = 0):
     cached = user_search_cache.get(chat_id)
     if not cached or not cached.get("items"):
-        await send_telegram(chat_id, "💡 *Подсказка:* Список вакансий устарел. Нажмите «🔍 Поиск вакансий» в меню, чтобы запустить новый подбор.")
+        await send_telegram(chat_id, "⚠️ Список вакансий устарел или не найден. Запустите новый поиск через меню.")
         return
 
     items = cached["items"]
@@ -519,32 +495,27 @@ async def send_vacancies_page(chat_id: int, page: int = 0):
     end = start + page_size
     chunk = items[start:end]
 
+    top_companies = ["сбер", "мтс", "яндекс", "т-банк", "тинькофф", "втб", "альфа", "билайн", "мегафон", "ростелеком", "первый бит"]
+
     if not chunk:
-        await send_telegram(chat_id, "🏁 Больше нет новых вакансий в этой выдаче. Вы просмотрели все подходящие варианты!")
+        await send_telegram(chat_id, "🏁 Больше нет новых вакансий в этой выдаче.")
         return
 
-    await send_telegram(chat_id, f"📄 Показаны вакансии с {start + 1} по min({end}, {len(items)}) из {len(items)} (отсортированы строго по проценту соответствия):")
+    await send_telegram(chat_id, f"📄 Показаны вакансии с {start + 1} по min({end}, {len(items)}) из {len(items)}:")
 
     for v in chunk:
         vid = str(v["id"])
         name = v.get("name") or "Вакансия"
         comp = v.get("company") or "Компания"
-        sal = v.get("salary") or ""
-        match_score = v.get("match_score", 0)
-        match_reason = v.get("match_reason", "релевантно профилю")
-        
         temp_vacancies[vid] = {"title": name, "employer": comp}
         
         comp_lower = comp.lower()
-        is_top = any(tc in comp_lower for tc in ["сбер", "мтс", "яндекс", "т-банк", "тинькофф", "втб", "альфа", "билайн", "мегафон", "ростелеком", "первый бит"])
+        is_top = any(tc in comp_lower for tc in top_companies)
         badge = "⭐ *[ТОП-КОМПАНИЯ]*\n" if is_top else ""
-        
-        match_badge = f"🎯 Соответствие: {match_score}% ({match_reason})\n"
-        sal_line = f"{sal}\n" if sal else ""
         
         markup = {"inline_keyboard": [
             [
-                {"text": "👍 Откликнулся", "callback_data": f"like_{vid}"},
+                {"text": "👍 Подходит", "callback_data": f"like_{vid}"},
                 {"text": "✍️ Сопроводительное", "callback_data": f"gen_{vid}"}
             ],
             [
@@ -552,7 +523,7 @@ async def send_vacancies_page(chat_id: int, page: int = 0):
                 {"text": "🗑 Мусор", "callback_data": f"hide_{vid}"}
             ]
         ]}
-        await send_telegram(chat_id, f"{badge}🏢 *{comp}*\n💼 [{name}]({v.get('url')})\n{sal_line}{match_badge}", markup)
+        await send_telegram(chat_id, f"{badge}🏢 *{comp}*\n💼 [{name}]({v.get('url')})", markup)
         await asyncio.sleep(0.2)
 
     if end < len(items):
@@ -562,23 +533,18 @@ async def send_vacancies_page(chat_id: int, page: int = 0):
                 [{"text": "▶️ Далее (следующие 15)", "callback_data": f"page_{next_page}"}]
             ]
         }
-        await send_telegram(chat_id, f"💡 *Онбординг:* Осталось еще {len(items) - end} вакансий. Листайте дальше кнопкой ниже.", more_markup)
+        await send_telegram(chat_id, f"Осталось еще {len(items) - end} вакансий в списке.", more_markup)
     else:
-        await send_telegram(chat_id, "🎉 Вы просмотрели всю выдачу! Используйте кнопки меню для дальнейших действий.")
+        await send_telegram(chat_id, "🎉 Вы просмотрели все найденные вакансии по этому запросу!")
 
 
-# ---------------- Поиск и предварительная сортировка по % ----------------
+# ---------------- Фичи бота ----------------
 async def handle_search(chat_id: int, is_admin: bool):
     if not spend_balance(chat_id, cost=1):
         await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.", get_keyboard(is_admin))
         return
 
-    active_resume = get_active_resume(chat_id)
-    if not active_resume:
-        await send_telegram(chat_id, "💡 *Подсказка:* Сначала загрузите резюме в чат, чтобы бот мог рассчитать процент соответствия для вакансий!")
-        return
-
-    await send_telegram(chat_id, "🔍 *Онбординг:* Собираю сотни вакансий по рынку и вычисляю точный процент соответствия (Match Rate) для сортировки по релевантности...")
+    await send_telegram(chat_id, "🔍 Ищу вакансии по всему рынку (с приоритетом для топ-компаний)...")
     
     queries = [
         "Руководитель направления", 
@@ -617,19 +583,663 @@ async def handle_search(chat_id: int, is_admin: bool):
 
     filtered_list = list(unique_items.values())
 
-    # Асинхронная экспресс-оценка Match Rate для всех найденных вакансий
-    scored_list = []
-    for v in filtered_list:
-        name = v.get("name", "")
-        comp = v.get("company", "")
-        quick_prompt = (
-            f"Оцени соответствие резюме кандидата вакансии '{name}' в компанию '{comp}' по шкале от 0 до 100 процентов на основе текста резюме.\n"
-            f"Резюме:\n{active_resume[:2000]}\n\n"
-            "Выдай ТОЛЬКО JSON строго в формате: {\"score\": 85, \"reason\": \"причина в 3-5 слов\"}."
+    def sort_priority(item):
+        comp_lower = (item.get("company") or "").lower()
+        is_top = any(tc in comp_lower for tc in top_companies)
+        return (0 if is_top else 1)
+
+    filtered_list.sort(key=sort_priority)
+
+    if not filtered_list:
+        await send_telegram(chat_id, "⚠️ Все подходящие вакансии скрыты или отфильтрованы.", get_keyboard(is_admin))
+        return
+
+    user_search_cache[chat_id] = {"items": filtered_list}
+
+    await send_telegram(chat_id, f"🔥 Нашел вакансии (вверху списка — предложения от топ-компаний, всего доступно: {len(filtered_list)}):", get_keyboard(is_admin))
+    await send_vacancies_page(chat_id, page=0)
+
+
+async def run_skill_gap_analysis(chat_id: int):
+    if not spend_balance(chat_id, cost=1):
+        await send_telegram(chat_id, "⚠️ Недостаточно запросов для анализа навыков!")
+        return
+
+    await send_telegram(chat_id, "📊 *Провожу анализ навыков (Skill Gap) и формирую матрицу компетенций...*")
+    resume = get_active_resume(chat_id)
+    if not resume:
+        await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!\n\nОтправьте файл с вашим резюме (форматы: PDF, DOCX, RTF или TXT) прямо в этот чат.")
+        return
+
+    current_date = datetime.date.today().strftime("%d.%m.%Y")
+    prompt = (
+        f"Текущая дата: {current_date}. Ты — экспертный карьерный консультант уровня C-level. Проведи глубокий анализ навыков (Skill Gap Analysis) для этого кандидата, "
+        "претендующего на позиции Head of / Директор по развитию / Руководитель направления.\n"
+        "ВАЖНО: Оценивай гибридные роли (например, CPO + CMO) как современное преимущество и широту компетенций.\n"
+        "Выдели:\n"
+        "1. Сильные управленческие и технические компетенции (что уже отлично развито).\n"
+        "2. Зоны роста и пробелы (каких навыков, методологий или метрик может не хватать для топовых позиций в крупных экосистемах вроде Сбера или Яндекса).\n"
+        "3. Рекомендации по развитию на ближайшие 3–6 месяцев.\n\n"
+        f"Резюме кандидата:\n{resume[:8000]}"
+    )
+    analysis = await asyncio.to_thread(ai_generate, prompt)
+    if not analysis:
+        await send_telegram(chat_id, "⚠️ ИИ временно недоступен, не удалось провести анализ навыков.")
+        return
+    await send_telegram(chat_id, f"📊 *Анализ навыков (Skill Gap):*\n\n{analysis}")
+
+
+async def run_ai_generation(chat_id: int, vac_info: dict):
+    await send_telegram(chat_id, f"✍️ Готовлю сопроводительное письмо для *{vac_info['employer']}* на позицию «{vac_info['title']}»...")
+    resume = get_active_resume(chat_id) or "Опыт не указан."
+    letter = await asyncio.to_thread(ai_generate,
+        f"Напиши профессиональное сопроводительное письмо на позицию '{vac_info['title']}' "
+        f"в '{vac_info['employer']}' на основе резюме:\n\n{resume}")
+    if not letter:
+        await send_telegram(chat_id, "⚠️ ИИ недоступен, письмо не получилось.")
+        return
+    await send_telegram(chat_id, f"📝 *Сопроводительное письмо:*\n\n{letter}")
+
+
+async def run_vacancy_match(chat_id: int, vac_info: dict):
+    await send_telegram(chat_id, f"📊 Анализирую соответствие вашего резюме вакансии *{vac_info['title']}* в компании *{vac_info['employer']}*...")
+    resume = get_active_resume(chat_id) or "Резюме не найдено."
+    prompt = (
+        f"Проанализируй, насколько резюме кандидата подходит под вакансию '{vac_info['title']}' в компанию '{vac_info['employer']}'. "
+        f"Дай оценку соответствия в процентах, перечисли сильные стороны кандидата для этой роли, "
+        f"а также укажи ключевые пробелы (что нужно исправить или добавить в резюме):\n\nРезюме:\n{resume}"
+    )
+    analysis = await asyncio.to_thread(ai_generate, prompt)
+    if not analysis:
+        await send_telegram(chat_id, "⚠️ ИИ временно недоступен, не удалось провести анализ.")
+        return
+    await send_telegram(chat_id, f"📊 *Анализ соответствия вакансии:*\n\n{analysis}")
+
+
+async def run_resume_adaptation(chat_id: int, resume_id: int, vacancy_text: str):
+    await send_telegram(chat_id, "🛠 *Адаптирую резюме под специфику вакансии и формирую чистый файл...*")
+    resume_text = get_resume_by_id(chat_id, resume_id) or get_active_resume(chat_id)
+    
+    if not resume_text:
+        await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!\n\nОтправьте файл с вашим резюме (форматы: PDF, DOCX, RTF или TXT) прямо в этот чат.")
+        return
+
+    match = re.search(r'hh\.ru/vacancy/(\d+)', vacancy_text)
+    if match:
+        vac_id = match.group(1)
+        fetched_text = await get_vacancy_details(vac_id)
+        if fetched_text:
+            vacancy_text = fetched_text
+
+    current_date = datetime.date.today().strftime("%d.%m.%Y")
+    prompt_resume = (
+        f"Текущая дата: {current_date}. Ты — элитный карьерный стратег. Перепиши и оптимизируй резюме кандидата строго под требования вакансии. "
+        "Сохрани правдивость фактов (компании, даты), но полностью репозиционируй опыт так, чтобы он закрывал требования вакансии.\n"
+        "ВАЖНО: Выдай ТОЛЬКО текст резюме, начиная сразу с ФИО. Никаких вступительных фраз вроде 'Вот ваше резюме' или 'Для того чтобы ваше резюме...'.\n"
+        "Сформируй резюме строго по структуре:\n"
+        "1. ФИО и контакты\n"
+        "2. Summary\n"
+        "3. Ключевые навыки\n"
+        "4. Опыт работы\n"
+        "5. Образование\n\n"
+        f"--- ТРЕБОВАНИЯ ВАКАНСИИ ---\n{vacancy_text[:3000]}\n\n"
+        f"--- ИСХОДНОЕ РЕЗЮМЕ КАНДИДАТА ---\n{resume_text[:6000]}"
+    )
+    adapted_text = await asyncio.to_thread(ai_generate, prompt_resume)
+
+    prompt_letter = (
+        "Напиши короткое, емкое и профессиональное сопроводительное письмо к этой вакансии от лица кандидата. "
+        "Письмо должно быть выдержано в деловом стиле C-level, подчеркивать релевантный управленческий опыт и достижения, "
+        "без воды и штампов (до 1000 знаков).\n\n"
+        f"--- ТРЕБОВАНИЯ ВАКАНСИИ ---\n{vacancy_text[:2000]}\n\n"
+        f"--- РЕЗЮМЕ КАНДИДАТА ---\n{resume_text[:4000]}"
+    )
+    cover_letter = await asyncio.to_thread(ai_generate, prompt_letter)
+
+    if not adapted_text:
+        await send_telegram(chat_id, "⚠️ ИИ недоступен. Попробуйте еще раз.")
+        return
+
+    if "---" in adapted_text:
+        adapted_text = adapted_text.split("---")[-1].strip()
+
+    if cover_letter:
+        await send_telegram(chat_id, f"📝 *Готовое сопроводительное письмо для работодателя:*\n\n{cover_letter}")
+
+    try:
+        doc = Document()
+        for p in adapted_text.split("\n"):
+            clean_p = re.sub(r'[*#]', '', p).strip()
+            if clean_p:
+                doc.add_paragraph(clean_p)
+        
+        stream = io.BytesIO()
+        doc.save(stream)
+        file_bytes = stream.getvalue()
+
+        await send_document_bytes(
+            chat_id, 
+            file_bytes, 
+            filename="Adapted_Resume.docx", 
+            caption="📄 *Ваше обновленное резюме готово к отправке работодателю!*",
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
-        eval_res = await asyncio.to_thread(ai_generate, quick_prompt)
-        score = 50
-        reason = "релевантный опыт"
-        if eval_res:
+    except Exception as e:
+        log.error("DOCX generation failed: %s", e)
+        await send_telegram(chat_id, "⚠️ Ошибка формирования файла.")
+
+
+async def run_resume_audit(chat_id: int):
+    if not spend_balance(chat_id, cost=1):
+        await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
+        return
+
+    await send_telegram(chat_id, "📋 *Провожу C-Level аудит и формирую обновленный Word-файл...*")
+    resume = get_active_resume(chat_id)
+    if not resume:
+        await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!\n\nОтправьте файл с вашим резюме (форматы: PDF, DOCX, RTF или TXT) прямо в этот чат.")
+        return
+
+    current_date = datetime.date.today().strftime("%d.%m.%Y")
+    audit_prompt = (
+        f"Текущая дата: {current_date}. Сделай жесткий, глубокий аудит этого резюме с позиции C-level.\n\n"
+        "ВАЖНЫЕ ПРАВИЛА ДЛЯ АНАЛИЗА:\n"
+        "1. Не критикуй математику дат и стажа. Автосчетчики сайтов (например, hh.ru) часто считают с ошибками (особенно период 'по настоящее время'), это не вина кандидата.\n"
+        "2. Гибридные роли (например, CPO + CMO или Product + Project) оценивай как сильную сторону и широту экспертизы, а не как расфокус. Это современный тренд.\n\n"
+        f"Анализируй бизнес-результаты, метрики и подачу:\n\n{resume[:8000]}"
+    )
+    audit_text = await asyncio.to_thread(ai_generate, audit_prompt)
+
+    rewrite_prompt = (
+        "Перепиши это резюме для позиций уровня Head / Director. Убери мелкую операционку, сделай упор на бизнес-результаты и метрики. "
+        "Сохрани структуру (Контакты, Summary, Навыки, Опыт работы, Образование). Выдай ТОЛЬКО чистый текст без звездочек:\n\n"
+        f"{resume[:8000]}"
+    )
+    improved_text = await asyncio.to_thread(ai_generate, rewrite_prompt)
+
+    if audit_text and improved_text:
+        await send_telegram(chat_id, f"📋 *C-Level Аудит:*\n\n{audit_text}")
+        doc = Document()
+        for p in improved_text.split("\n"):
+            clean_p = re.sub(r'[*#]', '', p).strip()
+            if clean_p:
+                doc.add_paragraph(clean_p)
+        stream = io.BytesIO()
+        doc.save(stream)
+        await send_document_bytes(chat_id, stream.getvalue(), "C_Level_Resume_Pro.docx", "✅ Ваше обновленное резюме (Word).")
+    else:
+        await send_telegram(chat_id, "⚠️ Ошибка ИИ.")
+
+
+async def handle_document(chat_id: int, document: dict, is_admin: bool):
+    file_id = document["file_id"]
+    file_name = document.get("file_name", "resume.pdf")
+    try:
+        async with HTTP.get(f"{TELEGRAM_API}/getFile", params={"file_id": file_id}) as resp:
+            file_info = await resp.json()
+        file_path = file_info.get("result", {}).get("file_path")
+        if not file_path:
+            await send_telegram(chat_id, "⚠️ Не смог скачать файл.", get_keyboard(is_admin))
+            return
+        async with HTTP.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}") as f_resp:
+            content = await f_resp.read()
+    except Exception as e:
+        log.error("download failed: %s", e)
+        await send_telegram(chat_id, "⚠️ Ошибка скачивания файла.", get_keyboard(is_admin))
+        return
+
+    path = f"tmp_{chat_id}_{file_name}"
+    with open(path, "wb") as f:
+        f.write(content)
+    text_content = await asyncio.to_thread(extract_text, path, file_name)
+    if os.path.exists(path):
+        os.remove(path)
+
+    if not text_content or not text_content.strip():
+        await send_telegram(chat_id, "⚠️ Не удалось извлечь текст из файла. Попробуйте другой формат (лучше PDF или DOCX).", get_keyboard(is_admin))
+        return
+        
+    add_resume(chat_id, file_name, text_content)
+    
+    success_text = (
+        f"✅ Резюме «{file_name}» успешно распознано и загружено в базу!\n\n"
+        "👉 *Что делать дальше?*\n"
+        "1️⃣ Нажмите *«📋 Аудит резюме»*, чтобы ИИ разобрал ваши ошибки и сильные стороны.\n"
+        "2️⃣ Или нажмите *«🔍 Поиск вакансий»*, чтобы оценить, какие топовые позиции сейчас есть на рынке под ваш профиль."
+    )
+    await send_telegram(chat_id, success_text, get_keyboard(is_admin))
+
+
+async def activate_resume(chat_id: int, rid: str):
+    try:
+        rid = int(rid)
+    except ValueError:
+        return
+    cur.execute("UPDATE resumes SET active=0 WHERE user_id=?", (chat_id,))
+    cur.execute("UPDATE resumes SET active=1 WHERE id=? AND user_id=?", (rid, chat_id))
+    conn.commit()
+    await send_telegram(chat_id, "✅ Резюме сделано активным.", get_keyboard(ADMIN_ID != 0 and chat_id == ADMIN_ID))
+
+
+# ---------------- Система оплаты ----------------
+async def send_stars_invoice(chat_id, amount_stars: int, title: str, payload: str):
+    await HTTP.post(f"{TELEGRAM_API}/sendInvoice", json={
+        "chat_id": chat_id,
+        "title": title,
+        "description": "Пополнение баланса карьерного агента",
+        "payload": payload,
+        "currency": "XTR",
+        "prices": [{"label": "Stars", "amount": amount_stars}]
+    })
+
+
+# ---------------- Обработка сообщений ----------------
+async def process_message(msg: dict):
+    chat_id = msg["chat"]["id"]
+    username = msg["chat"].get("username", "")
+    text = (msg.get("text") or "").strip()
+    document = msg.get("document")
+    photo = msg.get("photo")
+
+    referrer_id = None
+    if text.startswith("/start"):
+        parts = text.split()
+        if len(parts) > 1:
             try:
-                clean_json = re.sub(r'```json|
+                referrer_id = int(parts[1])
+            except ValueError:
+                pass
+
+    register_user(chat_id, username, referrer_id)
+    is_admin = (ADMIN_ID != 0 and chat_id == ADMIN_ID)
+
+    if is_admin and text.startswith("/reply"):
+        parts = text.split(maxsplit=2)
+        if len(parts) >= 3:
+            try:
+                target_uid = int(parts[1])
+                reply_text = parts[2]
+                await send_telegram(target_uid, f"💬 *Сообщение от администратора:*\n\n{reply_text}")
+                await send_telegram(chat_id, f"✅ Ответ успешно отправлен пользователю `{target_uid}`.")
+            except ValueError:
+                await send_telegram(chat_id, "⚠️ Ошибка в ID пользователя. Пример: `/reply 12345678 Текст ответа`")
+        else:
+            await send_telegram(chat_id, "⚠️ Формат: `/reply <user_id> <текст>`")
+        return
+
+    if user_states.get(chat_id) == "waiting_for_feedback":
+        user_states.pop(chat_id, None)
+        cur.execute("INSERT INTO feedback (user_id, username, message) VALUES (?, ?, ?)", (chat_id, username, text))
+        conn.commit()
+        await send_telegram(chat_id, "✅ Ваше сообщение успешно отправлено администратору. Спасибо за обратную связь!")
+        await send_telegram(
+            ADMIN_ID,
+            f"📩 *Новое сообщение обратной связи!*\nОт: @{username or 'нет_юзера'} (ID: `{chat_id}`)\n\n💬 Текст:\n{text}\n\n_Ответить командой:_\n`/reply {chat_id} Ваш текст`"
+        )
+        return
+
+    if user_states.get(chat_id) == "waiting_for_repost":
+        user_states.pop(chat_id, None)
+        
+        urls = re.findall(r'(https?://[^\s]+)', text) if text else []
+        
+        if urls:
+            url = urls[0].lower()
+            network = "Other"
+            if "vk.com" in url: network = "VK"
+            elif "linkedin" in url: network = "LinkedIn"
+            elif "tenchat" in url: network = "TenChat"
+            elif "setka" in url or "hh.ru" in url: network = "Сетка"
+            elif "t.me" in url: network = "Telegram"
+            
+            cur.execute("SELECT 1 FROM social_shares WHERE user_id=? AND network=?", (chat_id, network))
+            if cur.fetchone():
+                await send_telegram(chat_id, f"⚠️ Вы уже получали бонус за репост в платформе: {network}.")
+            else:
+                cur.execute("INSERT INTO social_shares (user_id, network) VALUES (?, ?)", (chat_id, network))
+                conn.commit()
+                admin_add_balance(chat_id, 20)
+                await send_telegram(chat_id, f"🎉 Отлично! Ссылка распознана. Вам автоматически начислено 20 запросов за пост в {network}.")
+                await send_telegram(ADMIN_ID, f"📢 Пользователь @{username or 'нет'} (ID: `{chat_id}`) получил авто-бонус за ссылку ({network}):\n{url}")
+            return
+        
+        await send_telegram(chat_id, "⚠️ Ошибка: ссылка не найдена. Бот принимает **только прямые ссылки** на посты (начинаются с http:// или https://). Скриншоты и картинки не обрабатываются.\n\nСкопируйте ссылку на ваш пост, нажмите кнопку отправки еще раз и вставьте её в чат.")
+        return
+
+    if photo and user_states.get(chat_id) == "waiting_for_receipt":
+        user_states.pop(chat_id, None)
+        await HTTP.post(f"{TELEGRAM_API}/forwardMessage", json={
+            "chat_id": ADMIN_ID, 
+            "from_chat_id": chat_id, 
+            "message_id": msg["message_id"]
+        })
+        await send_telegram(chat_id, "✅ Чек отправлен администратору на проверку. Ожидайте зачисления!")
+        
+        admin_markup = {
+            "inline_keyboard": [
+                [{"text": "✅ +50 запросов", "callback_data": f"paycred_{chat_id}_50"}],
+                [{"text": "⭐ Безлимит 10 дней", "callback_data": f"payunl_{chat_id}"}]
+            ]
+        }
+        await send_telegram(
+            ADMIN_ID, 
+            f"📸 *Новый чек на проверку!*\nОт: @{username or 'нет_юзера'} (ID: `{chat_id}`)",
+            reply_markup=admin_markup
+        )
+        return
+
+    if document:
+        await handle_document(chat_id, document, is_admin)
+        return
+    if not text:
+        return
+
+    if is_admin and text.startswith("/add_credits"):
+        parts = text.split()
+        if len(parts) == 3:
+            try:
+                target_id = int(parts[1])
+                amount = int(parts[2])
+                new_bal = admin_add_balance(target_id, amount)
+                await send_telegram(chat_id, f"✅ Пользователю `{target_id}` добавлено {amount} запросов. Баланс: `{new_bal}`")
+            except ValueError:
+                await send_telegram(chat_id, "⚠️ Формат: `/add_credits 123456789 50`")
+        return
+
+    if user_states.get(chat_id) == "waiting_for_adaptation_vacancy":
+        rid = user_adapt_target.get(chat_id)
+        user_states.pop(chat_id, None)
+        user_adapt_target.pop(chat_id, None)
+
+        if not spend_balance(chat_id, cost=1):
+            await send_telegram(chat_id, "⚠️ Недостаточно запросов!", get_keyboard(is_admin))
+            return
+        bg(run_resume_adaptation(chat_id, rid, text))
+        return
+
+    if text.startswith("/start") or text == "🚀 Запустить бота":
+        if is_admin:
+            welcome_text = "👋 Привет, администратор! У вас активирован полный неограниченный доступ ко всем возможностям бота.\nДля старта работы загрузите файл резюме (PDF/DOCX) в чат."
+        else:
+            welcome_text = (
+                "👋 Привет! Я — твой личный ИИ-карьерный агент.\n\n"
+                "Я помогу тебе переупаковать опыт под Enterprise и найти работу мечты. Вот что я умею:\n"
+                "📋 *Аудит резюме* — жесткий C-level разбор профиля.\n"
+                "📊 *Skill Gap* — найду пробелы в навыках.\n"
+                "🛠 *Адаптация* — перепишу резюме под конкретную вакансию.\n"
+                "🔍 *Поиск* — подберу вакансии с hh.ru (приоритет топ-компаниям).\n\n"
+                "🎯 *С чего начать?*\n"
+                "Для работы мне нужно твое резюме. Нажми *«📥 Загрузить резюме»* или просто отправь файл (*PDF, DOCX или RTF*) прямо в этот чат.\n\n"
+                "📌 *Короткий дисклеймер:*\n"
+                "Проект создан на энтузиазме и пока работает на бесплатных серверах. Если ко мне давно не обращались, мне нужно около 30–60 секунд, чтобы «проснуться». Немного подождите после первой команды — дальше всё будет летать! 🚀\n\n"
+                "🎁 Тебе начислено *30 приветственных запросов*!"
+            )
+        await send_telegram(chat_id, welcome_text, get_keyboard(is_admin))
+
+    elif text in ("👥 Пригласить друга", "🎁 Бонусы (Репост & Друзья)"):
+        bot_info = await HTTP.get(f"{TELEGRAM_API}/getMe")
+        bot_data = await bot_info.json()
+        bot_username = bot_data.get("result", {}).get("username", "bot")
+        ref_link = f"https://t.me/{bot_username}?start={chat_id}"
+        
+        bonus_text = (
+            "🎁 *Программа лояльности и бонусы*\n\n"
+            "👥 *1. Пригласить друга (+30 запросов)*\n"
+            f"Ваша персональная ссылка:\n`{ref_link}`\n\n"
+            "📢 *2. Поделиться в соцсетях (+20 запросов за каждую)*\n"
+            "Опубликуйте короткий отзыв о боте в Сетке, TenChat, LinkedIn, VK или своем Telegram-канале и получите 20 бесплатных запросов за каждую площадку (1 раз за соцсеть).\n\n"
+            "📝 *Шаблон для поста (можете скопировать или изменить под себя):*\n"
+            "> Делюсь полезной находкой для топ-менеджеров и руководителей. Протестировал карьерного ИИ-бота — он делает глубокий аудит резюме (Skill Gap) и автоматически адаптирует опыт под профиль вакансий с hh.ru. Отлично экономит время на рутине. Кому актуально усилить позиции на рынке — рекомендую: @LemusCareerBot \n\n"
+            "_Опубликовали пост? Нажмите кнопку ниже и отправьте мне прямую ссылку на него!_"
+        )
+        kb = {
+            "inline_keyboard": [
+                [{"text": "🔗 Отправить ссылку на репост", "callback_data": "send_repost_proof"}]
+            ]
+        }
+        await send_telegram(chat_id, bonus_text, kb)
+
+    elif text == "💬 Обратная связь":
+        user_states[chat_id] = "waiting_for_feedback"
+        await send_telegram(chat_id, "💬 Напишите ваше сообщение, отзыв или вопрос в следующем сообщении, и я перешлю его администратору.")
+
+    elif text == "📩 Сообщения от пользователей":
+        if not is_admin:
+            return
+        cur.execute("SELECT id, user_id, username, message, created_at FROM feedback ORDER BY id DESC LIMIT 10")
+        rows = cur.fetchall()
+        if not rows:
+            await send_telegram(chat_id, "📭 Входящих сообщений пока нет.")
+            return
+        
+        feedbacks_msg = "📩 *Последние сообщения от пользователей:*\n\n"
+        for r in rows:
+            feedbacks_msg += f"🆔 ID: `{r[1]}` (@{r[2] or 'нет'})\n💬 {r[3]}\n⏱ `{r[4]}`\n_Ответ:_ `/reply {r[1]} Текст`\n\n──────────────────\n\n"
+        await send_telegram(chat_id, feedbacks_msg)
+
+    elif text == "💎 Оплата и Баланс":
+        if is_admin:
+            status_str = "📊 Баланс: `∞ Безлимит`\n⭐ Вы администратор, любые лимиты отключены."
+        else:
+            data = get_user_data(chat_id)
+            balance = data["balance"]
+            unl = data["unlimited_until"]
+            status_str = f"📊 Баланс: `{balance} запросов`"
+            if unl:
+                status_str = f"⭐ Активен безлимит (до 50 запросов в день) до: `{unl}`"
+
+        balance_text = (
+            f"💎 *Оплата и Баланс*\n\n"
+            f"{status_str}\n\n"
+            "💳 *Тарифы и способы пополнения:*\n"
+            "1️⃣ **Пакет «50 запросов» (навсегда):** 100 ⭐ ИЛИ 200 руб.\n"
+            "2️⃣ **Пакет «Безлимит на 10 дней»** (до 50 запросов в сутки): 500 ⭐ ИЛИ 500 руб.\n\n"
+            "🏦 **Реквизиты для перевода (СБП / Карта):**\n"
+            "`2202208459089018`\n"
+            "_После перевода нажмите кнопку ниже и отправьте скриншот чека в чат._"
+        )
+        kb = {
+            "inline_keyboard": [
+                [{"text": "⭐ Оплатить 50 запросов (100 Звезд)", "callback_data": "buy_pack_stars"}],
+                [{"text": "⭐ Безлимит 10 дней (500 Звезд)", "callback_data": "buy_unl_stars"}],
+                [{"text": "📄 Отправить чек об оплате (Карта/СБП)", "callback_data": "send_receipt"}]
+            ]
+        }
+        await send_telegram(chat_id, balance_text, kb)
+
+    elif text == "🛠 Адаптация резюме":
+        rows = list_resumes(chat_id)
+        if not rows:
+            await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!\n\nОтправьте файл с вашим резюме (форматы: PDF, DOCX, RTF или TXT) прямо в этот чат.", get_keyboard(is_admin))
+            return
+        kb = {"inline_keyboard": [[{"text": f"📄 {r['name']}", "callback_data": f"adaptsel_{r['id']}"}] for r in rows]}
+        await send_telegram(chat_id, "🛠 *Выберите резюме* для адаптации.\n\nВы можете вставить **полный текст вакансии** ИЛИ просто **скинуть ссылку на hh.ru**, и бот сам все выкачает!", kb)
+
+    elif text == "📋 Аудит резюме":
+        if not get_active_resume(chat_id):
+            await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!\n\nОтправьте файл с вашим резюме (форматы: PDF, DOCX, RTF или TXT) прямо в этот чат.", get_keyboard(is_admin))
+            return
+        bg(run_resume_audit(chat_id))
+
+    elif text == "📊 Анализ навыков (Skill Gap)":
+        if not get_active_resume(chat_id):
+            await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!\n\nОтправьте файл с вашим резюме (форматы: PDF, DOCX, RTF или TXT) прямо в этот чат.", get_keyboard(is_admin))
+            return
+        bg(run_skill_gap_analysis(chat_id))
+
+    elif text == "ℹ️ Помощь":
+        help_text = (
+            "ℹ️ *Справка по возможностям карьерного бота:*\n\n"
+            "• 🤖 *Адаптивный ИИ-агент* — бот подстраивается под ваши задачи и обучается на основе выбранных предпочтений.\n"
+            "• 🚀 *Запустить бота* — кнопка перезапуска (аналог команды `/start`), обновляет интерфейс и приветствие.\n"
+            "• 🔍 *Поиск вакансий* — поиск по всему рынку с приоритетным поднятием предложений от топ-компаний. Используйте кнопку **«▶️ Далее»** под выдачей, чтобы листать следующие страницы, и **«🗑 Мусор»**, чтобы настраивать выдачу под себя.\n"
+            "• 🛠 *Адаптация резюме* — переработка резюме под требования вакансии. Можно просто отправить ссылку на вакансию hh.ru!\n"
+            "• 📊 *Анализ навыков (Skill Gap)* — оценка зон роста и сильных сторон.\n"
+            "• 📋 *Аудит резюме* — управленческий разбор профиля.\n"
+            "• 💬 *Обратная связь* — связь с администратором для отправки вопросов и отзывов.\n"
+            "• 💎 *Оплата и Баланс* — гибкие тарифы через Telegram Stars или перевод по карте."
+        )
+        await send_telegram(chat_id, help_text, get_keyboard(is_admin))
+
+    elif text in ("👑 Админ-панель", "/admin"):
+        if not is_admin:
+            await send_telegram(chat_id, "⛔ Нет доступа.")
+            return
+        cur.execute("SELECT COUNT(*) FROM users")
+        total_users = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM resumes")
+        total_resumes = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM users WHERE created_at >= date('now')")
+        new_today = cur.fetchone()[0]
+        
+        admin_panel_text = (
+            f"👑 *Админ-панель*\n\n"
+            f"👥 Всего пользователей: `{total_users}` (новых сегодня: `{new_today}`)\n"
+            f"📁 Всего резюме: `{total_resumes}`\n\n"
+            "⚙️ *Команды управления:*\n"
+            "`/add_credits <user_id> <кол-во>`\n"
+            "`/reply <user_id> <текст>`"
+        )
+        await send_telegram(chat_id, admin_panel_text, get_keyboard(is_admin))
+
+    elif text == "📁 Мои резюме":
+        rows = list_resumes(chat_id)
+        if not rows:
+            await send_telegram(chat_id, "⚠️ Нет загруженных резюме.", get_keyboard(is_admin))
+        else:
+            kb = {"inline_keyboard": [[{"text": f"{'✅' if r['active'] else '📄'} {r['name']}", "callback_data": f"act_{r['id']}"}] for r in rows]}
+            await send_telegram(chat_id, "📁 *Твои резюме:*", kb)
+
+    elif text == "📥 Загрузить резюме":
+        await send_telegram(chat_id, "📄 Отправь файл резюме (лучше всего PDF или DOCX) прямо в этот чат.", get_keyboard(is_admin))
+
+    elif text == "🔍 Поиск вакансий":
+        if not get_active_resume(chat_id):
+            await send_telegram(chat_id, "⚠️ Сначала загрузите резюме!\n\nОтправьте файл с вашим резюме (форматы: PDF, DOCX, RTF или TXT) прямо в этот чат.", get_keyboard(is_admin))
+        else:
+            bg(handle_search(chat_id, is_admin))
+
+    else:
+        await send_telegram(chat_id, "ℹ️ Воспользуйтесь кнопками меню.", get_keyboard(is_admin))
+
+
+# ---------------- Вебхук ----------------
+async def telegram_webhook(request):
+    try:
+        data = await request.json()
+    except Exception:
+        return web.Response(text="OK")
+
+    if is_duplicate(data.get("update_id")):
+        return web.Response(text="OK")
+
+    if "pre_checkout_query" in data:
+        pcq = data["pre_checkout_query"]
+        await HTTP.post(f"{TELEGRAM_API}/answerPreCheckoutQuery", json={"pre_checkout_query_id": pcq["id"], "ok": True})
+        return web.Response(text="OK")
+
+    if "message" in data:
+        msg = data["message"]
+        if msg.get("successful_payment"):
+            uid = msg["chat"]["id"]
+            payload = msg["successful_payment"].get("invoice_payload", "")
+            if "unl" in payload:
+                admin_set_unlimited(uid, 10)
+                await send_telegram(uid, "🎉 Оплата прошла успешно! Вам активирован безлимит на 10 дней.")
+            else:
+                admin_add_balance(uid, 50)
+                await send_telegram(uid, "🎉 Оплата прошла успешно! Начислено 50 запросов.")
+        else:
+            bg(process_message(msg))
+
+    if "callback_query" in data:
+        cb = data["callback_query"]
+        chat_id = (cb.get("message") or {}).get("chat", {}).get("id")
+        message_id = (cb.get("message") or {}).get("message_id")
+        data_str = cb.get("data", "") or ""
+        bg(answer_callback(cb.get("id", "")))
+        
+        if chat_id:
+            if data_str.startswith("page_"):
+                page_num = int(data_str.split("_")[1])
+                bg(send_vacancies_page(chat_id, page=page_num))
+            elif data_str == "buy_pack_stars":
+                bg(send_stars_invoice(chat_id, 100, "Пакет 50 запросов", "credits_50"))
+            elif data_str == "buy_unl_stars":
+                bg(send_stars_invoice(chat_id, 500, "Безлимит на 10 дней", "unl_10d"))
+            elif data_str == "send_receipt":
+                user_states[chat_id] = "waiting_for_receipt"
+                await send_telegram(chat_id, "📸 Пожалуйста, отправьте **фотографию или скриншот чека** прямо в этот чат.")
+            elif data_str == "send_repost_proof":
+                user_states[chat_id] = "waiting_for_repost"
+                await send_telegram(chat_id, "🔗 Пожалуйста, отправьте **только прямую ссылку** на ваш пост прямо в этот чат (начинается с http/https). Скриншоты не принимаются.")
+            elif data_str.startswith("paycred_"):
+                parts = data_str.split("_")
+                target_uid = int(parts[1])
+                amt = int(parts[2])
+                admin_add_balance(target_uid, amt)
+                await send_telegram(target_uid, f"✅ Администратор подтвердил ваш платеж! Начислено {amt} запросов.")
+                await http_edit_message_text(chat_id, message_id, "✅ Чек одобрен, запросы начислены.")
+            elif data_str.startswith("payunl_"):
+                parts = data_str.split("_")
+                target_uid = int(parts[1])
+                admin_set_unlimited(target_uid, 10)
+                await send_telegram(target_uid, f"✅ Администратор подтвердил ваш платеж! Активирован безлимит на 10 дней.")
+                await http_edit_message_text(chat_id, message_id, "✅ Чек одобрен, безлимит активирован.")
+            elif data_str.startswith("like_"):
+                vid = data_str[5:]
+                vac = temp_vacancies.get(vid, {"title": "Позиция"})
+                like_vacancy(chat_id, vid, vac["title"])
+                await send_telegram(chat_id, f"👍 Запомнил вакансию «{vac['title']}». Бот будет подбирать похожие!")
+            elif data_str.startswith("gen_"):
+                if not spend_balance(chat_id, cost=1):
+                    await send_telegram(chat_id, "⚠️ Недостаточно запросов или исчерпан лимит на сегодня!")
+                    return
+                v = temp_vacancies.get(data_str[4:], {"title": "Вакансия", "employer": "Компания"})
+                bg(run_ai_generation(chat_id, dict(v)))
+            elif data_str.startswith("match_"):
+                if not spend_balance(chat_id, cost=1):
+                    await send_telegram(chat_id, "⚠️ Недостаточно запросов или исчерпан лимит на сегодня!")
+                    return
+                v = temp_vacancies.get(data_str[6:], {"title": "Вакансия", "employer": "Компания"})
+                bg(run_vacancy_match(chat_id, dict(v)))
+            elif data_str.startswith("act_"):
+                bg(activate_resume(chat_id, data_str[4:]))
+            elif data_str.startswith("adaptsel_"):
+                rid = data_str[9:]
+                user_adapt_target[chat_id] = int(rid)
+                user_states[chat_id] = "waiting_for_adaptation_vacancy"
+                bg(http_edit_message_text(chat_id, message_id, "✅ Резюме выбрано!\n\nТеперь отправьте мне **текст вакансии** или просто **ссылку на вакансию с hh.ru**."))
+            elif data_str.startswith("hide_"):
+                vid = data_str[5:]
+                hide_vacancy(chat_id, vid)
+                bg(http_edit_message_text(chat_id, message_id, "🗑 Вакансия скрыта."))
+
+    return web.Response(text="OK")
+
+
+# ---------------- Запуск ----------------
+async def main():
+    global HTTP
+    HTTP = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60))
+
+    app = web.Application()
+    app.router.add_get("/", lambda r: web.Response(text="Bot is running"))
+    app.router.add_post(f"/{BOT_TOKEN}", telegram_webhook)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", PORT).start()
+
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "")
+    if render_url:
+        webhook_url = f"{render_url}/{BOT_TOKEN}"
+        async with HTTP.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}") as resp:
+            log.info("setWebhook: %s", (await resp.text())[:200])
+
+    log.info("🚀 Bot started successfully.")
+    await asyncio.Event().wait()
+
+
+if __name__ == "__main__":
+    asyncio.main() if hasattr(asyncio, "main") else asyncio.run(main())
