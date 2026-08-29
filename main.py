@@ -33,12 +33,10 @@ OPENROUTER_KEY = os.getenv("OPENROUTER_KEY", "")
 PORT = int(os.getenv("PORT", "10000"))
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-# Разбиваем ссылку, чтобы IDE и мессенджеры не превращали её в кликабельный Markdown
 TELEGRAM_API = "https://" + "api.telegram.org" + "/bot" + BOT_TOKEN
 
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# Включаем модель 3.6 Flash в приоритет
 GEMINI_MODEL_CANDIDATES = list(dict.fromkeys([
     os.getenv("GEMINI_MODEL", "gemini-3.6-flash"),
     "gemini-3.6-flash",
@@ -54,7 +52,7 @@ temp_vacancies = {}
 user_states = {}          
 user_adapt_target = {}    
 user_search_cache = {}    
-interview_sessions = {}   # Хранилище сессий тренажера собеседований
+interview_sessions = {}   
 
 # ---------------- БД ----------------
 conn = sqlite3.connect("tracker.db", check_same_thread=False)
@@ -146,7 +144,6 @@ def get_user_data(user_id: int):
 
 
 def spend_balance(user_id: int, cost: int = 1) -> bool:
-    # У админа лимитов быть не должно никаких
     if ADMIN_ID != 0 and user_id == ADMIN_ID:
         return True
         
@@ -240,7 +237,7 @@ def get_user_preferences(user_id: int) -> str:
     return ", ".join([r[0] for r in rows])
 
 
-# ---------------- ИИ-слой (Каскадная защита с Gemini 3.6 Flash) ----------------
+# ---------------- ИИ-слой (Каскадная защита) ----------------
 def _openai_compat(prompt: str, base: str, key: str, model: str) -> str:
     r = requests.post(
         f"{base}/chat/completions",
@@ -438,7 +435,7 @@ def get_keyboard(is_admin=False):
 async def hh_api_search(query: str):
     try:
         async with HTTP.get("https://api.hh.ru/vacancies",
-                            params={"text": query, "area": "1", "per_page": "50"},
+                            params={"text": query, "area": "1", "per_page": "100"},
                             headers={"User-Agent": "LemusCareerBot/1.8"}) as resp:
             data = await resp.json()
         items = []
@@ -509,7 +506,7 @@ async def get_vacancy_details(vacancy_id: str) -> str:
         return ""
 
 
-# ---------------- Вывод порции вакансий с отсортированным по процентам Match Rate ----------------
+# ---------------- Вывод порции вакансий (Оценка уже посчитана пакетом) ----------------
 async def send_vacancies_page(chat_id: int, user_id: int, page: int = 0):
     cached = user_search_cache.get(user_id)
     if not cached or not cached.get("items"):
@@ -570,7 +567,7 @@ async def send_vacancies_page(chat_id: int, user_id: int, page: int = 0):
         await send_telegram(chat_id, "🎉 Вы просмотрели всю выдачу! Используйте кнопки меню для дальнейших действий.")
 
 
-# ---------------- Поиск и предварительная сортировка по % ----------------
+# ---------------- Поиск и Пакетная сортировка по % (Решение проблемы 429) ----------------
 async def handle_search(chat_id: int, user_id: int, is_admin: bool):
     if not spend_balance(user_id, cost=1):
         await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.", get_keyboard(is_admin))
@@ -578,7 +575,7 @@ async def handle_search(chat_id: int, user_id: int, is_admin: bool):
 
     active_resume = get_active_resume(user_id)
     if not active_resume:
-        await send_telegram(chat_id, "💡 *Подсказка:* Сначала загрузите резюме в чат, чтобы бот мог подбирать и оценивать вакансии!")
+        await send_telegram(chat_id, "💡 *Подсказка:* Сначала загрузите резюме в чат, чтобы бот мог рассчитать процент соответствия для вакансий!")
         return
 
     await send_telegram(chat_id, "🔍 *Онбординг:* Анализирую ваше резюме, чтобы подобрать идеальные поисковые запросы...")
@@ -596,7 +593,7 @@ async def handle_search(chat_id: int, user_id: int, is_admin: bool):
     else:
         queries = ["Специалист", "Менеджер"]
 
-    await send_telegram(chat_id, f"🎯 Сформировал запросы по вашему профилю: *{', '.join(queries)}*\nСобираю вакансии (беру топ-45 самых свежих для глубокого ИИ-анализа, чтобы не перегрузить лимиты API)...")
+    await send_telegram(chat_id, f"🎯 Сформировал запросы по вашему профилю: *{', '.join(queries)}*\nСобираю вакансии (быстрая пакетная ИИ-оценка топ-45 вариантов для защиты от лимитов)...")
     
     all_items = []
     for q in queries:
@@ -635,37 +632,47 @@ async def handle_search(chat_id: int, user_id: int, is_admin: bool):
 
     filtered_list.sort(key=pre_sort_priority)
     
-    # Ограничиваем выборку до 45 вакансий, чтобы не ловить ошибку 429 Too Many Requests от Gemini
+    # Ограничиваем выборку до 45 вакансий
     filtered_list = filtered_list[:45]
 
-    # Асинхронная экспресс-оценка Match Rate для всех найденных вакансий
+    # Пакетная оценка по 15 вакансий за 1 запрос (полностью решает проблему лимитов API)
     scored_list = []
-    for v in filtered_list:
-        name = v.get("name", "")
-        comp = v.get("company", "")
+    batch_size = 15
+    for i in range(0, len(filtered_list), batch_size):
+        batch = filtered_list[i:i+batch_size]
+        
+        vacancies_text = "\n".join([f"ID {v['id']}: {v.get('name')} в {v.get('company')}" for v in batch])
+        
         quick_prompt = (
-            f"Оцени соответствие резюме кандидата вакансии '{name}' в компанию '{comp}' по шкале от 0 до 100 процентов на основе текста резюме.\n"
-            f"Резюме:\n{active_resume[:2000]}\n\n"
-            "Выдай ТОЛЬКО JSON строго в формате: {\"score\": 85, \"reason\": \"причина в 3-5 слов\"}."
+            "Оцени соответствие резюме кандидата сразу для нескольких вакансий по шкале от 0 до 100 процентов.\n"
+            f"Резюме:\n{active_resume[:2500]}\n\n"
+            f"Вакансии:\n{vacancies_text}\n\n"
+            "Выдай ТОЛЬКО чистый JSON-объект, где ключ — это ID вакансии, а значение — объект с оценкой. Строгий формат:\n"
+            "{\"ID\": {\"score\": 85, \"reason\": \"причина в 3-5 слов\"}}"
         )
+        
         eval_res = await asyncio.to_thread(ai_generate, quick_prompt)
-        score = 50
-        reason = "релевантный профиль"
+        parsed_batch = {}
+        
         if eval_res:
             try:
-                clean_json = eval_res.replace("```json", "").replace("```", "").strip()
-                data_json = json.loads(clean_json)
-                score = int(data_json.get("score", 50))
-                reason = str(data_json.get("reason", "подходит по опыту"))
-            except Exception:
-                pass
+                json_match = re.search(r'\{.*\}', eval_res, re.DOTALL)
+                if json_match:
+                    clean_json = json_match.group(0)
+                    parsed_batch = json.loads(clean_json)
+            except Exception as e:
+                log.warning(f"Batch JSON parse error: {e}")
         
-        v["match_score"] = score
-        v["match_reason"] = reason
-        scored_list.append(v)
-        await asyncio.sleep(0.3) # Легкая задержка для защиты от 429 Quota Exhausted
+        for v in batch:
+            vid = str(v["id"])
+            v_data = parsed_batch.get(vid) or parsed_batch.get(int(vid)) or {}
+            v["match_score"] = int(v_data.get("score", 60))
+            v["match_reason"] = str(v_data.get("reason", "релевантный профиль"))
+            scored_list.append(v)
+            
+        await asyncio.sleep(1) # Защитная микропауза для Google API
 
-    # Сортировка строго по убыванию процента соответствия (от 100 к 0), затем по топ-компаниям
+    # Сортировка строго по убыванию процента соответствия (от 100 к 0)
     def sort_key(item):
         comp_lower = (item.get("company") or "").lower()
         is_top = any(tc in comp_lower for tc in top_companies)
