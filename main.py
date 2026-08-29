@@ -20,7 +20,7 @@ except ImportError:
     import fitz  # Fallback
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("career_bot_v16")
+log = logging.getLogger("career_bot_v17")
 
 # ---------------- Конфиг ----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -33,7 +33,9 @@ OPENROUTER_KEY = os.getenv("OPENROUTER_KEY", "")
 PORT = int(os.getenv("PORT", "10000"))
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-TELEGRAM_API = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){BOT_TOKEN}"
+# Разбиваем ссылку, чтобы IDE и мессенджеры не превращали её в кликабельный Markdown
+TELEGRAM_API = "https://" + "api.telegram.org" + "/bot" + BOT_TOKEN
+
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # Включаем модель 3.6 Flash в приоритет
@@ -238,7 +240,7 @@ def get_user_preferences(user_id: int) -> str:
     return ", ".join([r[0] for r in rows])
 
 
-# ---------------- ИИ-слой (Каскадная защита с Gemini 3.6 Flash) ----------------
+# ---------------- ИИ-слой (Каскадная защита) ----------------
 def _openai_compat(prompt: str, base: str, key: str, model: str) -> str:
     r = requests.post(
         f"{base}/chat/completions",
@@ -269,14 +271,14 @@ def ai_generate(prompt: str):
     if GROQ_KEY:
         try:
             log.info("AI ok: groq/%s", GROQ_MODEL)
-            return _openai_compat(prompt, "[https://api.groq.com/openai/v1](https://api.groq.com/openai/v1)", GROQ_KEY, GROQ_MODEL)
+            return _openai_compat(prompt, "https://api.groq.com/openai/v1", GROQ_KEY, GROQ_MODEL)
         except Exception as e:
             log.warning("Groq failed: %s", str(e)[:100])
 
     if OPENROUTER_KEY:
         try:
             log.info("AI ok: openrouter/qwen")
-            return _openai_compat(prompt, "[https://openrouter.ai/api/v1](https://openrouter.ai/api/v1)", OPENROUTER_KEY, "qwen/qwen-2.5-7b-instruct:free")
+            return _openai_compat(prompt, "https://openrouter.ai/api/v1", OPENROUTER_KEY, "qwen/qwen-2.5-7b-instruct:free")
         except Exception as e:
             log.warning("OpenRouter failed: %s", str(e)[:100])
             
@@ -435,7 +437,7 @@ def get_keyboard(is_admin=False):
 # ---------------- hh.ru поиск и парсинг ----------------
 async def hh_api_search(query: str):
     try:
-        async with HTTP.get("[https://api.hh.ru/vacancies](https://api.hh.ru/vacancies)",
+        async with HTTP.get("https://api.hh.ru/vacancies",
                             params={"text": query, "area": "1", "per_page": "100"},
                             headers={"User-Agent": "LemusCareerBot/1.7"}) as resp:
             data = await resp.json()
@@ -456,7 +458,7 @@ async def hh_api_search(query: str):
                 "name": i.get("name"),
                 "company": (i.get("employer") or {}).get("name"),
                 "salary": sal_str,
-                "url": i.get("alternate_url") or f"[https://hh.ru/vacancy/](https://hh.ru/vacancy/){i.get('id')}"
+                "url": i.get("alternate_url") or f"https://hh.ru/vacancy/{i.get('id')}"
             })
         return items or None
     except Exception as e:
@@ -466,7 +468,7 @@ async def hh_api_search(query: str):
 
 async def hh_scrape_search(query: str):
     try:
-        async with HTTP.get("[https://hh.ru/search/vacancy](https://hh.ru/search/vacancy)",
+        async with HTTP.get("https://hh.ru/search/vacancy",
                             params={"text": query, "area": "1", "items_on_page": "100"},
                             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}) as resp:
             page = await resp.text()
@@ -485,7 +487,7 @@ async def hh_scrape_search(query: str):
                 "name": it.get("name"),
                 "company": (it.get("company") or {}).get("name"),
                 "salary": sal_str,
-                "url": f"[https://hh.ru/vacancy/](https://hh.ru/vacancy/){vid}"
+                "url": f"https://hh.ru/vacancy/{vid}"
             })
         return out or None
     except Exception as e:
@@ -495,7 +497,7 @@ async def hh_scrape_search(query: str):
 
 async def get_vacancy_details(vacancy_id: str) -> str:
     try:
-        async with HTTP.get(f"[https://api.hh.ru/vacancies/](https://api.hh.ru/vacancies/){vacancy_id}",
+        async with HTTP.get(f"https://api.hh.ru/vacancies/{vacancy_id}",
                             headers={"User-Agent": "LemusCareerBot/1.7"}) as resp:
             data = await resp.json()
             
@@ -835,7 +837,7 @@ async def handle_document(chat_id: int, user_id: int, document: dict, is_admin: 
         if not file_path:
             await send_telegram(chat_id, "⚠️ Не смог скачать файл.", get_keyboard(is_admin))
             return
-        async with HTTP.get(f"[https://api.telegram.org/file/bot](https://api.telegram.org/file/bot){BOT_TOKEN}/{file_path}") as f_resp:
+        async with HTTP.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}") as f_resp:
             content = await f_resp.read()
     except Exception as e:
         log.error("download failed: %s", e)
@@ -1067,7 +1069,7 @@ async def process_message(msg: dict):
             welcome_text = "👋 Привет, Антон! У тебя активирован бесконечный безлимитный доступ (Админ-режим).\nДля работы отправь файл резюме в чат."
         else:
             welcome_text = (
-                "👋 Привет! Я — твой личный ИИ-карьерный агент (Версия 1.6).\n\n"
+                "👋 Привет! Я — твой личный ИИ-карьерный агент (Версия 1.7).\n\n"
                 "💡 *Быстрый старт (Онбординг):*\n"
                 "1️⃣ Отправь файл резюме (*PDF или DOCX*) прямо в этот чат.\n"
                 "2️⃣ Используй меню ниже для аудита, поиска вакансий с hh.ru и тренировки на собеседованиях.\n\n"
@@ -1079,7 +1081,7 @@ async def process_message(msg: dict):
         bot_info = await HTTP.get(f"{TELEGRAM_API}/getMe")
         bot_data = await bot_info.json()
         bot_username = bot_data.get("result", {}).get("username", "bot")
-        ref_link = f"[https://t.me/](https://t.me/){bot_username}?start={user_id}"
+        ref_link = f"https://t.me/{bot_username}?start={user_id}"
         
         bonus_text = (
             "🎁 *Программа лояльности и бонусы*\n\n"
@@ -1175,7 +1177,7 @@ async def process_message(msg: dict):
 
     elif text == "ℹ️ Помощь":
         help_text = (
-            "ℹ️ *Справка и гид по боту (Версия 1.6):*\n\n"
+            "ℹ️ *Справка и гид по боту (Версия 1.7):*\n\n"
             "• 📥 *Загрузка резюме* — отправьте PDF или DOCX файл.\n"
             "• 🔍 *Поиск вакансий* — подбор с зарплатами и расчетом Match Rate.\n"
             "• 🛠 *Адаптация* — переупаковка резюме под конкретное описание вакансии или ссылку с hh.ru с автоотправкой сопроводительного письма.\n"
@@ -1322,7 +1324,7 @@ async def main():
         async with HTTP.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}") as resp:
             log.info("setWebhook: %s", (await resp.text())[:200])
 
-    log.info("🚀 Bot v1.6.1 with Syntax Fixes started successfully.")
+    log.info("🚀 Bot v1.7 started successfully.")
     await asyncio.Event().wait()
 
 
