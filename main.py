@@ -20,7 +20,7 @@ except ImportError:
     import fitz  # Fallback
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("career_bot_v17")
+log = logging.getLogger("career_bot_v18")
 
 # ---------------- Конфиг ----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -240,7 +240,7 @@ def get_user_preferences(user_id: int) -> str:
     return ", ".join([r[0] for r in rows])
 
 
-# ---------------- ИИ-слой (Каскадная защита) ----------------
+# ---------------- ИИ-слой (Каскадная защита с Gemini 3.6 Flash) ----------------
 def _openai_compat(prompt: str, base: str, key: str, model: str) -> str:
     r = requests.post(
         f"{base}/chat/completions",
@@ -438,8 +438,8 @@ def get_keyboard(is_admin=False):
 async def hh_api_search(query: str):
     try:
         async with HTTP.get("https://api.hh.ru/vacancies",
-                            params={"text": query, "area": "1", "per_page": "100"},
-                            headers={"User-Agent": "LemusCareerBot/1.7"}) as resp:
+                            params={"text": query, "area": "1", "per_page": "50"},
+                            headers={"User-Agent": "LemusCareerBot/1.8"}) as resp:
             data = await resp.json()
         items = []
         for i in data.get("items", []):
@@ -498,7 +498,7 @@ async def hh_scrape_search(query: str):
 async def get_vacancy_details(vacancy_id: str) -> str:
     try:
         async with HTTP.get(f"https://api.hh.ru/vacancies/{vacancy_id}",
-                            headers={"User-Agent": "LemusCareerBot/1.7"}) as resp:
+                            headers={"User-Agent": "LemusCareerBot/1.8"}) as resp:
             data = await resp.json()
             
         description = re.sub(r'<[^>]+>', '', data.get("description", ""))
@@ -539,7 +539,7 @@ async def send_vacancies_page(chat_id: int, user_id: int, page: int = 0):
         temp_vacancies[vid] = {"title": name, "employer": comp}
         
         comp_lower = comp.lower()
-        is_top = any(tc in comp_lower for tc in ["сбер", "мтс", "яндекс", "т-банк", "тинькофф", "втб", "альфа", "билайн", "мегафон", "ростелеком", "первый бит"])
+        is_top = any(tc in comp_lower for tc in ["сбер", "мтс", "яндекс", "т-банк", "тинькофф", "втб", "альфа", "билайн", "мегафон", "ростелеком", "первый бит", "газпром", "росатом"])
         badge = "⭐ *[ТОП-КОМПАНИЯ]*\n" if is_top else ""
         
         match_badge = f"🎯 Соответствие: {match_score}% ({match_reason})\n"
@@ -578,18 +578,25 @@ async def handle_search(chat_id: int, user_id: int, is_admin: bool):
 
     active_resume = get_active_resume(user_id)
     if not active_resume:
-        await send_telegram(chat_id, "💡 *Подсказка:* Сначала загрузите резюме в чат, чтобы бот мог рассчитать процент соответствия для вакансий!")
+        await send_telegram(chat_id, "💡 *Подсказка:* Сначала загрузите резюме в чат, чтобы бот мог подбирать и оценивать вакансии!")
         return
 
-    await send_telegram(chat_id, "🔍 *Онбординг:* Собираю сотни вакансий по рынку и вычисляю точный процент соответствия (Match Rate) для сортировки по релевантности...")
+    await send_telegram(chat_id, "🔍 *Онбординг:* Анализирую ваше резюме, чтобы подобрать идеальные поисковые запросы...")
+
+    # Динамическое извлечение запросов на основе резюме
+    extract_prompt = (
+        "Проанализируй резюме и напиши 3 наиболее подходящие должности для поиска на hh.ru. "
+        "Выдай ТОЛЬКО названия должностей через запятую, без нумерации и лишнего текста.\n\n"
+        f"Резюме:\n{active_resume[:3000]}"
+    )
+    extracted_titles = await asyncio.to_thread(ai_generate, extract_prompt)
     
-    queries = [
-        "Руководитель направления", 
-        "Директор по развитию", 
-        "Руководитель проектов", 
-        "Head of Business Development", 
-        "Руководитель отдела продаж"
-    ]
+    if extracted_titles:
+        queries = [q.strip() for q in extracted_titles.split(",") if q.strip()][:3]
+    else:
+        queries = ["Специалист", "Менеджер"]
+
+    await send_telegram(chat_id, f"🎯 Сформировал запросы по вашему профилю: *{', '.join(queries)}*\nСобираю вакансии (беру топ-45 самых свежих для глубокого ИИ-анализа, чтобы не перегрузить лимиты API)...")
     
     all_items = []
     for q in queries:
@@ -601,8 +608,8 @@ async def handle_search(chat_id: int, user_id: int, is_admin: bool):
         await send_telegram(chat_id, "⚠️ Не удалось найти вакансии. Попробуйте повторить запрос чуть позже.", get_keyboard(is_admin))
         return
 
-    stop_words = ["сборщик", "упаковщик", "кассир", "повар", "официант", "курьер", "продавец-консультант", "сотрудник ресторана"]
-    top_companies = ["сбер", "мтс", "яндекс", "т-банк", "тинькофф", "втб", "альфа", "билайн", "мегафон", "ростелеком", "первый бит"]
+    stop_words = ["сборщик", "упаковщик", "кассир", "повар", "официант", "курьер", "продавец-консультант", "сотрудник ресторана", "дворник", "грузчик"]
+    top_companies = ["сбер", "мтс", "яндекс", "т-банк", "тинькофф", "втб", "альфа", "билайн", "мегафон", "ростелеком", "первый бит", "газпром", "росатом"]
 
     unique_items = {}
     for v in all_items:
@@ -620,6 +627,17 @@ async def handle_search(chat_id: int, user_id: int, is_admin: bool):
 
     filtered_list = list(unique_items.values())
 
+    # Сортировка по hh-приоритету перед срезкой
+    def pre_sort_priority(item):
+        comp_lower = (item.get("company") or "").lower()
+        is_top = any(tc in comp_lower for tc in top_companies)
+        return (0 if is_top else 1)
+
+    filtered_list.sort(key=pre_sort_priority)
+    
+    # Ограничиваем выборку до 45 вакансий, чтобы не ловить ошибку 429 Too Many Requests от Gemini
+    filtered_list = filtered_list[:45]
+
     # Асинхронная экспресс-оценка Match Rate для всех найденных вакансий
     scored_list = []
     for v in filtered_list:
@@ -632,10 +650,9 @@ async def handle_search(chat_id: int, user_id: int, is_admin: bool):
         )
         eval_res = await asyncio.to_thread(ai_generate, quick_prompt)
         score = 50
-        reason = "релевантный опыт"
+        reason = "релевантный профиль"
         if eval_res:
             try:
-                # Безопасная очистка без регулярного выражения с тройными кавычками
                 clean_json = eval_res.replace("```json", "").replace("```", "").strip()
                 data_json = json.loads(clean_json)
                 score = int(data_json.get("score", 50))
@@ -646,6 +663,7 @@ async def handle_search(chat_id: int, user_id: int, is_admin: bool):
         v["match_score"] = score
         v["match_reason"] = reason
         scored_list.append(v)
+        await asyncio.sleep(0.3) # Легкая задержка для защиты от 429 Quota Exhausted
 
     # Сортировка строго по убыванию процента соответствия (от 100 к 0), затем по топ-компаниям
     def sort_key(item):
@@ -679,12 +697,11 @@ async def run_skill_gap_analysis(chat_id: int, user_id: int):
 
     current_date = datetime.date.today().strftime("%d.%m.%Y")
     prompt = (
-        f"Текущая дата: {current_date}. Ты — экспертный карьерный консультант уровня C-level. Проведи глубокий анализ навыков (Skill Gap Analysis) для этого кандидата, "
-        "претендующего на позиции Head of / Директор по развитию / Руководитель направления.\n"
+        f"Текущая дата: {current_date}. Ты — экспертный карьерный консультант. Проведи глубокий анализ навыков (Skill Gap Analysis) для этого кандидата.\n"
         "ВАЖНО: Оценивай гибридные роли как современное преимущество и широту компетенций.\n"
         "Выдели:\n"
         "1. Сильные управленческие и технические компетенции.\n"
-        "2. Зоны роста и пробелы для топ-позиций в крупных экосистемах.\n"
+        "2. Зоны роста и пробелы для топ-позиций в профильных компаниях.\n"
         "3. Рекомендации по развитию на ближайшие 3–6 месяцев.\n\n"
         f"Резюме кандидата:\n{resume[:8000]}"
     )
@@ -750,7 +767,7 @@ async def run_resume_adaptation(chat_id: int, user_id: int, resume_id: int, vaca
 
     prompt_letter = (
         "Напиши короткое, емкое и профессиональное сопроводительное письмо к этой вакансии от лица кандидата (до 1000 знаков). "
-        "Письмо должно подчеркивать управленческий опыт и релевантные достижения.\n\n"
+        "Письмо должно подчеркивать релевантный опыт и достижения.\n\n"
         f"--- ТРЕБОВАНИЯ ВАКАНСИИ ---\n{vacancy_text[:2000]}\n\n"
         f"--- РЕЗЮМЕ КАНДИДАТА ---\n{resume_text[:4000]}"
     )
@@ -792,7 +809,7 @@ async def run_resume_audit(chat_id: int, user_id: int):
         await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
         return
 
-    await send_telegram(chat_id, "📋 *Онбординг:* Провожу жесткий C-Level аудит вашего резюме и формирую профессиональный Word-документ...")
+    await send_telegram(chat_id, "📋 *Онбординг:* Провожу жесткий аудит вашего резюме и формирую профессиональный Word-документ...")
     resume = get_active_resume(user_id)
     if not resume:
         await send_telegram(chat_id, "💡 *Подсказка:* Сначала загрузите резюме в чат!")
@@ -800,21 +817,21 @@ async def run_resume_audit(chat_id: int, user_id: int):
 
     current_date = datetime.date.today().strftime("%d.%m.%Y")
     audit_prompt = (
-        f"Текущая дата: {current_date}. Сделай жесткий, глубокий аудит этого резюме с позиции C-level.\n"
+        f"Текущая дата: {current_date}. Сделай глубокий аудит этого резюме.\n"
         "Анализируй бизнес-результаты, метрики и подачу:\n\n"
         f"{resume[:8000]}"
     )
     audit_text = await asyncio.to_thread(ai_generate, audit_prompt)
 
     rewrite_prompt = (
-        "Перепиши это резюме для позиций уровня Head / Director. Убери мелкую операционку, сделай упор на бизнес-результаты и метрики. "
+        "Перепиши это резюме для позиций более высокого уровня. Убери мелкую операционку, сделай упор на бизнес-результаты и метрики. "
         "Сохрани структуру (Контакты, Summary, Навыки, Опыт работы, Образование). Выдай ТОЛЬКО чистый текст без звездочек:\n\n"
         f"{resume[:8000]}"
     )
     improved_text = await asyncio.to_thread(ai_generate, rewrite_prompt)
 
     if audit_text and improved_text:
-        await send_telegram(chat_id, f"📋 *C-Level Аудит:*\n\n{audit_text}")
+        await send_telegram(chat_id, f"📋 *Аудит резюме:*\n\n{audit_text}")
         doc = Document()
         for p in improved_text.split("\n"):
             clean_p = re.sub(r'[*#]', '', p).strip()
@@ -822,7 +839,7 @@ async def run_resume_audit(chat_id: int, user_id: int):
                 doc.add_paragraph(clean_p)
         stream = io.BytesIO()
         doc.save(stream)
-        await send_document_bytes(chat_id, stream.getvalue(), "C_Level_Resume_Pro.docx", "✅ Ваше оптимизированное резюме (Word) готово!")
+        await send_document_bytes(chat_id, stream.getvalue(), "Resume_Pro.docx", "✅ Ваше оптимизированное резюме (Word) готово!")
     else:
         await send_telegram(chat_id, "⚠️ Ошибка ИИ.")
 
@@ -860,9 +877,9 @@ async def handle_document(chat_id: int, user_id: int, document: dict, is_admin: 
     success_text = (
         f"✅ *Отлично! Резюме «{file_name}» успешно распознано и загружено.*\n\n"
         "💡 *Что можно сделать прямо сейчас (онбординг):*\n"
-        "1️⃣ Нажмите **«📋 Аудит резюме»**, чтобы получить детальный разбор от C-level ментора.\n"
-        "2️⃣ Нажмите **«🔍 Поиск вакансий»**, чтобы система подобрала для вас топовые позиции с расчетом совпадения.\n"
-        "3️⃣ Нажмите **«🎤 Тренажер собеседований»**, чтобы потренироваться отвечать на каверзные вопросы."
+        "1️⃣ Нажмите **«📋 Аудит резюме»**, чтобы получить детальный разбор и улучшения.\n"
+        "2️⃣ Нажмите **«🔍 Поиск вакансий»**, чтобы система подобрала для вас позиции с расчетом совпадения.\n"
+        "3️⃣ Нажмите **«🎤 Тренажер собеседований»**, чтобы потренироваться отвечать на вопросы."
     )
     await send_telegram(chat_id, success_text, get_keyboard(is_admin))
 
@@ -888,12 +905,12 @@ async def start_interview_simulator(chat_id: int, user_id: int):
         await send_telegram(chat_id, "💡 *Подсказка:* Сначала загрузите резюме в чат!")
         return
 
-    await send_telegram(chat_id, "🎤 *Онбординг в тренажер:* Сейчас ИИ изучит ваш профиль и выступит в роли строгого фаундера/HR-директора.\nВсего будет 3 вопроса. Отвечайте развернуто, как на реальном интервью.")
+    await send_telegram(chat_id, "🎤 *Онбординг в тренажер:* Сейчас ИИ изучит ваш профиль и выступит в роли строгого HR-директора.\nВсего будет 3 вопроса. Отвечайте развернуто, как на реальном интервью.")
     
     prompt = (
-        "Ты — строгий фаундер технологической компании или HR-директор крупной корпорации. "
-        "На основе этого резюме задай кандидату первый каверзный управленческий или стратегический вопрос на собеседовании. "
-        "Вопрос должен быть профессиональным, без воды.\n\nРезюме:\n" + resume[:5000]
+        "Ты — строгий HR-директор или руководитель. "
+        "На основе этого резюме задай кандидату первый каверзный профессиональный вопрос на собеседовании. "
+        "Вопрос должен быть четким, без воды.\n\nРезюме:\n" + resume[:5000]
     )
     first_question = await asyncio.to_thread(ai_generate, prompt)
     if not first_question:
@@ -917,7 +934,7 @@ async def handle_interview_answer(chat_id: int, user_id: int, answer_text: str):
     await send_telegram(chat_id, "🔎 Анализирую ваш ответ и формирую следующий шаг...")
 
     prompt = (
-        f"Кандидат ответил на вопрос на управленческом собеседовании.\n"
+        f"Кандидат ответил на вопрос на профессиональном собеседовании.\n"
         f"Ответ кандидата: {answer_text}\n\n"
         "Дай короткий фидбек по ответу (что сильного, чего не хватило) и задай следующий каверзный вопрос (это вопрос номер " + str(q_count + 1) + " из 3). "
         "Если это был 3-й вопрос, подведи общий итог собеседования и оцени готовность кандидата."
@@ -1069,7 +1086,7 @@ async def process_message(msg: dict):
             welcome_text = "👋 Привет, Антон! У тебя активирован бесконечный безлимитный доступ (Админ-режим).\nДля работы отправь файл резюме в чат."
         else:
             welcome_text = (
-                "👋 Привет! Я — твой личный ИИ-карьерный агент (Версия 1.7).\n\n"
+                "👋 Привет! Я — твой личный ИИ-карьерный агент (Версия 1.8).\n\n"
                 "💡 *Быстрый старт (Онбординг):*\n"
                 "1️⃣ Отправь файл резюме (*PDF или DOCX*) прямо в этот чат.\n"
                 "2️⃣ Используй меню ниже для аудита, поиска вакансий с hh.ru и тренировки на собеседованиях.\n\n"
@@ -1177,7 +1194,7 @@ async def process_message(msg: dict):
 
     elif text == "ℹ️ Помощь":
         help_text = (
-            "ℹ️ *Справка и гид по боту (Версия 1.7):*\n\n"
+            "ℹ️ *Справка и гид по боту (Версия 1.8):*\n\n"
             "• 📥 *Загрузка резюме* — отправьте PDF или DOCX файл.\n"
             "• 🔍 *Поиск вакансий* — подбор с зарплатами и расчетом Match Rate.\n"
             "• 🛠 *Адаптация* — переупаковка резюме под конкретное описание вакансии или ссылку с hh.ru с автоотправкой сопроводительного письма.\n"
@@ -1324,7 +1341,7 @@ async def main():
         async with HTTP.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}") as resp:
             log.info("setWebhook: %s", (await resp.text())[:200])
 
-    log.info("🚀 Bot v1.7 started successfully.")
+    log.info("🚀 Bot v1.8 with Safe Dynamic Search started successfully.")
     await asyncio.Event().wait()
 
 
