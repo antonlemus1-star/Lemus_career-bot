@@ -1,2947 +1,1356 @@
-import os, sys, io, json, threading, hashlib, base64, math, time, struct, wave, re, zipfile, shutil
-import traceback
-import urllib.request, urllib.parse, urllib.error
-
-def _log(msg):
-    line = f"[LEMUS {time.strftime('%H:%M:%S')}] {msg}"
-    print(line, file=sys.stderr, flush=True)
-    try:
-        with open("startup_debug.log", "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except Exception:
-        pass
-
-_log("=== STARTUP v7.6.0 ULTIMATE RESTORE ===")
-
-try:
-    import certifi, ssl
-    os.environ["SSL_CERT_FILE"] = certifi.where()
-    os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
-    ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())
-    _log("SSL: certifi подключён")
-except Exception as e:
-    _log(f"SSL patch пропущен: {e}")
+import asyncio
+import io
+import json
+import logging
+import os
+import re
+import sqlite3
+import html
+import datetime
+import aiohttp
+import requests
+from aiohttp import web
+from docx import Document
+from google import genai
+from google.genai import types as gtypes
 
 try:
-    from kivy.lang import Builder
-    from kivy.utils import platform
-    from kivy.core.audio import SoundLoader
-    from kivy.clock import Clock
-    from kivy.metrics import dp
-    from kivy.animation import Animation
-    from kivy.uix.widget import Widget
-    from kivy.uix.image import Image
-    from kivy.properties import NumericProperty, StringProperty, BooleanProperty, ListProperty, ObjectProperty
-    from kivy.factory import Factory
-    from kivy.logger import Logger
-    _log("OK kivy")
-except Exception as e:
-    _log(f"FAIL kivy: {e}")
-    raise
+    import pymupdf as fitz
+except ImportError:
+    import fitz  # Fallback
 
-try:
-    from kivymd.app import MDApp
-    from kivymd.uix.boxlayout import MDBoxLayout
-    from kivymd.uix.scrollview import MDScrollView
-    from kivymd.uix.toolbar import MDTopAppBar
-    from kivymd.uix.bottomnavigation import MDBottomNavigation, MDBottomNavigationItem
-    from kivymd.uix.card import MDCard
-    from kivymd.uix.textfield import MDTextField
-    from kivymd.uix.button import MDRaisedButton, MDIconButton, MDFlatButton
-    from kivymd.uix.dialog import MDDialog
-    from kivymd.uix.filemanager import MDFileManager
-    from kivymd.uix.label import MDLabel
-    from kivymd.uix.progressbar import MDProgressBar
-    from kivymd.uix.list import (MDList, TwoLineAvatarIconListItem, IconLeftWidget,
-                                 IconRightWidget, CheckboxLeftWidget)
-    from kivymd.toast import toast
-    
-    # Fallbacks for separators/switches (FIXED SYNTAX)
-    try:
-        from kivymd.uix.divider import MDSeparator
-    except ImportError:
-        try:
-            from kivymd.uix.separator import MDSeparator
-        except ImportError:
-            class MDSeparator(MDBoxLayout):
-                def __init__(self, **kwargs):
-                    kwargs.setdefault('size_hint_y', None)
-                    kwargs.setdefault('height', '1dp')
-                    kwargs.setdefault('md_bg_color', [0.26, 0.24, 0.36, 1])
-                    super().__init__(**kwargs)
-            Factory.register('MDSeparator', cls=MDSeparator)
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("career_bot_v18")
 
-    try:
-        from kivymd.uix.switch import MDSwitch
-    except ImportError:
-        try:
-            from kivymd.uix.selectioncontrol import MDSwitch
-        except ImportError:
+# ---------------- Конфиг ----------------
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise SystemExit("🔴 BOT_TOKEN не задан!")
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GROQ_KEY = os.getenv("GROQ_KEY", "")
+OPENROUTER_KEY = os.getenv("OPENROUTER_KEY", "")
+PORT = int(os.getenv("PORT", "10000"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
+TELEGRAM_API = "https://" + "api.telegram.org" + "/bot" + BOT_TOKEN
+
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
+GEMINI_MODEL_CANDIDATES = list(dict.fromkeys([
+    os.getenv("GEMINI_MODEL", "gemini-3.6-flash"),
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-flash-latest",
+]))
+GROQ_MODEL = "llama-3.1-8b-instant"
+
+_working_model = {"name": None}
+HTTP = None
+TASKS = set()
+temp_vacancies = {}
+user_states = {}          
+user_adapt_target = {}    
+user_search_cache = {}    
+interview_sessions = {}   
+
+# ---------------- БД ----------------
+conn = sqlite3.connect("tracker.db", check_same_thread=False)
+cur = conn.cursor()
+cur.executescript("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY, 
+    username TEXT,
+    balance INTEGER DEFAULT 7,
+    unlimited_until TIMESTAMP,
+    daily_count INTEGER DEFAULT 0,
+    last_active_date TEXT,
+    referred_by INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS resumes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT,
+    text TEXT,
+    active INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS hidden_vacancies (
+    user_id INTEGER,
+    vacancy_id TEXT,
+    PRIMARY KEY (user_id, vacancy_id)
+);
+CREATE TABLE IF NOT EXISTS liked_vacancies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    vacancy_id TEXT,
+    title TEXT,
+    status TEXT DEFAULT 'Откликнулся'
+);
+CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    username TEXT,
+    message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    amount INTEGER,
+    status TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS social_shares (
+    user_id INTEGER,
+    network TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, network)
+);
+""")
+conn.commit()
+
+
+def register_user(user_id: int, username: str, referrer_id: int = None) -> bool:
+    cur.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+    row = cur.fetchone()
+    if row:
+        return False
+    if referrer_id == user_id:
+        referrer_id = None
+    if referrer_id:
+        cur.execute("SELECT 1 FROM users WHERE user_id=?", (referrer_id,))
+        if not cur.fetchone():
+            referrer_id = None
+    initial_balance = 7
+    cur.execute(
+        "INSERT INTO users (user_id, username, balance, referred_by) VALUES (?, ?, ?, ?)",
+        (user_id, username, initial_balance, referrer_id)
+    )
+    conn.commit()
+    if referrer_id:
+        cur.execute("UPDATE users SET balance = balance + 7 WHERE user_id=?", (referrer_id,))
+        conn.commit()
+    return True
+
+
+def get_user_data(user_id: int):
+    cur.execute("SELECT balance, unlimited_until, daily_count, last_active_date FROM users WHERE user_id=?", (user_id,))
+    row = cur.fetchone()
+    if not row:
+        return {"balance": 7, "unlimited_until": None, "daily_count": 0, "last_active_date": ""}
+    return {"balance": row[0], "unlimited_until": row[1], "daily_count": row[2], "last_active_date": row[3]}
+
+
+def spend_balance(user_id: int, cost: int = 1) -> bool:
+    if ADMIN_ID != 0 and user_id == ADMIN_ID:
+        return True
+        
+    data = get_user_data(user_id)
+    unlimited_until = data["unlimited_until"]
+    if unlimited_until:
+        cur.execute("SELECT datetime('now') < datetime(?)", (unlimited_until,))
+        is_active_sub = cur.fetchone()[0]
+        if is_active_sub:
+            last_date = data["last_active_date"]
+            daily_count = data["daily_count"]
+            today_str = datetime.date.today().isoformat()
+            
+            if last_date != today_str:
+                cur.execute("UPDATE users SET daily_count=1, last_active_date=? WHERE user_id=?", (today_str, user_id))
+                conn.commit()
+                return True
+            elif daily_count < 50:
+                cur.execute("UPDATE users SET daily_count = daily_count + 1 WHERE user_id=?", (user_id,))
+                conn.commit()
+                return True
+            else:
+                return False
+
+    balance = data["balance"]
+    if balance < cost:
+        return False
+    cur.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (cost, user_id))
+    conn.commit()
+    return True
+
+
+def admin_add_balance(user_id: int, amount: int) -> int:
+    cur.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, user_id))
+    conn.commit()
+    return get_user_data(user_id)["balance"]
+
+
+def admin_set_unlimited(user_id: int, days: int = 10):
+    cur.execute("UPDATE users SET unlimited_until = datetime('now', '+' || ? || ' days') WHERE user_id=?", (days, user_id))
+    conn.commit()
+
+
+def add_resume(user_id: int, name: str, text: str):
+    cur.execute("UPDATE resumes SET active=0 WHERE user_id=?", (user_id,))
+    cur.execute("INSERT INTO resumes (user_id, name, text, active) VALUES (?,?,?,1)",
+                (user_id, name, text[:20000]))
+    conn.commit()
+
+
+def list_resumes(user_id: int):
+    cur.execute("SELECT id, name, active FROM resumes WHERE user_id=? ORDER BY id", (user_id,))
+    return [{"id": r[0], "name": r[1], "active": r[2]} for r in cur.fetchall()]
+
+
+def get_active_resume(user_id: int) -> str:
+    cur.execute("SELECT text FROM resumes WHERE user_id=? AND active=1 ORDER BY id DESC LIMIT 1", (user_id,))
+    row = cur.fetchone()
+    if not row:
+        cur.execute("SELECT text FROM resumes WHERE user_id=? ORDER BY id DESC LIMIT 1", (user_id,))
+        row = cur.fetchone()
+    return row[0] if row else ""
+
+
+def get_resume_by_id(user_id: int, resume_id: int) -> str:
+    cur.execute("SELECT text FROM resumes WHERE id=? AND user_id=?", (resume_id, user_id))
+    row = cur.fetchone()
+    return row[0] if row else ""
+
+
+def hide_vacancy(user_id: int, vacancy_id: str):
+    cur.execute("INSERT OR IGNORE INTO hidden_vacancies (user_id, vacancy_id) VALUES (?, ?)", (user_id, vacancy_id))
+    conn.commit()
+
+
+def is_vacancy_hidden(user_id: int, vacancy_id: str) -> bool:
+    cur.execute("SELECT 1 FROM hidden_vacancies WHERE user_id=? AND vacancy_id=?", (user_id, vacancy_id))
+    return cur.fetchone() is not None
+
+
+def like_vacancy(user_id: int, vacancy_id: str, title: str):
+    cur.execute("INSERT INTO liked_vacancies (user_id, vacancy_id, title, status) VALUES (?, ?, ?, 'Откликнулся')", (user_id, vacancy_id, title))
+    conn.commit()
+
+
+def get_user_preferences(user_id: int) -> str:
+    cur.execute("SELECT title FROM liked_vacancies WHERE user_id=? ORDER BY id DESC LIMIT 10", (user_id,))
+    rows = cur.fetchall()
+    if not rows:
+        return "Нет истории предпочтений."
+    return ", ".join([r[0] for r in rows])
+
+
+# ---------------- ИИ-слой (Каскадная защита) ----------------
+def _openai_compat(prompt: str, base: str, key: str, model: str) -> str:
+    r = requests.post(
+        f"{base}/chat/completions",
+        headers={"Authorization": f"Bearer {key}"},
+        json={"model": model, "temperature": 0.7,
+              "messages": [{"role": "user", "content": prompt}]},
+        timeout=90,
+    )
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
+
+
+def ai_generate(prompt: str):
+    if client:
+        cands = [_working_model["name"]] if _working_model["name"] else GEMINI_MODEL_CANDIDATES
+        for m in cands:
             try:
-                from kivymd.uix.selection import MDSwitch
-            except ImportError:
-                from kivy.uix.togglebutton import ToggleButton
-                from kivy.properties import BooleanProperty
-                class MDSwitch(ToggleButton):
-                    active = BooleanProperty(False)
-                    def __init__(self, **kwargs):
-                        super().__init__(**kwargs)
-                        self.bind(state=self._on_state)
-                    def _on_state(self, instance, value):
-                        self.active = (value == 'down')
-                Factory.register('MDSwitch', cls=MDSwitch)
-    
-    _log("OK kivymd")
-except Exception as e:
-    _log(f"FAIL kivymd: {e}")
-    raise
+                resp = client.models.generate_content(
+                    model=m, contents=prompt,
+                    config=gtypes.GenerateContentConfig(temperature=0.7))
+                if resp is not None and resp.text:
+                    _working_model["name"] = m
+                    log.info("AI ok: gemini/%s", m)
+                    return resp.text
+            except Exception as e:
+                log.warning("Gemini model %s failed: %s", m, str(e)[:100])
+                
+    if GROQ_KEY:
+        try:
+            log.info("AI ok: groq/%s", GROQ_MODEL)
+            return _openai_compat(prompt, "https://api.groq.com/openai/v1", GROQ_KEY, GROQ_MODEL)
+        except Exception as e:
+            log.warning("Groq failed: %s", str(e)[:100])
 
-CURRENT_VERSION = "7.6.0"
-CONFIG_FILE = "lemus_studio_config.json"
-PROJECTS_FILE = "lemus_projects_db.json"
-HISTORY_FILE = "lemus_prompts_history.json"
-ONBOARDING_FLAG = "onboarding_seen_v7"
-MASTER_KEYWORD = "LemusAI"
-MASTER_HASH = hashlib.sha256(MASTER_KEYWORD.encode()).hexdigest()
-GITHUB_REPO = "antonlemus/lemus-ai-music-apk"
-REMOTE_KEYS_URL = "https://gist.githubusercontent.com/antonlemus/YOUR_GIST_ID/raw/keys.json"
-
-GEMINI_MODELS = [
-    "gemini-2.0-flash", "gemini-flash-latest", "gemini-2.0-flash-exp",
-    "gemini-2.5-pro", "gemini-1.5-flash-latest", "gemini-1.5-pro-latest",
-]
-OR_MODELS = [
-    "qwen/qwen3.8-27b:free", "openrouter/auto",
-    "meta-llama/llama-3.3-70b-instruct:free", "deepseek/deepseek-chat:free"
-]
-
-REPLICATE_MUSIC_MODELS = [
-    {"owner_model": "meta/musicgen",
-     "extra": {"model_version": "stereo-large", "output_format": "mp3",
-               "normalization_strategy": "peak"}},
-    {"owner_model": "meta/musicgen",
-     "extra": {"model_version": "melody-large", "output_format": "mp3",
-               "normalization_strategy": "peak"}},
-    {"owner_model": "meta/musicgen",
-     "extra": {"model_version": "large", "output_format": "mp3",
-               "normalization_strategy": "peak"}},
-]
-
-EMPTY_CONFIG = {
-    "gemini_keys": [], "gemini_key": "", "gemini_model": "gemini-2.0-flash",
-    "openrouter_key": "", "yandex_token": "", "hf_token": "", "fish_key": "", "groq_key": "",
-    "replicate_token": "",
-    "is_master_activated": False, "activated_at": None, "activation_source": None,
-    "disclose_ai": True, "hints_seen": {},
-}
-
-HINTS = {
-    "tab_studio": "Студия: выбери режим чипсами сверху. «Улучшить промпт» допишет идею до профессионального описания.",
-    "tab_projects": "Медиатека: слушай, скачивай, отправляй и экспортируй готовые треки.",
-    "tab_settings": "Настройки: загрузи keys.json для полной мощности. Диагностика покажет точные коды ошибок.",
-    "mode_single": "Сингл: тема + жанр + длительность. Демоголос включает клон твоего голоса.",
-    "mode_prompt": "Промпт: опиши трек словами или нажми «Улучшить промпт» — студия добавит жанр, BPM, настроение и структуру.",
-    "mode_viral": "Хит: мемная фраза станет припевом короткого трека для Reels/TikTok.",
-    "mode_album": "Альбом: концепция + жанр → 3-4 трека в едином стиле. Позже добавляй треки кнопкой «Трек в альбом».",
-    "mode_money": "Фон: ниша для стримингов → монетизируемый фоновый трек.",
-}
-
-TYPO_MAP = [
-    ("drumm and base", "drum and bass"), ("drum and base", "drum and bass"),
-    ("drumm-n-base", "drum and bass"), ("драм-н-бэйс", "drum and bass"),
-    ("drum'n'bass", "drum and bass"), ("медодичный", "мелодичный"),
-    ("лоу-фай", "lo-fi"), ("лоуфай", "lo-fi"),
-    ("фонк", "phonk"), ("хаус", "house"), ("техно", "techno"),
-]
-
-GENRE_BPM = [
-    (("drum and bass", "dnb"), 174, "melodic drum and bass", "тёплые пэды, роллинг-бас, брейкбит"),
-    (("phonk",), 132, "drift phonk", "ковбелл-мелодия, 808-бас, тёмный вайб"),
-    (("lo-fi",), 82, "lo-fi chill", "виниловый шум, родес-пиано, мягкий бит"),
-    (("house",), 124, "deep house", "грув-бас, мягкие клавиши, четырёхдольный бит"),
-    (("trap", "rap", "рэп", "hip-hop"), 140, "trap rap", "808-бас, хэты с трещоткой, мрачные синты"),
-    (("ballad", "баллад"), 72, "pop ballad", "фортепиано, струнные, живой бас"),
-    (("techno",), 128, "techno", "индустриальные синты, жёсткий бит"),
-    (("pop", "поп"), 100, "modern pop", "чистый продакшн, синтезаторные пэды, живой бас"),
-]
-
-def _local_enhance(raw):
-    t = (raw or "").lower()
-    for a, b in TYPO_MAP:
-        t = t.replace(a, b)
-    bpm, genre, instr = 100, "modern pop", "тёплые пэды, мягкие ударные, глубокий бас"
-    for keys, b_, g_, i_ in GENRE_BPM:
-        if any(k in t for k in keys):
-            bpm, genre, instr = b_, g_, i_
-            break
-    vocals = ""
-    if any(w in t for w in ("female", "женск")):
-        vocals = "женский вокал"
-    elif any(w in t for w in ("male", "мужск")):
-        vocals = "мужской вокал"
-    if any(w in t for w in ("мягк", "soft", "груст", "sad", "лирич", "нежн")):
-        mood = "настроение светлой грусти"
-    elif any(w in t for w in ("энергич", "агрессив", "драйв", "energy")):
-        mood = "энергичное и драйвовое настроение"
-    else:
-        mood = "тёплое обволакивающее настроение"
-    parts = [genre]
-    if vocals:
-        parts.append(vocals)
-    parts += [instr, f"{bpm} bpm", mood]
-    head = ", ".join(parts).capitalize()
-    return (f"{head}. Структура: короткое интро, длинный куплет, мощный дроп-припев, "
-            f"бридж, финальный припев с фейдом.")
-
-ENHANCE_SYSTEM = (
-    "Ты — промпт-инженер музыкальных нейросетей уровня Suno/Udio. "
-    "Пользователь даёт черновую идею. Ты возвращаешь ОДНУ строку готового промпта на русском: "
-    "жанр и поджанр, вокал, инструменты, темп в bpm, тональность, настроение, "
-    "структура (интро/куплет/припев/бридж/аутро). Без JSON, без пояснений."
-)
-
-_STORAGE_ROOT = None
-
-def _android_private():
-    try:
-        from jnius import autoclass
-        PythonActivity = autoclass("org.kivy.android.PythonActivity")
-        activity = PythonActivity.mActivity
-        if activity:
-            d = activity.getExternalFilesDir(None)
-            if d:
-                return os.path.join(d.getAbsolutePath(), "LemusStudio")
-    except Exception:
-        pass
+    if OPENROUTER_KEY:
+        try:
+            log.info("AI ok: openrouter/qwen")
+            return _openai_compat(prompt, "https://openrouter.ai/api/v1", OPENROUTER_KEY, "qwen/qwen-2.5-7b-instruct:free")
+        except Exception as e:
+            log.warning("OpenRouter failed: %s", str(e)[:100])
+            
     return None
 
-def get_storage_root():
-    global _STORAGE_ROOT
-    if _STORAGE_ROOT:
-        return _STORAGE_ROOT
-    candidates = []
-    if platform == "android":
-        candidates.append("/storage/emulated/0/Music/LemusStudio")
-        p = _android_private()
-        if p:
-            candidates.append(p)
-    else:
-        candidates.append(os.path.join(os.path.expanduser("~"), "LemusStudio"))
-    for p in candidates:
+
+# ---------------- Извлечение текста из файлов ----------------
+def rtf_to_text(raw: str) -> str:
+    text = re.sub(r"\\'([0-9a-fA-F]{2})",
+                  lambda m: bytes.fromhex(m.group(1)).decode("cp1251", errors="ignore"), raw)
+    text = re.sub(r"\\[a-z]+-?\d* ?", " ", text)
+    text = re.sub(r"[{}]", "", text)
+    return html.unescape(text).strip()
+
+
+def extract_text(path: str, file_name: str) -> str:
+    fn = file_name.lower()
+    text_content = ""
+    try:
+        if fn.endswith(".pdf"):
+            doc = fitz.open(path)
+            pages_text = []
+            for page in doc:
+                pages_text.append(page.get_text("text"))
+            text_content = "\n".join(pages_text)
+        elif fn.endswith(".docx"):
+            doc = Document(path)
+            text_content = "\n".join(p.text for p in doc.paragraphs if p.text)
+        elif fn.endswith(".rtf"):
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                text_content = rtf_to_text(f.read())
+        elif fn.endswith(".txt"):
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                text_content = f.read()
+    except Exception as e:
+        log.error("extract_text failed for %s: %s", file_name, e)
+    return text_content.strip()
+
+
+# ---------------- Telegram helpers ----------------
+def bg(coro):
+    t = asyncio.create_task(coro)
+    TASKS.add(t)
+    
+    def _handle_task_result(task):
+        TASKS.discard(task)
         try:
-            os.makedirs(p, exist_ok=True)
-            t = os.path.join(p, ".test")
-            with open(t, "w") as f: f.write("1")
-            os.remove(t)
-            _STORAGE_ROOT = p
-            return p
-        except Exception:
-            continue
-    _STORAGE_ROOT = "."
-    return _STORAGE_ROOT
-
-# =====================================================================
-# МУЗЫКАЛЬНАЯ ТЕОРИЯ И ПРОЦЕДУРНЫЙ ДВИЖОК V4 (FULL RESTORE)
-# =====================================================================
-NOTE_SEMI = {"C": 0, "C#": 1, "Db": 1, "D": 2, "D#": 3, "Eb": 3, "E": 4, "F": 5,
-             "F#": 6, "Gb": 6, "G": 7, "G#": 8, "Ab": 8, "A": 9, "A#": 10, "Bb": 10, "B": 11}
-SCALE_MINOR = [0, 2, 3, 5, 7, 8, 10]
-SCALE_MAJOR = [0, 2, 4, 5, 7, 9, 11]
-PROG_MINOR = [0, 5, 2, 6]   # i - VI - III - VII
-PROG_MAJOR = [0, 5, 3, 4]   # I - vi - IV - V
-
-def _parse_key(key_str):
-    s = (key_str or "").strip()
-    m = re.match(r"([A-Ga-g])([#b]?)", s)
-    if not m:
-        return 220.0, True
-    semi = NOTE_SEMI.get(m.group(1).upper() + m.group(2), 9)
-    minor = ("minor" in s.lower()) or ("минор" in s.lower()) or (s.endswith("m") and "maj" not in s.lower())
-    hz = 220.0 * (2 ** ((semi - 9) / 12.0))
-    return hz, minor
-
-def _chord_freqs(root_hz, scale, degree):
-    out = []
-    for step in (0, 2, 4, 6):
-        idx = (degree + step) % 7
-        octv = (degree + step) // 7
-        semi = scale[idx] + 12 * octv
-        out.append(root_hz * (2 ** (semi / 12.0)))
-    return out
-
-def _section_energy(name):
-    n = (name or "").lower()
-    if "intro" in n or "вступ" in n: return 0.30
-    if "chorus" in n or "припев" in n or "drop" in n: return 0.95
-    if "bridge" in n or "бридж" in n or "break" in n: return 0.45
-    if "outro" in n or "финал" in n or "концов" in n: return 0.35
-    return 0.60
-
-def _degree_to_freq(root_hz, scale, degree, octave_shift=0):
-    idx = degree % 7
-    octv = degree // 7 + octave_shift
-    semi = scale[idx] + 12 * octv
-    return root_hz * (2 ** (semi / 12.0))
-
-class ProceduralAudioEngineV4:
-    """
-    V4 — механика переписана с нуля, чтобы уйти от «зацикленного мотивчика».
-    Что изменилось по сравнению с V3:
-     1. МЕЛОДИЯ больше не берётся из одного статического 8-нотного мотива,
-        который крутился по кругу на весь трек. Теперь на каждую СЕКЦИЮ
-        (куплет/припев/бридж) генерируется своя мелодическая фраза —
-        пошаговое движение по диатонической гамме с редкими скачками,
-        паузами и синкопами, плюс её начало «наследует» последнюю ноту
-        предыдущей фразы (плавное голосоведение, а не рандомный обрыв).
-     2. АРАНЖИРОВКА отличается по слоям для куплета/припева/бриджа, а не
-        просто по громкости одних и тех же слоёв.
-     3. САЙДЧЕЙН-ДАКИНГ: гармонические слои (пэд/бас/лид) подсаживаются
-        на ~120 мс под каждый удар кика — характерный «дышащий» приём
-        современного продакшена, которого в V3 не было вовсе.
-     4. РЕВЕРБ/ДИЛЕЙ-СЕНД: короткий стерео slap-delay на общей шине —
-        без него любой синтезатор звучит сухо и дёшево.
-     5. Более чистый вокинг пэда (не все 4 тона хора в одном регистре
-        поверх баса — это и давало «кашу»), лёгкая хумантзация тайминга/
-        громкости ударных.
-    """
-    def __init__(self, sr=22050):
-        self.sr = sr
-
-    def _make_phrase(self, rnd, beats_total, energy, start_degree):
-        events = []
-        degree = start_degree
-        t = 0.0
-        if energy > 0.8:
-            durs = [0.5, 0.5, 0.5, 1.0, 0.25, 0.25]
-            rest_p = 0.06
-            leap_p = 0.30
-        elif energy > 0.5:
-            durs = [1.0, 1.0, 0.5, 1.5, 0.5]
-            rest_p = 0.14
-            leap_p = 0.18
-        else:
-            durs = [1.5, 2.0, 1.0, 2.0]
-            rest_p = 0.22
-            leap_p = 0.10
-        
-        steps_since_rest = 0
-        while t < beats_total - 0.01:
-            dur = rnd.choice(durs)
-            if t + dur > beats_total:
-                dur = beats_total - t
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            coro_name = getattr(coro, '__name__', str(coro))
+            log.error(f"Фоновая ошибка в задаче {coro_name}: {e}", exc_info=True)
             
-            if rnd.random() < rest_p and steps_since_rest > 1:
-                events.append((t, dur, None))
-                steps_since_rest = 0
-            else:
-                if rnd.random() < leap_p:
-                    move = rnd.choice([-4, -3, 3, 4, 5])
-                else:
-                    move = rnd.choice([-2, -1, -1, 0, 1, 1, 2])
-                degree = max(-3, min(10, degree + move))
-                events.append((t, dur, degree))
-                steps_since_rest += 1
-            t += dur
-            
-        if events and events[-1][2] is not None:
-            target = rnd.choice([0, 2])
-            off, dur, _ = events[-1]
-            events[-1] = (off, dur, target)
-            degree = target
-        return events, degree
+    t.add_done_callback(_handle_task_result)
+    return t
 
-    def generate(self, duration, seed_text, plan=None):
-        import random
-        plan = plan or {}
-        rnd = random.Random(int(hashlib.md5((seed_text or "lemus").encode()).hexdigest()[:8], 16))
-        dur = max(20, min(int(duration or 60), 60))
-        n = int(self.sr * dur)
-        buf_l = [0.0] * n
-        buf_r = [0.0] * n
-        
-        bpm = int(plan.get("bpm") or 0) or rnd.choice([96, 104, 112, 122, 128])
-        bpm = max(60, min(190, bpm))
-        root_hz, minor = _parse_key(plan.get("key"))
-        scale = SCALE_MINOR if minor else SCALE_MAJOR
-        prog = PROG_MINOR if minor else PROG_MAJOR
-        chords = [_chord_freqs(root_hz, scale, d) for d in prog]
-        
-        beat_samples = int(self.sr * 60.0 / bpm)
-        bar_samples = beat_samples * 4
-        bars_total = n // bar_samples + 1
-        
-        sections = plan.get("sections") or []
-        segments = []
-        if sections:
-            for sec in sections:
-                bars = max(1, int(sec.get("bars") or 4))
-                e = sec.get("energy")
-                e = float(e) if e is not None else _section_energy(sec.get("name"))
-                segments.append((sec.get("name", ""), bars, e))
-        
-        if not segments:
-            segments = [("Intro", 2, 0.28), ("Verse", 4, 0.55), ("Chorus", 4, 0.95),
-                        ("Verse", 4, 0.58), ("Chorus", 4, 0.95), ("Bridge", 2, 0.45),
-                        ("Chorus", 4, 0.95), ("Outro", 2, 0.25)]
-        
-        covered = sum(s[1] for s in segments)
-        while covered < bars_total:
-            segments = segments + segments
-            covered = sum(s[1] for s in segments)
-            
-        kick_times = []
-        melody_degree = 0
-        bar_cursor = 0
-        chord_i = 0
-        
-        while bar_cursor < bars_total and segments:
-            name, seg_bars, energy = segments.pop(0)
-            seg_bars = min(seg_bars, bars_total - bar_cursor)
-            if seg_bars <= 0: continue
-            
-            is_chorus = "chorus" in name.lower() or "припев" in name.lower() or "drop" in name.lower()
-            is_verse = "verse" in name.lower() or "куплет" in name.lower()
-            
-            phrase, melody_degree = self._make_phrase(rnd, seg_bars * 4, energy, melody_degree)
-            
-            for b in range(seg_bars):
-                bar_idx = bar_cursor + b
-                ch_freqs = chords[chord_i % 4]
-                if b % 2 == 1: chord_i += 1
-                start_s = bar_idx * bar_samples
-                
-                pad_amp = 0.055 + 0.045 * energy
-                for freq in ch_freqs[1:]:
-                    self._add_pad(buf_l, buf_r, start_s, bar_samples, freq, pad_amp, detune=0.0035)
-                
-                bass_f = ch_freqs[0] / 2.0
-                bass_amp = 0.15 + 0.12 * energy
-                pattern = [0.0, 1.0, 2.0, 3.0] if energy > 0.8 else [0.0, 2.0]
-                for beat_off in pattern:
-                    bs = start_s + int(beat_off * beat_samples)
-                    bl = min(int(beat_samples * 0.9), n - bs)
-                    if bl > 0:
-                        f = bass_f * (1.5 if (energy > 0.85 and rnd.random() < 0.18) else 1.0)
-                        self._add_bass(buf_l, buf_r, bs, bl, f, bass_amp)
-                
-                if energy > 0.35:
-                    kick_steps = [0.0, 2.0] if energy <= 0.8 else [0.0, 0.75, 2.0, 2.75]
-                    for beat_off in kick_steps:
-                        jitter = rnd.uniform(-0.006, 0.006) * beat_samples
-                        ks = start_s + int(beat_off * beat_samples + jitter)
-                        kl = min(int(0.15 * self.sr), n - ks)
-                        if kl > 0 and 0 <= ks < n:
-                            amp = (0.55 + 0.15 * energy) * rnd.uniform(0.92, 1.0)
-                            self._add_kick(buf_l, buf_r, ks, kl, amp)
-                            kick_times.append(ks)
-                    
-                    if energy > 0.55:
-                        for beat_off in (1.0, 3.0):
-                            ss = start_s + int(beat_off * beat_samples)
-                            sl = min(int(0.14 * self.sr), n - ss)
-                            if sl > 0:
-                                self._add_snare(buf_l, buf_r, ss, sl, (0.28 + 0.1 * energy) * rnd.uniform(0.9, 1.0))
-                    
-                    hh_count = 8 if energy > 0.75 else 4
-                    hh_step = bar_samples // hh_count
-                    for k in range(hh_count):
-                        hs = start_s + k * hh_step + rnd.randint(-40, 40)
-                        hl = min(int(0.045 * self.sr), n - hs)
-                        if hl > 0 and 0 <= hs < n:
-                            amp = 0.10 * energy * rnd.uniform(0.7, 1.0)
-                            if k % 2 == 0:
-                                self._add_hat(buf_l, buf_r, hs, hl, amp * 0.8, amp * 1.2)
-                            else:
-                                self._add_hat(buf_l, buf_r, hs, hl, amp * 1.2, amp * 0.8)
-                
-                bar_start_beat = b * 4.0
-                bar_end_beat = bar_start_beat + 4.0
-                for off, ndur, degree in phrase:
-                    if degree is None or not (bar_start_beat <= off < bar_end_beat): continue
-                    if not is_chorus and not is_verse and energy < 0.35: continue
-                    
-                    octave_shift = 1 if is_chorus else 0
-                    freq = _degree_to_freq(root_hz, scale, degree, octave_shift=octave_shift)
-                    ms = start_s + int((off - bar_start_beat) * beat_samples)
-                    ml = int(ndur * beat_samples * 0.92)
-                    if ml <= 0 or ms >= n: continue
-                    
-                    lead_amp = (0.13 if is_chorus else 0.08) * (0.6 + 0.4 * energy)
-                    pan = -0.2 if int(off * 2) % 2 == 0 else 0.2
-                    self._add_lead(buf_l, buf_r, ms, ml, freq, lead_amp, vib=rnd.uniform(0.8, 1.15), pan=pan)
-            
-            bar_cursor += seg_bars
 
-        self._apply_sidechain(buf_l, buf_r, kick_times, n)
-        self._apply_slap_delay(buf_l, buf_r, n)
-        return self._master_encode(buf_l, buf_r, n)
+_seen_updates = set()
 
-    def _apply_sidechain(self, L, R, kick_times, n):
-        if not kick_times: return
-        dip_len = int(0.015 * self.sr)
-        rel_len = int(0.13 * self.sr)
-        window = dip_len + rel_len
-        for kt in kick_times:
-            end = min(n, kt + window)
-            for i in range(kt, end):
-                rel = i - kt
-                if rel < dip_len:
-                    g = 1.0 - 0.55 * (rel / max(1, dip_len))
-                else:
-                    g = 0.45 + 0.55 * ((rel - dip_len) / max(1, rel_len))
-                L[i] *= g
-                R[i] *= g
 
-    def _apply_slap_delay(self, L, R, n):
-        delay = int(0.27 * self.sr)
-        fb = 0.24
-        if delay >= n: return
-        for i in range(delay, n):
-            L[i] += R[i - delay] * fb
-            R[i] += L[i - delay] * fb
-
-    def _adsr(self, i, length, attack, decay, sustain, release):
-        if i >= length: return 0.0
-        pos = i / length
-        if pos < attack: return pos / attack
-        elif pos < attack + decay: return 1.0 - (pos - attack)/decay * (1.0 - sustain)
-        elif pos < 1.0 - release: return sustain
-        else: return sustain * (1.0 - (pos - (1.0 - release))/release)
-
-    def _add_pad(self, L, R, start, length, freq, amp, detune=0.0):
-        end = min(start + length, len(L))
-        ln = end - start
-        if ln <= 0: return
-        w1 = 2 * math.pi * freq / self.sr
-        w2 = 2 * math.pi * (freq * (1 + detune)) / self.sr
-        att, dec, sus, rel = 0.1, 0.2, 0.7, 0.15
-        prev = 0.0
-        for i in range(ln):
-            env = self._adsr(i, ln, att, dec, sus, rel)
-            v = math.sin(w1 * i) + math.sin(w2 * i)
-            prev = prev + 0.5 * (v - prev)
-            val = amp * env * prev * 0.5
-            L[start + i] += val
-            R[start + i] += val
-
-    def _add_bass(self, L, R, start, length, freq, amp):
-        end = min(start + length, len(L))
-        ln = end - start
-        if ln <= 0: return
-        w = 2 * math.pi * freq / self.sr
-        att, dec, sus, rel = 0.01, 0.3, 0.5, 0.1
-        prev_val = 0.0
-        lp_coeff = 0.12
-        for i in range(ln):
-            env = self._adsr(i, ln, att, dec, sus, rel)
-            phase = (i * freq / self.sr) % 1.0
-            raw = 2.0 * phase - 1.0
-            raw += 0.5 * math.sin(w * i)
-            filtered = prev_val + lp_coeff * (raw - prev_val)
-            prev_val = filtered
-            val = amp * env * filtered
-            L[start + i] += val
-            R[start + i] += val
-
-    def _add_kick(self, L, R, start, length, amp):
-        end = min(start + length, len(L))
-        ln = end - start
-        if ln <= 0: return
-        for i in range(ln):
-            t = i / self.sr
-            f = 120 * math.exp(-t * 15) + 40
-            env = math.exp(-t * 10)
-            val = amp * env * math.sin(2 * math.pi * f * t)
-            L[start + i] += val
-            R[start + i] += val
-
-    def _add_snare(self, L, R, start, length, amp):
-        end = min(start + length, len(L))
-        ln = end - start
-        if ln <= 0: return
-        for i in range(ln):
-            t = i / self.sr
-            noise = random.uniform(-1, 1)
-            tone = math.sin(2 * math.pi * 180 * t)
-            env = math.exp(-t * 20)
-            val = amp * env * (0.7 * noise + 0.3 * tone)
-            L[start + i] += val
-            R[start + i] += val
-
-    def _add_hat(self, L, R, start, length, amp_l, amp_r):
-        end = min(start + length, len(L))
-        ln = end - start
-        if ln <= 0: return
-        for i in range(ln):
-            t = i / self.sr
-            noise = random.uniform(-1, 1)
-            env = math.exp(-t * 50)
-            v = noise * env
-            L[start + i] += v * amp_l
-            R[start + i] += v * amp_r
-
-    def _add_lead(self, L, R, start, length, freq, amp, vib=1.0, pan=0.0):
-        end = min(start + length, len(L))
-        ln = end - start
-        if ln <= 0: return
-        w = 2 * math.pi * freq / self.sr
-        att, dec, sus, rel = 0.02, 0.2, 0.4, 0.12
-        lg = 0.5 * (1 - pan)
-        rg = 0.5 * (1 + pan)
-        for i in range(ln):
-            t = i / self.sr
-            env = self._adsr(i, ln, att, dec, sus, rel)
-            fm_mod = 1.0 + 0.01 * vib * math.sin(2 * math.pi * 5.5 * t)
-            carrier = math.sin(w * fm_mod * i)
-            harmonics = 0.5 * math.sin(2 * w * fm_mod * i)
-            val = amp * env * (carrier + harmonics)
-            L[start + i] += val * lg * 2
-            R[start + i] += val * rg * 2
-
-    def _master_encode(self, L, R, n):
-        peak = 0.0
-        for i in range(n):
-            if abs(L[i]) > peak: peak = abs(L[i])
-            if abs(R[i]) > peak: peak = abs(R[i])
-        gain = 0.95 / peak if peak > 0 else 1.0
-        
-        data = bytearray()
-        fade_in = int(0.5 * self.sr)
-        fade_out = int(1.5 * self.sr)
-        
-        for i in range(n):
-            vl = L[i] * gain
-            vr = R[i] * gain
-            if i < fade_in:
-                f = i / fade_in
-                vl *= f; vr *= f
-            elif i > n - fade_out:
-                f = (n - i) / fade_out
-                vl *= f; vr *= f
-            
-            vl = math.tanh(vl * 1.2) * 0.85
-            vr = math.tanh(vr * 1.2) * 0.85
-            
-            il = int(max(-32768, min(32767, vl * 32767)))
-            ir = int(max(-32768, min(32767, vr * 32767)))
-            data.extend(struct.pack('<hh', il, ir))
-            
-        header = b'RIFF' + struct.pack('<I', 36 + len(data)) + b'WAVEfmt ' + \
-                 struct.pack('<IHHIIHH', 16, 1, 2, self.sr, self.sr*4, 4, 16) + \
-                 b'data' + struct.pack('<I', len(data))
-        return header + bytes(data)
-
-def _looks_like_audio(d):
-    if not d or len(d) < 2000: return False
-    return (d[:3] == b"ID3" or d[:2] in (b"\xff\xfb", b"\xff\xf3") or d[:4] in (b"RIFF", b"OggS", b"fLaC"))
-
-class SeekLine(Widget):
-    value = NumericProperty(0.0)
-    _drag = False
-    def on_touch_down(self, touch):
-        if self.collide_point(*touch.pos):
-            self._drag = True
-            self._apply(touch)
-            return True
-        return super().on_touch_down(touch)
-    def on_touch_move(self, touch):
-        if self._drag:
-            self._apply(touch)
-            return True
-        return super().on_touch_move(touch)
-    def on_touch_up(self, touch):
-        if self._drag:
-            self._drag = False
-            self._apply(touch)
-            app = MDApp.get_running_app()
-            if app: app.seek_ratio(self.value)
-            return True
-        return super().on_touch_up(touch)
-    def _apply(self, touch):
-        ratio = (touch.x - self.x) / max(1.0, self.width)
-        self.value = max(0.0, min(1.0, ratio))
-
-Factory.register('SeekLine', cls=SeekLine)
-
-# ==============================================================================
-# KV LANGUAGE (FULL RESTORE FROM V7.3.1)
-# ==============================================================================
-KV = '''
-<SeekLine>:
-    canvas:
-        Color:
-            rgba: 0.26, 0.24, 0.36, 1
-        Rectangle:
-            pos: self.pos
-            size: self.size
-        Color:
-            rgba: 1.0, 0.85, 0.35, 1
-        Rectangle:
-            pos: self.pos
-            size: self.width * self.value, self.height
-
-MDBoxLayout:
-    orientation: "vertical"
-    canvas.before:
-        Color:
-            rgba: 0.066, 0.064, 0.10, 1
-        Rectangle:
-            pos: self.pos
-            size: self.size
-
-    MDTopAppBar:
-        title: "Lemus AI Music Studio"
-        elevation: 0
-        md_bg_color: 0.066, 0.064, 0.10, 1
-        specific_text_color: 0.97, 0.96, 1, 1
-        right_action_items: [["shield-key-outline", lambda x: app.show_vault_status()], ["information-outline", lambda x: app.show_onboarding()]]
-
-    MDBoxLayout:
-        id: player_bar
-        orientation: "vertical"
-        size_hint_y: None
-        height: "0dp"
-        md_bg_color: 0.101, 0.098, 0.156, 1
-        opacity: 0 if self.height == 0 else 1
-        SeekLine:
-            id: player_seek
-            size_hint_y: None
-            height: "4dp"
-        MDBoxLayout:
-            size_hint_y: None
-            height: "60dp"
-            padding: "8dp"
-            spacing: "6dp"
-            Image:
-                id: player_cover
-                size_hint: None, None
-                size: "44dp", "44dp"
-                allow_stretch: True
-                keep_ratio: True
-                opacity: 0
-            MDBoxLayout:
-                orientation: "vertical"
-                MDLabel:
-                    id: player_title
-                    text: ""
-                    shorten: True
-                    theme_text_color: "Custom"
-                    text_color: 0.97, 0.96, 1, 1
-                    font_style: "Subtitle2"
-                MDLabel:
-                    id: player_artist
-                    text: ""
-                    shorten: True
-                    theme_text_color: "Custom"
-                    text_color: 0.60, 0.58, 0.70, 1
-                    font_style: "Caption"
-            MDIconButton:
-                icon: "skip-previous"
-                theme_text_color: "Custom"
-                text_color: 0.97, 0.96, 1, 1
-                on_release: app.player_prev()
-            MDIconButton:
-                id: player_play_btn
-                icon: "pause"
-                theme_text_color: "Custom"
-                text_color: 1.0, 0.85, 0.35, 1
-                on_release: app.player_toggle()
-            MDIconButton:
-                icon: "skip-next"
-                theme_text_color: "Custom"
-                text_color: 0.97, 0.96, 1, 1
-                on_release: app.player_next()
-            MDIconButton:
-                icon: "download"
-                theme_text_color: "Custom"
-                text_color: 0.6, 0.85, 0.7, 1
-                on_release: app.download_current()
-            MDLabel:
-                id: player_pos
-                text: "0:00"
-                size_hint_x: None
-                width: "42dp"
-                halign: "center"
-                theme_text_color: "Custom"
-                text_color: 0.60, 0.58, 0.70, 1
-
-    MDBottomNavigation:
-        id: bottom_nav
-        panel_color: 0.101, 0.098, 0.156, 1
-        text_color_active: 1.0, 0.85, 0.35, 1
-        text_color_normal: 0.50, 0.48, 0.58, 1
-
-        MDBottomNavigationItem:
-            name: "tab_studio"
-            text: "Студия"
-            icon: "waveform"
-            MDBoxLayout:
-                orientation: "vertical"
-                canvas.before:
-                    Color:
-                        rgba: 0.066, 0.064, 0.10, 1
-                    Rectangle:
-                        pos: self.pos
-                        size: self.size
-                MDBoxLayout:
-                    size_hint_y: None
-                    height: "52dp"
-                    padding: "10dp"
-                    spacing: "8dp"
-                    ScrollView:
-                        do_scroll_y: False
-                        MDBoxLayout:
-                            size_hint_x: None
-                            width: self.minimum_width
-                            spacing: "8dp"
-                            MDRaisedButton:
-                                id: chip_single
-                                text: "Сингл"
-                                elevation: 0
-                                md_bg_color: 0.42, 0.34, 0.78, 1
-                                on_release: app.switch_mode("single")
-                            MDRaisedButton:
-                                id: chip_prompt
-                                text: "Промпт"
-                                elevation: 0
-                                md_bg_color: 0.145, 0.138, 0.196, 1
-                                on_release: app.switch_mode("prompt")
-                            MDRaisedButton:
-                                id: chip_viral
-                                text: "Хит"
-                                elevation: 0
-                                md_bg_color: 0.145, 0.138, 0.196, 1
-                                on_release: app.switch_mode("viral")
-                            MDRaisedButton:
-                                id: chip_album
-                                text: "Альбом"
-                                elevation: 0
-                                md_bg_color: 0.145, 0.138, 0.196, 1
-                                on_release: app.switch_mode("album")
-                            MDRaisedButton:
-                                id: chip_money
-                                text: "Фон"
-                                elevation: 0
-                                md_bg_color: 0.145, 0.138, 0.196, 1
-                                on_release: app.switch_mode("money")
-                            MDRaisedButton:
-                                id: chip_var
-                                text: "Вариация 2"
-                                elevation: 0
-                                md_bg_color: 0.48, 0.32, 0.22, 1
-                                on_release: app.make_variation()
-                BoxLayout:
-                    id: studio_area
-
-        MDBottomNavigationItem:
-            name: "tab_projects"
-            text: "Медиатека"
-            icon: "folder-music"
-            MDBoxLayout:
-                orientation: "vertical"
-                padding: "12dp"
-                spacing: "8dp"
-                MDTextField:
-                    id: search_input
-                    hint_text: "Поиск по названию / жанру"
-                    mode: "rectangle"
-                    size_hint_y: None
-                    height: "48dp"
-                    line_color_normal: 0.26, 0.24, 0.36, 1
-                    line_color_focus: 1.0, 0.85, 0.35, 1
-                    on_text: app.filter_projects(self.text)
-                ScrollView:
-                    size_hint_y: None
-                    height: "40dp"
-                    do_scroll_y: False
-                    MDBoxLayout:
-                        size_hint_x: None
-                        width: self.minimum_width
-                        spacing: "2dp"
-                        MDFlatButton:
-                            text: "Все"
-                            theme_text_color: "Custom"
-                            text_color: 0.80, 0.75, 0.95, 1
-                            on_release: app.filter_by_type("all")
-                        MDFlatButton:
-                            text: "Сингл"
-                            theme_text_color: "Custom"
-                            text_color: 0.80, 0.75, 0.95, 1
-                            on_release: app.filter_by_type("Single")
-                        MDFlatButton:
-                            text: "Хит"
-                            theme_text_color: "Custom"
-                            text_color: 0.80, 0.75, 0.95, 1
-                            on_release: app.filter_by_type("Viral")
-                        MDFlatButton:
-                            text: "Альбом"
-                            theme_text_color: "Custom"
-                            text_color: 0.80, 0.75, 0.95, 1
-                            on_release: app.filter_by_type("EP")
-                        MDFlatButton:
-                            text: "Фон"
-                            theme_text_color: "Custom"
-                            text_color: 0.80, 0.75, 0.95, 1
-                            on_release: app.filter_by_type("Money")
-                        MDFlatButton:
-                            text: "Промпт"
-                            theme_text_color: "Custom"
-                            text_color: 0.80, 0.75, 0.95, 1
-                            on_release: app.filter_by_type("Prompt")
-                MDBoxLayout:
-                    size_hint_y: None
-                    height: "44dp"
-                    spacing: "8dp"
-                    MDRaisedButton:
-                        text: "Обновить"
-                        size_hint_x: 1
-                        elevation: 0
-                        md_bg_color: 0.145, 0.138, 0.196, 1
-                        on_release: app.refresh_projects_ui()
-                    MDRaisedButton:
-                        text: "Выбрать"
-                        size_hint_x: 1
-                        elevation: 0
-                        md_bg_color: 0.55, 0.40, 0.22, 1
-                        on_release: app.toggle_selection_mode()
-                MDBoxLayout:
-                    size_hint_y: None
-                    height: "44dp"
-                    spacing: "8dp"
-                    MDRaisedButton:
-                        text: "Калькулятор"
-                        size_hint_x: 1
-                        elevation: 0
-                        md_bg_color: 0.24, 0.50, 0.46, 1
-                        on_release: app.show_revenue_calculator()
-                    MDRaisedButton:
-                        text: "Гайд"
-                        size_hint_x: 1
-                        elevation: 0
-                        md_bg_color: 0.24, 0.42, 0.70, 1
-                        on_release: app.show_monetize_guide()
-                MDBoxLayout:
-                    id: selection_bar
-                    size_hint_y: None
-                    height: "0dp"
-                    spacing: "8dp"
-                    md_bg_color: 0.30, 0.12, 0.12, 1
-                    opacity: 0 if self.height == 0 else 1
-                    MDLabel:
-                        id: selection_count
-                        text: "Выбрано: 0"
-                        theme_text_color: "Custom"
-                        text_color: 1, 0.85, 0.85, 1
-                    MDRaisedButton:
-                        text: "Удалить"
-                        elevation: 0
-                        md_bg_color: 0.68, 0.24, 0.24, 1
-                        on_release: app.delete_selected()
-                    MDFlatButton:
-                        text: "Отмена"
-                        theme_text_color: "Custom"
-                        text_color: 0.85, 0.85, 0.85, 1
-                        on_release: app.toggle_selection_mode()
-                MDScrollView:
-                    MDList:
-                        id: projects_list_container
-
-        MDBottomNavigationItem:
-            name: "tab_settings"
-            text: "Настройки"
-            icon: "cog"
-            MDScrollView:
-                MDBoxLayout:
-                    orientation: "vertical"
-                    padding: "16dp"
-                    spacing: "14dp"
-                    size_hint_y: None
-                    height: self.minimum_height
-                    MDCard:
-                        orientation: "vertical"
-                        padding: "16dp"
-                        radius: [24, 24, 24, 24]
-                        elevation: 0
-                        size_hint_y: None
-                        height: "320dp"
-                        md_bg_color: 0.101, 0.098, 0.156, 1
-                        MDBoxLayout:
-                            orientation: "vertical"
-                            spacing: "14dp"
-                            MDLabel:
-                                text: "Активация LemusAI"
-                                font_style: "H6"
-                                theme_text_color: "Custom"
-                                text_color: 0.97, 0.96, 1, 1
-                            MDRaisedButton:
-                                text: "Загрузить keys.json"
-                                size_hint_x: 1
-                                elevation: 0
-                                md_bg_color: 0.24, 0.42, 0.70, 1
-                                on_release: app.open_file_manager("keys")
-                            MDLabel:
-                                text: "— или —"
-                                halign: "center"
-                                theme_text_color: "Custom"
-                                text_color: 0.60, 0.58, 0.70, 1
-                            MDTextField:
-                                id: master_password_input
-                                hint_text: "Пароль LemusAI (gist)"
-                                password: True
-                                mode: "rectangle"
-                                line_color_normal: 0.26, 0.24, 0.36, 1
-                                line_color_focus: 0.78, 0.46, 0.20, 1
-                            MDRaisedButton:
-                                text: "Активировать через gist"
-                                size_hint_x: 1
-                                elevation: 0
-                                md_bg_color: 0.78, 0.46, 0.20, 1
-                                on_release: app.unlock_master_keys()
-                            MDLabel:
-                                id: activation_status
-                                text: "Не активировано"
-                                theme_text_color: "Custom"
-                                text_color: 0.60, 0.58, 0.70, 1
-                                halign: "center"
-                    MDCard:
-                        orientation: "vertical"
-                        padding: "16dp"
-                        radius: [24, 24, 24, 24]
-                        elevation: 0
-                        size_hint_y: None
-                        height: "170dp"
-                        md_bg_color: 0.101, 0.098, 0.156, 1
-                        MDBoxLayout:
-                            orientation: "vertical"
-                            spacing: "12dp"
-                            MDBoxLayout:
-                                size_hint_y: None
-                                height: "44dp"
-                                spacing: "8dp"
-                                MDLabel:
-                                    text: "Указывать AI в релизах"
-                                    theme_text_color: "Custom"
-                                    text_color: 0.84, 0.82, 0.94, 1
-                                MDSwitch:
-                                    id: ai_disclose_switch
-                                    active: True
-                                    on_active: app.set_disclose_ai(self.active)
-                            MDBoxLayout:
-                                spacing: "8dp"
-                                size_hint_y: None
-                                height: "46dp"
-                                MDRaisedButton:
-                                    text: "Диагностика"
-                                    size_hint_x: 1
-                                    elevation: 0
-                                    md_bg_color: 0.50, 0.32, 0.60, 1
-                                    on_release: app.run_key_diagnostics()
-                                MDRaisedButton:
-                                    text: "Резерв Yandex"
-                                    size_hint_x: 1
-                                    elevation: 0
-                                    md_bg_color: 0.68, 0.24, 0.24, 1
-                                    on_release: app.backup_to_yandex()
-                            MDRaisedButton:
-                                text: "Проверить обновления"
-                                elevation: 0
-                                md_bg_color: 0.28, 0.38, 0.60, 1
-                                on_release: app.check_for_updates()
-                    MDCard:
-                        orientation: "vertical"
-                        padding: "16dp"
-                        radius: [24, 24, 24, 24]
-                        elevation: 0
-                        size_hint_y: None
-                        height: "130dp"
-                        md_bg_color: 0.101, 0.098, 0.156, 1
-                        MDBoxLayout:
-                            orientation: "vertical"
-                            spacing: "12dp"
-                            MDRaisedButton:
-                                text: "Показать логи"
-                                elevation: 0
-                                md_bg_color: 0.48, 0.32, 0.22, 1
-                                on_release: app.show_crash_log()
-                            MDRaisedButton:
-                                text: "Отправить логи"
-                                elevation: 0
-                                md_bg_color: 0.24, 0.42, 0.70, 1
-                                on_release: app.send_logs_to_me()
-                    MDLabel:
-                        text: "Настоящий ИИ-синтез (Replicate) — студийное качество"
-                        font_style: "Subtitle1"
-                        theme_text_color: "Custom"
-                        text_color: 0.84, 0.82, 0.94, 1
-                    MDTextField:
-                        id: cfg_replicate
-                        hint_text: "Replicate API Token (r8_...) — реальная генерация музыки"
-                        mode: "rectangle"
-                        line_color_normal: 0.26, 0.24, 0.36, 1
-                        line_color_focus: 0.60, 0.48, 0.96, 1
-                    MDLabel:
-                        text: "Свои API-ключи (гостевой режим)"
-                        font_style: "Subtitle1"
-                        theme_text_color: "Custom"
-                        text_color: 0.84, 0.82, 0.94, 1
-                    MDTextField:
-                        id: cfg_gemini
-                        hint_text: "Google Gemini (AIza... из aistudio.google.com/apikey)"
-                        mode: "rectangle"
-                        line_color_normal: 0.26, 0.24, 0.36, 1
-                        line_color_focus: 0.60, 0.48, 0.96, 1
-                    MDTextField:
-                        id: cfg_openrouter
-                        hint_text: "OpenRouter Key"
-                        mode: "rectangle"
-                        line_color_normal: 0.26, 0.24, 0.36, 1
-                        line_color_focus: 0.60, 0.48, 0.96, 1
-                    MDTextField:
-                        id: cfg_yandex
-                        hint_text: "Yandex Disk Token"
-                        mode: "rectangle"
-                        line_color_normal: 0.26, 0.24, 0.36, 1
-                        line_color_focus: 0.60, 0.48, 0.96, 1
-                    MDTextField:
-                        id: cfg_hf
-                        hint_text: "Hugging Face Token"
-                        mode: "rectangle"
-                        line_color_normal: 0.26, 0.24, 0.36, 1
-                        line_color_focus: 0.60, 0.48, 0.96, 1
-                    MDTextField:
-                        id: cfg_fish
-                        hint_text: "Fish.audio Token"
-                        mode: "rectangle"
-                        line_color_normal: 0.26, 0.24, 0.36, 1
-                        line_color_focus: 0.60, 0.48, 0.96, 1
-                    MDTextField:
-                        id: cfg_groq
-                        hint_text: "Groq Whisper Token"
-                        mode: "rectangle"
-                        line_color_normal: 0.26, 0.24, 0.36, 1
-                        line_color_focus: 0.60, 0.48, 0.96, 1
-                    MDRaisedButton:
-                        text: "Сохранить свои ключи"
-                        size_hint_x: 1
-                        elevation: 0
-                        md_bg_color: 0.20, 0.38, 0.70, 1
-                        on_release: app.save_user_settings()
-                    MDRaisedButton:
-                        text: "Сбросить все ключи"
-                        size_hint_x: 1
-                        elevation: 0
-                        md_bg_color: 0.68, 0.24, 0.24, 1
-                        on_release: app.reset_all_keys()
-                    MDLabel:
-                        id: version_label
-                        text: ""
-                        theme_text_color: "Custom"
-                        text_color: 0.50, 0.48, 0.58, 1
-                        font_style: "Caption"
-                        halign: "center"
-'''
-
-FORM_SINGLE = '''
-MDScrollView:
-    MDBoxLayout:
-        orientation: "vertical"
-        padding: "16dp"
-        spacing: "14dp"
-        size_hint_y: None
-        height: self.minimum_height
-        MDCard:
-            orientation: "vertical"
-            padding: "14dp"
-            radius: [18, 18, 18, 18]
-            elevation: 6
-            size_hint_y: None
-            height: "92dp"
-            md_bg_color: 0.16, 0.13, 0.28, 1
-            MDLabel:
-                text: "LEMUS"
-                font_style: "H4"
-                bold: True
-                theme_text_color: "Custom"
-                text_color: 0.82, 0.68, 1, 1
-                halign: "center"
-            MDLabel:
-                text: "СТУДИЯ МУЗЫКИ С ИИ"
-                font_style: "Caption"
-                theme_text_color: "Custom"
-                text_color: 0.62, 0.58, 0.78, 1
-                halign: "center"
-        MDCard:
-            orientation: "vertical"
-            padding: "16dp"
-            radius: [24, 24, 24, 24]
-            elevation: 0
-            size_hint_y: None
-            height: "310dp"
-            md_bg_color: 0.101, 0.098, 0.156, 1
-            MDBoxLayout:
-                orientation: "vertical"
-                spacing: "14dp"
-                MDTextField:
-                    id: s_title_input
-                    hint_text: "Тема / идея трека"
-                    mode: "rectangle"
-                    line_color_normal: 0.26, 0.24, 0.36, 1
-                    line_color_focus: 0.62, 0.5, 0.95, 1
-                MDTextField:
-                    id: s_genre_input
-                    hint_text: "Жанр (любой гибрид)"
-                    text: "Pop"
-                    mode: "rectangle"
-                    line_color_normal: 0.26, 0.24, 0.36, 1
-                    line_color_focus: 0.62, 0.5, 0.95, 1
-                MDTextField:
-                    id: s_duration_input
-                    hint_text: "Длительность (сек)"
-                    text: "90"
-                    mode: "rectangle"
-                    line_color_normal: 0.26, 0.24, 0.36, 1
-                    line_color_focus: 0.62, 0.5, 0.95, 1
-                MDBoxLayout:
-                    spacing: "8dp"
-                    size_hint_y: None
-                    height: "46dp"
-                    MDRaisedButton:
-                        text: "Демоголос"
-                        elevation: 0
-                        md_bg_color: 0.30, 0.26, 0.48, 1
-                        on_release: app.open_file_manager("voice")
-                    MDIconButton:
-                        icon: "close-circle-outline"
-                        theme_text_color: "Custom"
-                        text_color: 0.60, 0.56, 0.76, 1
-                        on_release: app.clear_voice_sample()
-                MDLabel:
-                    id: voice_sample_label
-                    text: "Голос: не выбран"
-                    theme_text_color: "Custom"
-                    text_color: 0.60, 0.58, 0.70, 1
-                    font_style: "Caption"
-        MDCard:
-            orientation: "vertical"
-            padding: "12dp"
-            radius: [18, 18, 18, 18]
-            elevation: 0
-            size_hint_y: None
-            height: "90dp"
-            md_bg_color: 0.078, 0.076, 0.118, 1
-            MDLabel:
-                id: s_enhanced_label
-                text: "Улучшенный промпт появится здесь"
-                theme_text_color: "Custom"
-                text_color: 0.60, 0.58, 0.70, 1
-                font_style: "Caption"
-        MDBoxLayout:
-            spacing: "8dp"
-            size_hint_y: None
-            height: "46dp"
-            MDRaisedButton:
-                text: "Улучшить промпт"
-                size_hint_x: 1
-                elevation: 0
-                md_bg_color: 0.20, 0.56, 0.44, 1
-                on_release: app.enhance_single()
-            MDRaisedButton:
-                text: "История"
-                size_hint_x: 1
-                elevation: 0
-                md_bg_color: 0.145, 0.138, 0.196, 1
-                on_release: app.show_prompt_history()
-        MDRaisedButton:
-            text: "Сгенерировать сингл"
-            size_hint_x: 1
-            elevation: 0
-            md_bg_color: 0.42, 0.34, 0.78, 1
-            on_release: app.start_single_generation()
-        MDCard:
-            orientation: "vertical"
-            padding: "14dp"
-            radius: [24, 24, 24, 24]
-            elevation: 0
-            size_hint_y: None
-            height: "130dp"
-            md_bg_color: 0.101, 0.098, 0.156, 1
-            MDLabel:
-                id: s_status_label
-                text: "Студия готова"
-                theme_text_color: "Custom"
-                text_color: 0.74, 0.72, 0.84, 1
-            MDProgressBar:
-                id: s_progress
-                value: 0
-                max: 100
-'''
-
-FORM_PROMPT = '''
-MDScrollView:
-    MDBoxLayout:
-        orientation: "vertical"
-        padding: "16dp"
-        spacing: "14dp"
-        size_hint_y: None
-        height: self.minimum_height
-        MDCard:
-            orientation: "vertical"
-            padding: "16dp"
-            radius: [24, 24, 24, 24]
-            elevation: 0
-            size_hint_y: None
-            height: "300dp"
-            md_bg_color: 0.101, 0.098, 0.156, 1
-            MDBoxLayout:
-                orientation: "vertical"
-                spacing: "14dp"
-                MDLabel:
-                    text: "Черновик идеи (можно коротко и с опечатками)"
-                    theme_text_color: "Custom"
-                    text_color: 0.74, 0.72, 0.84, 1
-                MDTextField:
-                    id: p_prompt_input
-                    hint_text: "Например: песня Олеси про работу бухгалтером, мягкий drum and bass с женским вокалом"
-                    mode: "rectangle"
-                    multiline: True
-                    size_hint_y: None
-                    height: "150dp"
-                    line_color_normal: 0.26, 0.24, 0.36, 1
-                    line_color_focus: 0.4, 0.75, 0.6, 1
-                MDTextField:
-                    id: p_duration_input
-                    hint_text: "Длительность (сек)"
-                    text: "120"
-                    mode: "rectangle"
-                    line_color_normal: 0.26, 0.24, 0.36, 1
-                    line_color_focus: 0.4, 0.75, 0.6, 1
-        MDCard:
-            orientation: "vertical"
-            padding: "12dp"
-            radius: [18, 18, 18, 18]
-            elevation: 0
-            size_hint_y: None
-            height: "110dp"
-            md_bg_color: 0.078, 0.076, 0.118, 1
-            MDLabel:
-                id: p_enhanced_label
-                text: "Улучшенный промпт появится здесь"
-                theme_text_color: "Custom"
-                text_color: 0.60, 0.58, 0.70, 1
-                font_style: "Caption"
-        MDRaisedButton:
-            text: "Улучшить промпт"
-            size_hint_x: 1
-            elevation: 0
-            md_bg_color: 0.20, 0.56, 0.44, 1
-            on_release: app.enhance_prompt_mode()
-        MDRaisedButton:
-            text: "Создать трек по промпту"
-            size_hint_x: 1
-            elevation: 0
-            md_bg_color: 0.42, 0.34, 0.78, 1
-            on_release: app.start_prompt_generation()
-        MDCard:
-            orientation: "vertical"
-            padding: "14dp"
-            radius: [24, 24, 24, 24]
-            elevation: 0
-            size_hint_y: None
-            height: "130dp"
-            md_bg_color: 0.101, 0.098, 0.156, 1
-            MDLabel:
-                id: p_status_label
-                text: "Опиши идею и нажми кнопку"
-                theme_text_color: "Custom"
-                text_color: 0.74, 0.72, 0.84, 1
-            MDProgressBar:
-                id: p_progress
-                value: 0
-                max: 100
-        MDSeparator:
-            height: "2dp"
-        MDLabel:
-            text: "Фоновый трек для стримингов (доход)"
-            font_style: "Subtitle1"
-            theme_text_color: "Custom"
-            text_color: 0.84, 0.82, 0.94, 1
-        MDTextField:
-            id: m_niche_input
-            hint_text: "Ниша"
-            text: "Lo-Fi Study Beats"
-            mode: "rectangle"
-            line_color_normal: 0.26, 0.24, 0.36, 1
-            line_color_focus: 0.4, 0.75, 0.6, 1
-        MDTextField:
-            id: m_duration_input
-            hint_text: "Хронометраж (сек)"
-            text: "150"
-            mode: "rectangle"
-            line_color_normal: 0.26, 0.24, 0.36, 1
-            line_color_focus: 0.4, 0.75, 0.6, 1
-        MDRaisedButton:
-            text: "Создать фоновый трек"
-            size_hint_x: 1
-            elevation: 0
-            md_bg_color: 0.30, 0.50, 0.45, 1
-            on_release: app.start_money_generation()
-        MDLabel:
-            id: m_status_label
-            text: ""
-            theme_text_color: "Custom"
-            text_color: 0.60, 0.58, 0.70, 1
-            font_style: "Caption"
-'''
-
-FORM_VIRAL = '''
-MDScrollView:
-    MDBoxLayout:
-        orientation: "vertical"
-        padding: "16dp"
-        spacing: "14dp"
-        size_hint_y: None
-        height: self.minimum_height
-        MDCard:
-            orientation: "vertical"
-            padding: "16dp"
-            radius: [24, 24, 24, 24]
-            elevation: 0
-            size_hint_y: None
-            height: "260dp"
-            md_bg_color: 0.101, 0.098, 0.156, 1
-            MDBoxLayout:
-                orientation: "vertical"
-                spacing: "14dp"
-                MDTextField:
-                    id: v_hook_input
-                    hint_text: "Мемная фраза / хук"
-                    mode: "rectangle"
-                    line_color_normal: 0.26, 0.24, 0.36, 1
-                    line_color_focus: 0.85, 0.5, 0.3, 1
-                MDTextField:
-                    id: v_genre_input
-                    hint_text: "Трендовый жанр"
-                    text: "Drift Phonk"
-                    mode: "rectangle"
-                    line_color_normal: 0.26, 0.24, 0.36, 1
-                    line_color_focus: 0.85, 0.5, 0.3, 1
-                MDTextField:
-                    id: v_duration_input
-                    hint_text: "Время (15/30/45/60)"
-                    text: "30"
-                    mode: "rectangle"
-                    line_color_normal: 0.26, 0.24, 0.36, 1
-                    line_color_focus: 0.85, 0.5, 0.3, 1
-        MDRaisedButton:
-            text: "Создать вирусный дроп"
-            size_hint_x: 1
-            elevation: 0
-            md_bg_color: 0.78, 0.46, 0.20, 1
-            on_release: app.start_viral_generation()
-        MDCard:
-            orientation: "vertical"
-            padding: "14dp"
-            radius: [24, 24, 24, 24]
-            elevation: 0
-            size_hint_y: None
-            height: "130dp"
-            md_bg_color: 0.101, 0.098, 0.156, 1
-            MDLabel:
-                id: v_status_label
-                text: "Ожидание..."
-                theme_text_color: "Custom"
-                text_color: 0.74, 0.72, 0.84, 1
-            MDProgressBar:
-                id: v_progress
-                value: 0
-                max: 100
-'''
-
-FORM_ALBUM = '''
-MDScrollView:
-    MDBoxLayout:
-        orientation: "vertical"
-        padding: "16dp"
-        spacing: "14dp"
-        size_hint_y: None
-        height: self.minimum_height
-        MDCard:
-            orientation: "vertical"
-            padding: "16dp"
-            radius: [24, 24, 24, 24]
-            elevation: 0
-            size_hint_y: None
-            height: "360dp"
-            md_bg_color: 0.101, 0.098, 0.156, 1
-            MDBoxLayout:
-                orientation: "vertical"
-                spacing: "14dp"
-                MDTextField:
-                    id: alb_theme_input
-                    hint_text: "Концепция альбома"
-                    mode: "rectangle"
-                    line_color_normal: 0.26, 0.24, 0.36, 1
-                    line_color_focus: 0.62, 0.42, 0.9, 1
-                MDTextField:
-                    id: alb_genre_input
-                    hint_text: "Жанр"
-                    text: "melodic drum and bass"
-                    mode: "rectangle"
-                    line_color_normal: 0.26, 0.24, 0.36, 1
-                    line_color_focus: 0.62, 0.42, 0.9, 1
-                MDTextField:
-                    id: alb_count_input
-                    hint_text: "Треков (3 или 4)"
-                    text: "3"
-                    mode: "rectangle"
-                    line_color_normal: 0.26, 0.24, 0.36, 1
-                    line_color_focus: 0.62, 0.42, 0.9, 1
-                MDTextField:
-                    id: alb_duration_input
-                    hint_text: "Длительность трека (сек)"
-                    text: "90"
-                    mode: "rectangle"
-                    line_color_normal: 0.26, 0.24, 0.36, 1
-                    line_color_focus: 0.62, 0.42, 0.9, 1
-                MDTextField:
-                    id: alb_extra_idea
-                    hint_text: "Идея дополнительного трека"
-                    mode: "rectangle"
-                    line_color_normal: 0.26, 0.24, 0.36, 1
-                    line_color_focus: 0.62, 0.42, 0.9, 1
-        MDBoxLayout:
-            spacing: "8dp"
-            size_hint_y: None
-            height: "46dp"
-            MDRaisedButton:
-                text: "Свести EP"
-                size_hint_x: 1
-                elevation: 0
-                md_bg_color: 0.50, 0.32, 0.75, 1
-                on_release: app.start_album_generation()
-            MDRaisedButton:
-                text: "Трек в альбом"
-                size_hint_x: 1
-                elevation: 0
-                md_bg_color: 0.24, 0.50, 0.46, 1
-                on_release: app.show_add_track_dialog()
-        MDCard:
-            orientation: "vertical"
-            padding: "14dp"
-            radius: [24, 24, 24, 24]
-            elevation: 0
-            size_hint_y: None
-            height: "110dp"
-            md_bg_color: 0.101, 0.098, 0.156, 1
-            MDLabel:
-                id: alb_status_label
-                text: "Ожидание..."
-                theme_text_color: "Custom"
-                text_color: 0.74, 0.72, 0.84, 1
-'''
-
-# ==============================================================================
-# MAIN APP CLASS (FULL RESTORE)
-# ==============================================================================
-class LemusStudioApp(MDApp):
-    def build(self):
-        _log("build()")
-        self.theme_cls.theme_style = "Dark"
-        self.theme_cls.primary_palette = "DeepPurple"
-        self.theme_cls.accent_palette = "Amber"
-        self.current_voice_sample = None
-        self.active_sound = None
-        self.onboard_idx = 0
-        self.onboard_dialog = None
-        self.monetize_idx = 0
-        self.monetize_dialog = None
-        self.file_manager_purpose = "voice"
-        self.current_filter = "all"
-        self.diag_dialog = None
-        self.export_dialog = None
-        self.add_track_dialog = None
-        self.update_dialog = None
-        self.selection_mode = False
-        self.selected_ids = set()
-        self.last_rendered_items = []
-        self.play_queue_list = []
-        self.play_idx = 0
-        self._pos_event = None
-        self.modes = {}
-        self.current_mode = "single"
-        self._last_gen = None
-        self._enhanced_cache = {}
-        self._gemini_cache = {}
-        self._key_state = {}
-
-        self.file_manager = MDFileManager(
-            exit_manager=self.exit_file_manager,
-            select_path=self.on_file_selected,
-        )
-        self.load_config()
-        self.load_projects()
-        self.load_history()
-        return Builder.load_string(KV)
-
-    def on_start(self):
-        _log("on_start()")
-        def safe(fn, name):
-            try:
-                fn()
-                _log(f"on_start: {name} ок")
-            except Exception as e:
-                _log(f"on_start: {name} ОШИБКА: {str(e)[:100]}")
-        safe(lambda: self.modes.update({
-            "single": Builder.load_string(FORM_SINGLE),
-            "prompt": Builder.load_string(FORM_PROMPT),
-            "viral": Builder.load_string(FORM_VIRAL),
-            "album": Builder.load_string(FORM_ALBUM),
-        }), "формы")
-        safe(lambda: self.switch_mode("single"), "режим")
-        safe(self._request_runtime_permissions, "разрешения")
-        safe(self._request_all_files_access, "доступ_к_файлам")
-        safe(self.populate_settings_fields, "поля_настроек")
-        safe(self.refresh_projects_ui, "медиатека")
-        safe(lambda: setattr(self.root.ids.version_label, "text", f"версия {CURRENT_VERSION}"), "версия")
-        safe(lambda: setattr(self.root.ids.ai_disclose_switch, "active",
-             bool(self.config.get("disclose_ai", True))), "переключатель_ai")
-        safe(self.update_activation_status, "статус")
-        safe(lambda: self.check_for_updates(silent=True), "обновления")
-        safe(lambda: self.root.ids.bottom_nav.bind(current=self._on_tab_change), "подсказки")
-        _log("on_start() завершён")
-
-    def _on_tab_change(self, nav, name):
-        seen = self.config.get("hints_seen")
-        if not isinstance(seen, dict):
-            seen = {}
-            self.config["hints_seen"] = seen
-        if name in HINTS and not seen.get(name):
-            seen[name] = True
-            self.save_config_to_disk()
-            toast(HINTS[name])
-
-    def switch_mode(self, mode):
-        self.current_mode = mode
-        colors = {"single": (0.42, 0.34, 0.78, 1), "prompt": (0.20, 0.56, 0.44, 1),
-                  "viral": (0.78, 0.46, 0.20, 1), "album": (0.50, 0.32, 0.75, 1),
-                  "money": (0.24, 0.50, 0.46, 1)}
-        for m, chip_id in [("single", "chip_single"), ("prompt", "chip_prompt"),
-                           ("viral", "chip_viral"), ("album", "chip_album"), ("money", "chip_money")]:
-            chip = self.root.ids[chip_id]
-            chip.md_bg_color = colors[m] if m == mode else (0.145, 0.138, 0.196, 1)
-        area = self.root.ids.studio_area
-        area.clear_widgets()
-        if mode in self.modes:
-            area.add_widget(self.modes[mode])
-        seen = self.config.get("hints_seen")
-        if not isinstance(seen, dict):
-            seen = {}
-            self.config["hints_seen"] = seen
-        hk = "mode_" + mode
-        if hk in HINTS and not seen.get(hk):
-            seen[hk] = True
-            self.save_config_to_disk()
-            toast(HINTS[hk])
-
-    def _mark_key(self, key, status):
-        self._key_state[key] = (status, time.time())
-
-    def _key_skippable(self, key):
-        st = self._key_state.get(key)
-        if not st: return False
-        status, ts = st
-        if status == "dead" and time.time() - ts < 1800: return True
+def is_duplicate(update_id) -> bool:
+    if update_id is None:
         return False
-
-    def enhance_single(self):
-        w = self.modes["single"].ids
-        t = w.s_title_input.text.strip()
-        g = w.s_genre_input.text.strip()
-        raw = f"{t}. {g}".strip(". ")
-        if not raw: toast("Сначала укажи тему!"); return
-        self._run_enhance(raw, "single")
-
-    def enhance_prompt_mode(self):
-        raw = self.modes["prompt"].ids.p_prompt_input.text.strip()
-        if not raw: toast("Сначала напиши идею!"); return
-        self._run_enhance(raw, "prompt")
-
-    def _run_enhance(self, raw, mode):
-        toast("Улучшаю промпт...")
-        def work():
-            txt = self._enhance_sync(raw)
-            self._enhanced_cache[mode] = txt
-            lid = "s_enhanced_label" if mode == "single" else "p_enhanced_label"
-            Clock.schedule_once(lambda dt: setattr(self.modes[mode].ids[lid], "text", f"Промпт: {txt}"), 0)
-            Clock.schedule_once(lambda dt: toast("Промпт улучшен!"), 0)
-        threading.Thread(target=work).start()
-
-    def _enhance_sync(self, raw):
-        try:
-            res = self._call_llm_text(ENHANCE_SYSTEM + "\nЧерновик: " + raw)
-            if res and len(res.strip()) > 20: return res.strip()[:600]
-        except Exception as e:
-            print(f"enhance llm: {e}")
-        return _local_enhance(raw)
-
-    def _gemini_list_models(self, key):
-        if key in self._gemini_cache: return self._gemini_cache[key], None
-        last_code = None
-        try:
-            url = ("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=" + urllib.parse.quote(key.strip()))
-            req = urllib.request.Request(url, headers={"x-goog-api-key": key.strip()})
-            with urllib.request.urlopen(req, timeout=20) as r:
-                data = json.loads(r.read().decode("utf-8"))
-            models = []
-            for m in data.get("models", []):
-                name = m.get("name", "").replace("models/", "")
-                if name.startswith("gemini") and "generateContent" in str(m.get("supportedGenerationMethods", [])):
-                    if not any(x in name for x in ("embedding", "image", "tts", "audio", "vision", "live")):
-                        models.append(name)
-            models.sort(key=lambda m: (0 if "flash" in m else 1))
-            self._gemini_cache[key] = models
-            return models, None
-        except urllib.error.HTTPError as e:
-            last_code = e.code
-        except Exception:
-            last_code = 0
-        return None, last_code
-
-    def _gemini_post(self, prompt, key, model, mime_json=True):
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-        headers = {"Content-Type": "application/json", "x-goog-api-key": key.strip()}
-        gc = {"temperature": 0.8}
-        if mime_json: gc["response_mime_type"] = "application/json"
-        else: gc["temperature"] = 0.9
-        payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": gc}
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=30) as r:
-            res = json.loads(r.read().decode("utf-8"))
-        return res["candidates"][0]["content"]["parts"][0]["text"]
-
-    def _call_gemini_native(self, prompt, api_key, model=None):
-        api_models, code = self._gemini_list_models(api_key)
-        if code in (401, 403, 400):
-            self._mark_key(api_key, "dead"); raise RuntimeError(f"Gemini dead: {code}")
-        if code in (429, 503):
-            self._mark_key(api_key, "temp"); raise RuntimeError(f"Gemini temp: {code}")
-        models_to_try = []
-        if model: models_to_try.append(model)
-        if api_models: models_to_try.extend(api_models[:8])
-        for m in GEMINI_MODELS:
-            if m not in models_to_try: models_to_try.append(m)
-        last_err = None
-        for m in models_to_try[:10]:
-            try:
-                text = self._gemini_post(prompt, api_key, m, mime_json=True)
-                self._mark_key(api_key, "ok")
-                return self._clean_json(text)
-            except urllib.error.HTTPError as e:
-                last_err = e
-                if e.code == 404: continue
-                if e.code in (401, 403): self._mark_key(api_key, "dead"); break
-                if e.code in (429, 503): self._mark_key(api_key, "temp"); time.sleep(1); break
-                if e.code == 400: continue
-                break
-            except Exception as e:
-                last_err = e; break
-        if last_err: raise last_err
-        raise RuntimeError("Gemini: модели недоступны")
-
-    def _call_llm_text(self, prompt):
-        g_keys = self.config.get("gemini_keys", [])
-        if not g_keys and self.config.get("gemini_key"): g_keys = [self.config.get("gemini_key")]
-        for key in g_keys:
-            if not key or self._key_skippable(key): continue
-            models, code = self._gemini_list_models(key)
-            if code in (401, 403, 400): self._mark_key(key, "dead"); continue
-            if code in (429, 503): self._mark_key(key, "temp"); continue
-            cand = (models or [])[:5] or GEMINI_MODELS[:5]
-            for m in cand:
-                try: return self._gemini_post(prompt, key, m, mime_json=False)
-                except urllib.error.HTTPError as e:
-                    if e.code == 404: continue
-                    if e.code in (401, 403): self._mark_key(key, "dead"); break
-                    if e.code in (429, 503): self._mark_key(key, "temp"); time.sleep(1); break
-                    if e.code == 400: continue
-                    break
-                except Exception: break
-        or_key = self.config.get("openrouter_key", "").strip()
-        if or_key:
-            for om in OR_MODELS:
-                try:
-                    headers = {"Authorization": f"Bearer {or_key}", "Content-Type": "application/json"}
-                    payload = json.dumps({"model": om, "messages": [{"role": "system", "content": ENHANCE_SYSTEM}, {"role": "user", "content": prompt}]}).encode("utf-8")
-                    req = urllib.request.Request("https://openrouter.ai/api/v1/chat/completions", data=payload, headers=headers)
-                    with urllib.request.urlopen(req, timeout=60) as r:
-                        res = json.loads(r.read().decode())
-                    return res["choices"][0]["message"]["content"]
-                except Exception: continue
-        return _local_enhance(prompt)
-
-    def make_variation(self):
-        if not self._last_gen: toast("Сначала создай трек — потом вариацию"); return
-        g = self._last_gen
-        toast("Делаю вариацию 2...")
-        threading.Thread(target=self._worker_generic, args=(g["prompt"] + " (новая вариация, другое настроение)", g["genre"], g["duration"], g["rtype"], None, None)).start()
-
-    def _go_to_library(self):
-        try:
-            self.root.ids.bottom_nav.current = "tab_projects"
-            self.refresh_projects_ui()
-        except Exception as e: _log(f"переход в медиатеку: {e}")
-
-    def _request_runtime_permissions(self):
-        if platform != "android": return
-        try:
-            from android.permissions import request_permissions, Permission
-            request_permissions([Permission.READ_EXTERNAL_STORAGE, Permission.WRITE_EXTERNAL_STORAGE, Permission.RECORD_AUDIO, Permission.POST_NOTIFICATIONS])
-        except Exception as e: _log(f"разрешения: {e}")
-
-    def _request_all_files_access(self):
-        if platform != "android": return
-        try:
-            from jnius import autoclass
-            Environment = autoclass("android.os.Environment")
-            if Environment.isExternalStorageManager(): return
-            Intent = autoclass("android.content.Intent")
-            Settings = autoclass("android.provider.Settings")
-            Uri = autoclass("android.net.Uri")
-            PythonActivity = autoclass("org.kivy.android.PythonActivity")
-            activity = PythonActivity.mActivity
-            if activity:
-                intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                intent.setData(Uri.parse("package:" + activity.getPackageName()))
-                activity.startActivity(intent)
-        except Exception as e: _log(f"доступ к файлам: {e}")
-
-    def get_data_path(self):
-        path = os.path.join(get_storage_root(), ".data")
-        try: os.makedirs(path, exist_ok=True)
-        except Exception: path = "."
-        return path
-
-    def _migrate_old_data(self):
-        sources = [self.user_data_dir, get_storage_root(), "."]
-        p = _android_private()
-        if p: sources.append(p)
-        for src_dir in sources:
-            for fname in [CONFIG_FILE, PROJECTS_FILE, HISTORY_FILE, ONBOARDING_FLAG]:
-                for cand in [os.path.join(src_dir, fname), os.path.join(src_dir, ".data", fname)]:
-                    new = os.path.join(self.get_data_path(), fname)
-                    try:
-                        if os.path.exists(cand) and cand != new and not os.path.exists(new): shutil.copy2(cand, new)
-                    except Exception: pass
-
-    def load_config(self):
-        self._migrate_old_data()
-        p = os.path.join(self.get_data_path(), CONFIG_FILE)
-        if os.path.exists(p):
-            try:
-                with open(p, "r", encoding="utf-8") as f: self.config = json.load(f)
-                return
-            except Exception: pass
-        self.config = EMPTY_CONFIG.copy()
-
-    def save_config_to_disk(self):
-        try:
-            with open(os.path.join(self.get_data_path(), CONFIG_FILE), "w", encoding="utf-8") as f: json.dump(self.config, f, ensure_ascii=False, indent=2)
-        except Exception as e: toast(f"Ошибка конфига: {str(e)[:40]}")
-
-    def load_projects(self):
-        p = os.path.join(self.get_data_path(), PROJECTS_FILE)
-        if os.path.exists(p):
-            try:
-                with open(p, "r", encoding="utf-8") as f: self.projects = json.load(f)
-                return
-            except Exception: pass
-        self.projects = []
-
-    def save_projects(self):
-        try:
-            with open(os.path.join(self.get_data_path(), PROJECTS_FILE), "w", encoding="utf-8") as f: json.dump(self.projects, f, ensure_ascii=False, indent=2)
-        except Exception as e: toast(f"Ошибка базы: {str(e)[:40]}")
-
-    def load_history(self):
-        p = os.path.join(self.get_data_path(), HISTORY_FILE)
-        if os.path.exists(p):
-            try:
-                with open(p, "r", encoding="utf-8") as f: self.history = json.load(f)
-                return
-            except Exception: pass
-        self.history = []
-
-    def save_history(self):
-        try:
-            with open(os.path.join(self.get_data_path(), HISTORY_FILE), "w", encoding="utf-8") as f: json.dump(self.history[-20:], f, ensure_ascii=False, indent=2)
-        except Exception: pass
-
-    def _player_show(self): Animation(height=dp(68), d=0.22, t="out_quad").start(self.root.ids.player_bar)
-    def _player_hide(self): Animation(height=dp(0), d=0.18, t="in_quad").start(self.root.ids.player_bar)
-
-    @staticmethod
-    def _fmt(sec):
-        try:
-            sec = int(sec or 0); return f"{sec // 60}:{sec % 60:02d}"
-        except Exception: return "0:00"
-
-    def seek_ratio(self, ratio):
-        s = self.active_sound
-        if not s: return
-        try:
-            length = s.length or 0
-            if length > 0:
-                s.seek(max(0.0, min(1.0, ratio)) * length)
-                self.root.ids.player_pos.text = self._fmt(ratio * length)
-        except Exception: toast("Перемотка недоступна для этого файла")
-
-    def play_item(self, item):
-        if item in self.last_rendered_items: idx = self.last_rendered_items.index(item)
-        else: idx = 0; self.last_rendered_items = [item]
-        self.play_queue_list = self.last_rendered_items
-        self.play_idx = idx
-        self._play_current()
-
-    def _play_current(self):
-        if not self.play_queue_list: return
-        item = self.play_queue_list[self.play_idx % len(self.play_queue_list)]
-        path = item.get("mp3_path")
-        if not path or not os.path.exists(path): toast("Файл не найден"); return
-        if self.active_sound:
-            try: self.active_sound.stop()
-            except Exception: pass
-        self.active_sound = SoundLoader.load(path)
-        if self.active_sound:
-            self.active_sound.play()
-            self._player_show()
-            self.root.ids.player_title.text = item.get("title", "")
-            self.root.ids.player_artist.text = item.get("genre", "")
-            self.root.ids.player_play_btn.icon = "pause"
-            cov = item.get("cover_path")
-            img = self.root.ids.player_cover
-            if cov and os.path.exists(cov): img.source = cov; img.opacity = 1
-            else: img.opacity = 0
-            self.root.ids.player_seek.value = 0.0
-            if self._pos_event is None: self._pos_event = Clock.schedule_interval(self._update_player_pos, 0.4)
-
-    def _update_player_pos(self, dt):
-        s = self.active_sound
-        if not s: return False
-        try:
-            pos = s.position or 0; length = s.length or 0
-            self.root.ids.player_pos.text = self._fmt(pos)
-            sl = self.root.ids.player_seek
-            if not sl._drag and length > 0: sl.value = min(1.0, pos / length)
-        except Exception: pass
+    if update_id in _seen_updates:
         return True
+    _seen_updates.add(update_id)
+    if len(_seen_updates) > 5000:
+        for uid in sorted(_seen_updates)[:-2500]:
+            _seen_updates.discard(uid)
+    return False
 
-    def player_toggle(self):
-        s = self.active_sound
-        if not s: return
-        try:
-            if s.state == "play": s.stop(); self.root.ids.player_play_btn.icon = "play"
-            else: s.play(); self.root.ids.player_play_btn.icon = "pause"
-        except Exception: pass
 
-    def player_next(self):
-        if not self.play_queue_list: return
-        self.play_idx = (self.play_idx + 1) % len(self.play_queue_list); self._play_current()
+async def send_single_message(chat_id, text: str, reply_markup=None, parse_mode="Markdown"):
+    payload = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    async with HTTP.post(f"{TELEGRAM_API}/sendMessage", json=payload) as resp:
+        result = await resp.json()
+    if not result.get("ok") and parse_mode:
+        payload.pop("parse_mode", None)
+        async with HTTP.post(f"{TELEGRAM_API}/sendMessage", json=payload) as resp:
+            result = await resp.json()
+    return result
 
-    def player_prev(self):
-        if not self.play_queue_list: return
-        self.play_idx = (self.play_idx - 1) % len(self.play_queue_list); self._play_current()
 
-    def player_stop(self):
-        if self.active_sound:
-            try: self.active_sound.stop()
-            except Exception: pass
-        if self._pos_event: Clock.unschedule(self._pos_event); self._pos_event = None
-        self._player_hide()
-        self.root.ids.player_title.text = ""; self.root.ids.player_pos.text = "0:00"; self.root.ids.player_seek.value = 0
-
-    def download_current(self):
-        if not self.play_queue_list: toast("Сначала включи трек"); return
-        item = self.play_queue_list[self.play_idx % len(self.play_queue_list)]; self.download_project(item)
-
-    def download_project(self, item):
-        src = item.get("mp3_path")
-        if not src or not os.path.exists(src): toast("Файл не найден"); return
-        dest_dir = None
-        if platform == "android":
-            for cand in ["/storage/emulated/0/Download", "/storage/emulated/0/Music/LemusStudio"]:
-                try:
-                    os.makedirs(cand, exist_ok=True); t = os.path.join(cand, ".test"); open(t, "w").write("1"); os.remove(t); dest_dir = cand; break
-                except Exception: continue
-        if not dest_dir: dest_dir = get_storage_root()
-        dst = os.path.join(dest_dir, os.path.basename(src))
-        try: shutil.copy2(src, dst); toast(f"Сохранено: {dst}")
-        except Exception as e: toast(f"Ошибка сохранения: {str(e)[:40]}")
-
-    def _build_plan_prompt(self, base_desc, genre, duration, vocals_hint=""):
-        return (f"You are a pro music producer. Task: track {duration}s. Desc: {base_desc}. Genre: {genre}. Vocals: {vocals_hint or 'auto'}. "
-                "Return STRICT JSON: {\"title\": str, \"bpm\": int, \"key\": str, \"vocals\": str, \"style_tags\": [str], "
-                "\"sections\": [{\"name\":str, \"bars\":int, \"energy\":float}], \"lyrics\": str, \"music_prompt\": str, \"cover_prompt\": str}.")
-
-    def start_single_generation(self):
-        w = self.modes["single"].ids
-        t = w.s_title_input.text.strip(); g = w.s_genre_input.text.strip(); d = w.s_duration_input.text.strip() or "90"
-        if not t: toast("Укажи тему!"); return
-        raw = f"{t}. {g}"
-        self.add_to_history("Сингл", f"{t} / {g} / {d}с")
-        w.s_status_label.text = "Улучшаю промпт и пишу план..."
-        self._last_gen = {"genre": g, "duration": int(d), "rtype": "Сингл", "raw": raw, "mode": "single"}
-        threading.Thread(target=self._worker_track, args=(raw, g, int(d), "Сингл", w.s_status_label, w.s_progress)).start()
-
-    def start_prompt_generation(self):
-        w = self.modes["prompt"].ids
-        raw = w.p_prompt_input.text.strip(); dur = int(w.p_duration_input.text.strip() or "120")
-        if not raw: toast("Опиши свою идею!"); return
-        self.add_to_history("Промпт", f"{raw[:100]} / {dur}с")
-        w.p_status_label.text = "Улучшаю промпт и пишу план..."
-        self._last_gen = {"genre": raw[:40], "duration": dur, "rtype": "Промпт", "raw": raw, "mode": "prompt"}
-        threading.Thread(target=self._worker_generic, args=(raw, raw, dur, "Промпт", w.p_status_label, w.p_progress)).start()
-
-    def start_viral_generation(self):
-        w = self.modes["viral"].ids
-        h = w.v_hook_input.text.strip(); g = w.v_genre_input.text.strip(); d = w.v_duration_input.text.strip() or "30"
-        if not h: toast("Укажи хук!"); return
-        raw = f"Вирусный хит TikTok/Reels. Хук: '{h}'. Жанр: {g}."
-        self.add_to_history("Хит", f"Хук: {h} / {g} / {d}с")
-        w.v_status_label.text = "Улучшаю промпт и пишу план..."
-        self._last_gen = {"genre": g, "duration": int(d), "rtype": "Хит", "raw": raw, "mode": "viral"}
-        threading.Thread(target=self._worker_generic, args=(raw, g, int(d), "Хит", w.v_status_label, w.v_progress)).start()
-
-    def start_money_generation(self):
-        w = self.modes["prompt"].ids
-        n = w.m_niche_input.text.strip(); d = w.m_duration_input.text.strip() or "150"
-        if not n: toast("Укажи нишу!"); return
-        raw = f"Фоновый монетизируемый трек для стримингов. Ниша: '{n}'. Loop-friendly, без резких пиков."
-        self.add_to_history("Фон", f"Ниша: {n} / {d}с")
-        w.m_status_label.text = "Улучшаю промпт и пишу план..."
-        self._last_gen = {"genre": n, "duration": int(d), "rtype": "Фон", "raw": raw, "mode": "prompt"}
-        threading.Thread(target=self._worker_generic, args=(raw, n, int(d), "Фон", w.m_status_label, None)).start()
-
-    def start_album_generation(self):
-        w = self.modes["album"].ids
-        theme = w.alb_theme_input.text.strip(); genre = w.alb_genre_input.text.strip()
-        cnt = int(w.alb_count_input.text.strip() or "3"); dur = int(w.alb_duration_input.text.strip() or "90")
-        if not theme: toast("Укажи концепцию!"); return
-        self.add_to_history("Альбом", f"{theme} / {genre} / {cnt}x{dur}с")
-        w.alb_status_label.text = "Пишу концепцию EP..."
-        threading.Thread(target=self._worker_album, args=(theme, genre, cnt, dur)).start()
-
-    def _worker_track(self, raw, genre, dur, rtype, label, prog):
-        demo = f"Голос: {os.path.basename(self.current_voice_sample)}." if self.current_voice_sample else "Нейро-вокал."
-        self._worker_generic(f"{raw} {demo}", genre, dur, rtype, label, prog)
-
-    def _worker_generic(self, raw_desc, genre, duration, rtype, label, prog):
-        notes = []
-        mode = (self._last_gen or {}).get("mode", self.current_mode)
-        try:
-            Clock.schedule_once(lambda dt: self._update_progress(label, prog, "Улучшаю промпт...", 8), 0)
-            enhanced = self._enhanced_cache.pop(mode, None) or self._enhance_sync(raw_desc)
-            Clock.schedule_once(lambda dt: self._show_enhanced(mode, enhanced), 0)
-            Clock.schedule_once(lambda dt: self._update_progress(label, prog, "Пишу план трека...", 15), 0)
-            prompt = self._build_plan_prompt(enhanced, genre, duration)
-            llm = self._producer_with_critic(prompt)
-            plan = {"bpm": llm.get("bpm"), "key": llm.get("key"), "sections": llm.get("sections"), "vocals": llm.get("vocals"), "style_tags": llm.get("style_tags")}
-            title = llm.get("title", "Трек")
-            music_prompt = llm.get("music_prompt", genre)
-            lyrics = llm.get("lyrics", "")
-            crit = llm.get("_critic") or {}
-            total = crit.get("total", "-")
-            if not llm.get("_real"):
-                notes.append("ключи не ответили — план локальный")
-                plan = {"bpm": None, "key": None, "sections": None}
-            elif llm.get("_via") == "openrouter": notes.append("текст через OpenRouter")
-            elif llm.get("_via") == "gemini": notes.append("текст через Gemini")
-
-            Clock.schedule_once(lambda dt: self._update_progress(label, prog, "Рисуем обложку 3000x3000...", 35), 0)
-            cover = self._generate_image(llm.get("cover_prompt", f"{genre} cover"))
-
-            Clock.schedule_once(lambda dt: self._update_progress(label, prog, f"Синтез звука ({duration}с)...", 55), 0)
-            audio, audio_src, audio_reasons = self._generate_audio_chunk(music_prompt + ". " + enhanced, duration, plan)
-            if audio_src == "arrange": notes.append(f"звук: локальный аранжировщик v4 ({audio_reasons[-1] if audio_reasons else 'no keys'})")
-            elif audio_src == "replicate": notes.append("звук: MusicGen Replicate — студийное качество")
-            elif audio_src == "hf": notes.append("звук: MusicGen HuggingFace")
-            elif audio_src == "poll": notes.append("звук: Pollinations AI")
-
-            if lyrics and self.current_voice_sample:
-                Clock.schedule_once(lambda dt: self._update_progress(label, prog, "Клонирование голоса...", 75), 0)
-                self._fish_clone(lyrics, self.current_voice_sample)
-
-            Clock.schedule_once(lambda dt: self._update_progress(label, prog, "Сохранение и мастеринг...", 90), 0)
-            storage = get_storage_root()
-            safe = re.sub(r"[^\w\-]", "_", title)[:60]
-            mp3_p = os.path.join(storage, f"{safe}.mp3")
-            wav_p = os.path.join(storage, f"{safe}_Master.wav")
-            cover_p = os.path.join(storage, f"{safe}_Cover.jpg")
-
-            with open(mp3_p, "wb") as f: f.write(audio)
-            self._write_wav(wav_p, audio, duration, seed=title, plan=plan)
-            if cover:
-                with open(cover_p, "wb") as f: f.write(cover)
-            self._inject_id3(mp3_p, title, "Anton Lemus & AI", genre, cover)
-
-            self.projects.insert(0, {
-                "id": f"p_{int(time.time()*1000)}", "title": title, "genre": genre, "type": f"{rtype} ({duration}с)",
-                "mp3_path": mp3_p, "wav_path": wav_p, "cover_path": cover_p if cover else None,
-                "lyrics": lyrics, "bpm": plan.get("bpm"), "key": plan.get("key"),
-                "enhanced_prompt": enhanced, "audio_source": audio_src,
-                "critic_total": total, "ai_disclose": bool(self.config.get("disclose_ai", True)),
-                "date": time.strftime("%Y-%m-%d %H:%M"),
-            })
-            self.save_projects()
-            self._last_gen = {"prompt": prompt, "genre": genre, "duration": duration, "rtype": rtype}
-
-            msg = f"Готово! Критик: {total}/10"
-            if plan.get("bpm"): msg += f" • {plan.get('bpm')} BPM • {plan.get('key')}"
-            if notes: msg += " (" + "; ".join(notes) + ")"
-            Clock.schedule_once(lambda dt: self._update_progress(label, prog, msg, 100), 0)
-            Clock.schedule_once(lambda dt: self._go_to_library(), 0)
-            Clock.schedule_once(lambda dt: toast(f"{title}: готово! Слушай в Медиатеке"), 0)
-            self._send_notification("Lemus Studio", f"{title} готов!")
-        except Exception as e:
-            traceback.print_exc()
-            Clock.schedule_once(lambda dt: self._update_progress(label, prog, f"Ошибка: {str(e)[:60]}", 0), 0)
-
-    def _show_enhanced(self, mode, txt):
-        try:
-            lid = "s_enhanced_label" if mode == "single" else "p_enhanced_label"
-            setattr(self.modes[mode].ids[lid], "text", f"Промпт: {txt}")
-        except Exception: pass
-
-    def _update_progress(self, label, prog, text, val):
-        if label is not None: label.text = text
-        if prog is not None: prog.value = val
-
-    def _worker_album(self, theme, genre, cnt, dur):
-        try:
-            enhanced = self._enhance_sync(f"Альбом: {theme}. Жанр: {genre}.")
-            prompt = (f"EP из {cnt} треков по {dur}с. Тема: '{enhanced}', жанр: {genre}. "
-                      "JSON: album_title, cover_prompt, tracks(title, music_prompt, lyrics, bpm, key).")
-            llm = self._producer_with_critic(prompt)
-            album = llm.get("album_title", "EP")
-            album_id = f"alb_{int(time.time())}"
-            storage = get_storage_root()
-            cover = self._generate_image(llm.get("cover_prompt", f"{genre} album"))
-            cover_p = os.path.join(storage, f"{album}_Cover.jpg")
-            if cover:
-                with open(cover_p, "wb") as f: f.write(cover)
-            for i, t in enumerate(llm.get("tracks", [])[:cnt]):
-                plan = {"bpm": t.get("bpm"), "key": t.get("key"), "sections": None}
-                Clock.schedule_once(lambda dt, x=i: setattr(self.modes["album"].ids.alb_status_label, "text", f"Трек {x+1}/{cnt}..."), 0)
-                aud, src, _ = self._generate_audio_chunk(t.get("music_prompt", genre), dur, plan)
-                safe = re.sub(r"[^\w]", "_", t.get("title", "track"))[:40]
-                mp3_p = os.path.join(storage, f"{album}_0{i+1}_{safe}.mp3")
-                wav_p = os.path.join(storage, f"{album}_0{i+1}_Master.wav")
-                with open(mp3_p, "wb") as f: f.write(aud)
-                self._write_wav(wav_p, aud, dur, seed=album + str(i), plan=plan)
-                self._inject_id3(mp3_p, t.get("title", "Track"), album, genre, cover)
-                self.projects.insert(0, {
-                    "id": f"p_{int(time.time()*1000)}_{i}", "title": f"[{album}] {t.get('title')}", "genre": genre,
-                    "type": f"Альбом ({dur}с)", "mp3_path": mp3_p, "wav_path": wav_p, "cover_path": cover_p if cover else None,
-                    "album_id": album_id, "album_title": album, "lyrics": t.get("lyrics", ""), "audio_source": src,
-                    "ai_disclose": bool(self.config.get("disclose_ai", True)), "date": time.strftime("%Y-%m-%d %H:%M"),
-                })
-            self.save_projects()
-            Clock.schedule_once(lambda dt: setattr(self.modes["album"].ids.alb_status_label, "text", f"Альбом '{album}' готов!"), 0)
-            Clock.schedule_once(lambda dt: self._go_to_library(), 0)
-        except Exception as e:
-            Clock.schedule_once(lambda dt: setattr(self.modes["album"].ids.alb_status_label, "text", f"Ошибка: {str(e)[:80]}"), 0)
-
-    def _worker_add_track(self, album, idea, dur):
-        try:
-            genre = album.get("genre", ""); theme = idea or f"продолжение альбома '{album['title']}'"
-            demo = f"Голос: {os.path.basename(self.current_voice_sample)}." if self.current_voice_sample else ""
-            enhanced = self._enhance_sync(f"Трек для альбома '{album['title']}'. Тема: {theme}. {demo}")
-            prompt = self._build_plan_prompt(enhanced, genre, dur)
-            llm = self._producer_with_critic(prompt)
-            plan = {"bpm": llm.get("bpm"), "key": llm.get("key"), "sections": llm.get("sections")}
-            title = llm.get("title", "Track")
-            audio, src, _ = self._generate_audio_chunk(llm.get("music_prompt", genre), dur, plan)
-            storage = get_storage_root()
-            safe = re.sub(r"[^\w]", "_", title)[:40]; n = album["tracks"] + 1
-            mp3_p = os.path.join(storage, f"{album['title']}_0{n}_{safe}.mp3")
-            wav_p = os.path.join(storage, f"{album['title']}_0{n}_Master.wav")
-            with open(mp3_p, "wb") as f: f.write(audio)
-            self._write_wav(wav_p, audio, dur, seed=title, plan=plan)
-            self._inject_id3(mp3_p, title, album["title"], genre, None)
-            self.projects.insert(0, {
-                "id": f"p_{int(time.time()*1000)}", "title": f"[{album['title']}] {title}", "genre": genre,
-                "type": f"Альбом ({dur}с)", "album_id": album["album_id"], "album_title": album["title"],
-                "mp3_path": mp3_p, "wav_path": wav_p, "cover_path": album.get("cover_path"),
-                "lyrics": llm.get("lyrics", ""), "audio_source": src,
-                "ai_disclose": bool(self.config.get("disclose_ai", True)), "date": time.strftime("%Y-%m-%d %H:%M"),
-            })
-            self.save_projects()
-            Clock.schedule_once(lambda dt: setattr(self.modes["album"].ids.alb_status_label, "text", f"'{title}' добавлен!"), 0)
-            Clock.schedule_once(lambda dt: self._go_to_library(), 0)
-        except Exception as e:
-            Clock.schedule_once(lambda dt: setattr(self.modes["album"].ids.alb_status_label, "text", f"Ошибка: {str(e)[:80]}"), 0)
-
-    def get_albums(self):
-        albums = {}
-        for p in self.projects:
-            aid = p.get("album_id")
-            if not aid: continue
-            if aid not in albums: albums[aid] = {"album_id": aid, "title": p.get("album_title", aid), "genre": p.get("genre", ""), "cover_path": p.get("cover_path"), "tracks": 0}
-            albums[aid]["tracks"] += 1
-        return list(albums.values())
-
-    def show_add_track_dialog(self):
-        albums = self.get_albums()
-        if not albums: toast("Сначала создай альбом!"); return
-        buttons = [MDFlatButton(text=f"{a['title'][:18]} ({a['tracks']})", on_release=lambda inst, al=a: self._start_add_track(al)) for a in albums[:4]]
-        self.add_track_dialog = MDDialog(title="Добавить трек", text="Жанр и обложка возьмутся из альбома:", buttons=buttons)
-        self.add_track_dialog.open()
-
-    def _start_add_track(self, album):
-        try: self.add_track_dialog.dismiss()
-        except Exception: pass
-        idea = self.modes["album"].ids.alb_extra_idea.text.strip()
-        dur = int(self.modes["album"].ids.alb_duration_input.text.strip() or "90")
-        self.modes["album"].ids.alb_status_label.text = "Пишу трек..."
-        threading.Thread(target=self._worker_add_track, args=(album, idea, dur)).start()
-
-    def _generate_image(self, prompt):
-        try:
-            enc = urllib.parse.quote(prompt[:180])
-            url = f"https://image.pollinations.ai/prompt/{enc}?width=3000&height=3000&nologo=true"
-            req = urllib.request.Request(url, headers={"User-Agent": "LemusStudio/7.6"})
-            with urllib.request.urlopen(req, timeout=60) as r:
-                d = r.read()
-                if len(d) > 5000: return d
-        except Exception as e: print(f"Cover: {e}")
-        return None
-
-    def _generate_audio_replicate(self, prompt, duration, reasons):
-        token = (self.config.get("replicate_token") or "").strip()
-        if not token: reasons.append("Replicate: no token"); return None
-        headers = {"Authorization": f"Token {token}", "Content-Type": "application/json", "Prefer": "wait=60"}
-        dur = max(5, min(int(duration or 30), 120))
-        for m in REPLICATE_MUSIC_MODELS:
-            try:
-                inp = {"prompt": prompt[:800], "duration": dur}; inp.update(m.get("extra", {}))
-                payload = json.dumps({"input": inp}).encode()
-                req = urllib.request.Request(f"https://api.replicate.com/v1/models/{m['owner_model']}/predictions", data=payload, headers=headers, method="POST")
-                with urllib.request.urlopen(req, timeout=70) as r: pred = json.loads(r.read().decode())
-                status = pred.get("status"); out = pred.get("output"); get_url = (pred.get("urls") or {}).get("get")
-                waited = 0
-                while status not in ("succeeded", "failed", "canceled") and get_url and waited < 300:
-                    time.sleep(5); waited += 5
-                    with urllib.request.urlopen(urllib.request.Request(get_url, headers=headers), timeout=20) as r2: pred = json.loads(r2.read().decode())
-                    status = pred.get("status"); out = pred.get("output")
-                if status == "succeeded" and out:
-                    url = out if isinstance(out, str) else (out[-1] if isinstance(out, list) else None)
-                    if url:
-                        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "LemusStudio/7.6"}), timeout=120) as r3:
-                            d = r3.read()
-                        if _looks_like_audio(d): return d
-                    reasons.append(f"Replicate {m['owner_model']}: not audio")
-                else: reasons.append(f"Replicate {m['owner_model']}: status {status}")
-            except urllib.error.HTTPError as e:
-                body = ""
-                try: body = e.read().decode()[:200]
-                except Exception: pass
-                if e.code == 403 and "1010" in body: reasons.append("Replicate: 403/1010 - billing needed"); return None
-                elif e.code == 401: reasons.append("Replicate: 401 - invalid token")
-                else: reasons.append(f"Replicate {m['owner_model']}: HTTP {e.code}")
-                continue
-            except Exception as e: reasons.append(f"Replicate {m['owner_model']}: {str(e)[:60]}"); continue
-        return None
-
-    def _generate_audio_chunk(self, prompt, duration, plan=None):
-        reasons = []
-        d = self._generate_audio_replicate(prompt, duration, reasons)
-        if d: return d, "replicate", reasons
-        hf = self.config.get("hf_token")
-        if hf:
-            for url in ["https://router.huggingface.co/hf-inference/models/facebook/musicgen-small", "https://api-inference.huggingface.co/models/facebook/musicgen-small"]:
-                try:
-                    headers = {"Authorization": f"Bearer {hf}", "Content-Type": "application/json"}
-                    payload = json.dumps({"inputs": prompt[:160], "parameters": {"duration": min(duration, 30)}}).encode()
-                    req = urllib.request.Request(url, data=payload, headers=headers)
-                    with urllib.request.urlopen(req, timeout=90) as r:
-                        dd = r.read()
-                        if _looks_like_audio(dd): return dd, "hf", reasons
-                    reasons.append("HF: not audio")
-                except Exception as e: reasons.append(f"HF: {str(e)[:50]}")
-        else: reasons.append("HF: no token")
-        try:
-            enc = urllib.parse.quote(prompt[:160])
-            req = urllib.request.Request(f"https://audio.pollinations.ai/prompt/{enc}", headers={"User-Agent": "LemusStudio/7.6"})
-            with urllib.request.urlopen(req, timeout=60) as r:
-                dd = r.read()
-                if _looks_like_audio(dd): return dd, "poll", reasons
-            reasons.append("Pollinations: not audio")
-        except Exception as e: reasons.append(f"Pollinations: {str(e)[:50]}")
-        
-        engine = ProceduralAudioEngineV4()
-        return engine.generate(duration, prompt, plan), "arrange", reasons
-
-    def _write_wav(self, path, audio, dur, seed="", plan=None):
-        try:
-            if audio[:4] == b"RIFF":
-                with open(path, "wb") as f: f.write(audio); return
-        except Exception: pass
-        done = False
-        if shutil.which("ffmpeg"):
-            try:
-                tmp = path + ".tmp"
-                with open(tmp, "wb") as f: f.write(audio)
-                import subprocess
-                r = subprocess.run(["ffmpeg", "-y", "-i", tmp, "-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                try: os.remove(tmp)
-                except Exception: pass
-                done = (r.returncode == 0 and os.path.exists(path))
-            except Exception: pass
-        if not done:
-            engine = ProceduralAudioEngineV4()
-            with open(path, "wb") as f: f.write(engine.generate(dur, seed, plan))
-
-    def _convert_format(self, src, dst, codec_args):
-        if not shutil.which("ffmpeg"): return False
-        try:
-            import subprocess
-            r = subprocess.run(["ffmpeg", "-y", "-i", src] + codec_args + [dst], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return r.returncode == 0 and os.path.exists(dst)
-        except Exception: return False
-
-    def _inject_id3(self, mp3_path, title, artist, genre, cover):
-        try:
-            from mutagen.mp3 import MP3
-            from mutagen.id3 import ID3, TIT2, TPE1, TALB, TCON, TDRC, APIC
-            audio = MP3(mp3_path, ID3=ID3)
-            try: audio.add_tags()
-            except Exception: pass
-            audio.tags.add(TIT2(encoding=3, text=title)); audio.tags.add(TPE1(encoding=3, text=artist))
-            audio.tags.add(TALB(encoding=3, text=title)); audio.tags.add(TDRC(encoding=3, text="2026"))
-            if genre: audio.tags.add(TCON(encoding=3, text=genre))
-            if cover: audio.tags.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=cover))
-            audio.save()
-        except Exception as e: print(f"ID3: {e}")
-
-    def _prepare_lyrics_for_tts(self, lyrics):
-        if not lyrics: return ""
-        t = re.sub(r"\[[^\]]*\]", " ", lyrics); t = t.replace("+", "")
-        return re.sub(r"[ \t]+", " ", t).strip()
-
-    def _clean_json(self, text):
-        t = text.strip()
-        if t.startswith("```"):
-            lines = t.splitlines()
-            if lines[0].startswith("```"): lines = lines[1:]
-            if lines and lines[-1].startswith("```"): lines = lines[:-1]
-            t = "\n".join(lines).strip()
-        if t.startswith("```json"): t = t[7:]
-        if t.endswith("```"): t = t[:-3]
-        return json.loads(t.strip())
-
-    def _call_llm_json(self, user_prompt):
-        g_keys = self.config.get("gemini_keys", [])
-        if not g_keys and self.config.get("gemini_key"): g_keys = [self.config.get("gemini_key")]
-        for key in g_keys:
-            if not key or self._key_skippable(key): continue
-            try:
-                res = self._call_gemini_native(user_prompt, key)
-                if isinstance(res, dict): res["_real"] = True; res["_via"] = "gemini"; return res
-            except urllib.error.HTTPError as e:
-                if e.code in (401, 403): self._mark_key(key, "dead")
-                elif e.code in (429, 503): self._mark_key(key, "temp")
-                continue
-            except Exception: continue
-        or_key = self.config.get("openrouter_key", "").strip()
-        if or_key:
-            for om in OR_MODELS:
-                try:
-                    headers = {"Authorization": f"Bearer {or_key}", "Content-Type": "application/json", "HTTP-Referer": "https://lemus-ai-music-studio.onrender.com", "X-Title": "Lemus Studio"}
-                    payload = json.dumps({"model": om, "messages": [{"role": "system", "content": "Valid JSON only."}, {"role": "user", "content": user_prompt}], "response_format": {"type": "json_object"}}).encode("utf-8")
-                    req = urllib.request.Request("https://openrouter.ai/api/v1/chat/completions", data=payload, headers=headers)
-                    with urllib.request.urlopen(req, timeout=60) as r:
-                        res = json.loads(r.read().decode())
-                    out = self._clean_json(res["choices"][0]["message"]["content"]); out["_real"] = True; out["_via"] = "openrouter"; return out
-                except Exception as e: print(f"OR {om}: {str(e)[:60]}"); continue
-        return {"title": "Instrumental", "music_prompt": "melodic beat", "cover_prompt": "cover", "lyrics": "", "bpm": 110, "key": "A minor", "sections": None, "_real": False}
-
-    def _run_critic(self, meta):
-        try:
-            return self._call_llm_json(f"Critic. Rate: {json.dumps({k:v for k,v in meta.items() if not k.startswith('_')}, ensure_ascii=False)[:1500]}\nJSON: {{\"scores\":{{}},\"total\":N,\"verdict\":\"release|revise\",\"fixes\":\"\"}}")
-        except Exception: return {"scores": {}, "total": 8.0, "verdict": "release", "fixes": ""}
-
-    def _producer_with_critic(self, prompt):
-        meta = self._call_llm_json(prompt); real = meta.get("_real")
-        if not isinstance(meta, dict) or not meta.get("music_prompt"): return meta
-        if real:
-            crit = self._run_critic(meta); total = crit.get("total") or 10
-            if crit.get("verdict") == "revise" and total < 7.0:
-                meta2 = self._call_llm_json(prompt + f"\n\nCRITIC: {crit.get('fixes','')}")
-                if isinstance(meta2, dict) and meta2.get("music_prompt"): meta = meta2; crit = self._run_critic(meta)
-            meta["_critic"] = crit
-        meta["_real"] = real; return meta
-
-    def _fish_clone(self, lyrics, sample_path):
-        fish_key = self.config.get("fish_key", "")
-        if not fish_key or not sample_path: return None
-        clean = self._prepare_lyrics_for_tts(lyrics)
-        try:
-            with open(sample_path, "rb") as f: sample = f.read()
-            b = "----LemusBoundary"; body = io.BytesIO()
-            body.write(f"--{b}\r\nContent-Disposition: form-data; name=\"voices\"; filename=\"sample.mp3\"\r\nContent-Type: audio/mpeg\r\n\r\n".encode()); body.write(sample); body.write(b"\r\n")
-            body.write(f"--{b}\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nclone_{int(time.time())}\r\n".encode())
-            body.write(f"--{b}\r\nContent-Disposition: form-data; name=\"visibility\"\r\n\r\nprivate\r\n".encode()); body.write(f"--{b}--\r\n".encode())
-            req = urllib.request.Request("https://api.fish.audio/v1/models", data=body.getvalue(), headers={"Authorization": f"Bearer {fish_key}", "Content-Type": f"multipart/form-data; boundary={b}"})
-            with urllib.request.urlopen(req, timeout=90) as r:
-                md = json.loads(r.read().decode()); mid = md.get("_id") or md.get("id")
-                if not mid: return None
-                payload = json.dumps({"text": clean[:2000], "reference_id": mid, "format": "mp3", "mp3_bitrate": 128}).encode()
-                req2 = urllib.request.Request("https://api.fish.audio/v1/tts", data=payload, headers={"Authorization": f"Bearer {fish_key}", "Content-Type": "application/json"})
-                with urllib.request.urlopen(req2, timeout=120) as r2:
-                    c = r2.read(); return c if len(c) > 5000 else None
-        except Exception as e: print(f"Fish: {e}"); return None
-
-    def toggle_selection_mode(self):
-        self.selection_mode = not self.selection_mode; self.selected_ids = set()
-        self.root.ids.selection_bar.height = dp(56) if self.selection_mode else dp(0); self.refresh_projects_ui()
-
-    def _exit_selection_mode(self):
-        self.selection_mode = False; self.selected_ids = set()
-        try: self.root.ids.selection_bar.height = dp(0); self.root.ids.selection_count.text = "Selected: 0"
-        except Exception: pass
-
-    def _toggle_select(self, item):
-        pid = item.get("id") or item.get("mp3_path")
-        if pid in self.selected_ids: self.selected_ids.discard(pid)
-        else: self.selected_ids.add(pid)
-        self.root.ids.selection_count.text = f"Selected: {len(self.selected_ids)}"; self.refresh_projects_ui()
-
-    def refresh_projects_ui(self, filter_text="", filter_type="all"):
-        container = self.root.ids.projects_list_container; container.clear_widgets(); rendered = []
-        ru = {"Single": "Сингл", "Viral": "Хит", "EP": "Альбом", "Money": "Фон", "Prompt": "Промпт"}
-        for item in self.projects:
-            title = item.get("title", ""); genre = item.get("genre", ""); itype = item.get("type", "")
-            if filter_text and filter_text.lower() not in title.lower() and filter_text.lower() not in genre.lower(): continue
-            if filter_type != "all" and not (itype.startswith(ru.get(filter_type, filter_type)) or filter_type in itype): continue
-            rendered.append(item); pid = item.get("id") or item.get("mp3_path")
-            extra = f" • {item.get('date','')}"
-            if item.get("bpm"): extra += f" • {item.get('bpm')} BPM"
-            if item.get("audio_source") in ("replicate", "hf", "poll"): extra += " • AI-sound"
-            li = TwoLineAvatarIconListItem(text=title, secondary_text=f"{genre} • {itype}{extra}")
-            if self.selection_mode:
-                cb = CheckboxLeftWidget(active=pid in self.selected_ids); cb.bind(active=lambda a, v, it=item: self._toggle_select(it)); li.add_widget(cb)
-            else:
-                ic_play = IconLeftWidget(icon="play-circle"); ic_play.bind(on_release=lambda x, it=item: self.play_item(it)); li.add_widget(ic_play)
-                ic_dl = IconRightWidget(icon="download"); ic_dl.bind(on_release=lambda x, it=item: self.download_project(it)); li.add_widget(ic_dl)
-                ic_exp = IconRightWidget(icon="export"); ic_exp.bind(on_release=lambda x, it=item: self.show_export_formats(it)); li.add_widget(ic_exp)
-                ic_share = IconRightWidget(icon="share-variant"); ic_share.bind(on_release=lambda x, it=item: self.share_project(it)); li.add_widget(ic_share)
-                ic_del = IconRightWidget(icon="delete"); ic_del.bind(on_release=lambda x, it=item: self.confirm_delete([it])); li.add_widget(ic_del)
-            container.add_widget(li)
-        self.last_rendered_items = rendered
-
-    def filter_projects(self, text): self.refresh_projects_ui(filter_text=text, filter_type=self.current_filter)
-    def filter_by_type(self, ftype): self.current_filter = ftype; self.refresh_projects_ui(filter_text=self.root.ids.search_input.text, filter_type=ftype)
-
-    def confirm_delete(self, items):
-        n = len(items); dlg = None
-        def do_delete(i):
-            try: dlg.dismiss()
-            except Exception: pass
-            for item in items:
-                if item in self.projects:
-                    for p in [item.get("mp3_path"), item.get("wav_path"), item.get("cover_path")]:
-                        if p and os.path.exists(p):
-                            try: os.remove(p)
-                            except Exception: pass
-                    self.projects.remove(item)
-            self.save_projects(); self._exit_selection_mode(); self.refresh_projects_ui(); toast(f"Deleted: {n}")
-        dlg = MDDialog(title="Confirm", text=f"Delete {n} tracks?", buttons=[MDFlatButton(text="Cancel", on_release=lambda i: dlg.dismiss()), MDRaisedButton(text="Delete", md_bg_color=(0.68, 0.24, 0.24, 1), on_release=do_delete)])
-        dlg.open()
-
-    def delete_selected(self):
-        if not self.selected_ids: toast("Nothing selected"); return
-        items = [p for p in self.projects if (p.get("id") or p.get("mp3_path")) in self.selected_ids]; self.confirm_delete(items)
-
-    def share_project(self, item):
-        mp3 = item.get("mp3_path")
-        if not mp3 or not os.path.exists(mp3): toast("File not found"); return
-        if platform == "android":
-            try:
-                from jnius import autoclass
-                Intent = autoclass("android.content.Intent"); Uri = autoclass("android.net.Uri"); File = autoclass("java.io.File"); PythonActivity = autoclass("org.kivy.android.PythonActivity")
-                intent = Intent(Intent.ACTION_SEND); intent.setType("audio/mpeg"); intent.putExtra(Intent.EXTRA_STREAM, Uri.fromFile(File(mp3))); intent.putExtra(Intent.EXTRA_SUBJECT, item.get("title", "Track"))
-                PythonActivity.mActivity.startActivity(Intent.createChooser(intent, "Share"))
-            except Exception as e: toast(f"Share err: {str(e)[:50]}")
-        else: toast(f"File: {mp3}")
-
-    def show_export_formats(self, item):
-        wav = item.get("wav_path"); has_ff = bool(shutil.which("ffmpeg"))
-        lines = ["Formats:", "WAV 44.1/16", "MP3 320", ("FLAC" if has_ff else "FLAC (need ffmpeg)"), ("MP3 256" if has_ff else "MP3 256 (need ffmpeg)"), "ZIP", "Download"]
-        buttons = [MDRaisedButton(text="Download", md_bg_color=(0.30, 0.50, 0.45, 1), on_release=lambda i, it=item: (self._dismiss_export(), self.download_project(it))),
-                   MDRaisedButton(text="ZIP", on_release=lambda i, it=item: (self._dismiss_export(), self.export_project_zip(it))),
-                   MDFlatButton(text="Close", on_release=lambda i: self._dismiss_export())]
-        if has_ff and wav: buttons.insert(0, MDRaisedButton(text="FLAC+m4a", md_bg_color=(0.3, 0.6, 0.5, 1), on_release=lambda i, it=item: (self._dismiss_export(), self._export_extra(it))))
-        self.export_dialog = MDDialog(title="Export", text="\n".join(lines), buttons=buttons); self.export_dialog.open()
-
-    def _dismiss_export(self):
-        try: self.export_dialog.dismiss()
-        except Exception: pass
-
-    def _export_extra(self, item):
-        wav = item.get("wav_path"); mp3 = item.get("mp3_path"); base = os.path.splitext(wav or mp3)[0]; made = []
-        if wav:
-            if self._convert_format(wav, base + ".flac", ["-c:a", "flac"]): made.append("FLAC")
-            if self._convert_format(wav, base + ".m4a", ["-c:a", "aac", "-b:a", "256k"]): made.append("M4A")
-        if mp3:
-            if self._convert_format(mp3, base + "_256.mp3", ["-b:a", "256k"]): made.append("MP3-256")
-            if self._convert_format(mp3, base + "_192.mp3", ["-b:a", "192k"]): made.append("MP3-192")
-        toast("Created: " + (", ".join(made) if made else "nothing"))
-
-    def export_project_zip(self, item):
-        try:
-            storage = get_storage_root(); title = re.sub(r"[^\w]", "_", item.get("title", "track"))[:40]; zip_p = os.path.join(storage, f"{title}_dist.zip")
-            disclose = bool(item.get("ai_disclose", self.config.get("disclose_ai", True)))
-            with zipfile.ZipFile(zip_p, "w", zipfile.ZIP_DEFLATED) as zf:
-                for p in [item.get("mp3_path"), item.get("wav_path"), item.get("cover_path")]:
-                    if p and os.path.exists(p): zf.write(p, os.path.basename(p))
-                passport = {k: v for k, v in item.items() if not k.endswith("_path")}
-                passport["distributor_note"] = "AI generated." if disclose else "Human produced."
-                zf.writestr("passport.json", json.dumps(passport, ensure_ascii=False, indent=2))
-                zf.writestr("metadata.csv", f"title,artist,genre\n\"{item.get('title','')}\",\"Anton Lemus\",\"{item.get('genre','')}\"")
-                zf.writestr("press_release.txt", f"PRESS RELEASE\n\n{item.get('title','')} by Anton Lemus.")
-            toast(f"ZIP ready: {os.path.basename(zip_p)}")
-        except Exception as e: toast(f"ZIP err: {str(e)[:50]}")
-
-    def _import_keys_from_json(self, path):
-        try:
-            with open(path, "r", encoding="utf-8") as f: data = json.load(f)
-            if not isinstance(data, dict): toast("Invalid JSON"); return
-            if not any(k in data for k in ["gemini_keys", "openrouter_key", "replicate_token"]): toast("No keys"); return
-            for key in ["gemini_keys", "gemini_key", "gemini_model", "openrouter_key", "yandex_token", "hf_token", "fish_key", "groq_key", "disclose_ai", "replicate_token"]:
-                if key in data: self.config[key] = data[key]
-            keys = self.config.get("gemini_keys", [])
-            if isinstance(keys, str): keys = [keys]
-            self.config["gemini_keys"] = [k for k in keys if k]
-            if self.config["gemini_keys"] and not self.config.get("gemini_key"): self.config["gemini_key"] = self.config["gemini_keys"][0]
-            self.config["is_master_activated"] = True; self.config["activated_at"] = time.strftime("%Y-%m-%d %H:%M"); self.config["activation_source"] = "json"
-            self._key_state = {}; self._gemini_cache = {}; self.save_config_to_disk(); self.populate_settings_fields(); self.update_activation_status()
-            toast(f"Keys loaded! Gemini: {len(self.config.get('gemini_keys', []))}")
-        except json.JSONDecodeError: toast("JSON parse error")
-        except Exception as e: toast(f"Error: {str(e)[:50]}")
-
-    def unlock_master_keys(self):
-        pwd = self.root.ids.master_password_input.text.strip()
-        if hashlib.sha256(pwd.encode()).hexdigest() != MASTER_HASH: toast("Wrong password!"); return
-        toast("Loading gist..."); threading.Thread(target=self._fetch_remote_keys_thread).start()
-
-    def _fetch_remote_keys_thread(self):
-        try:
-            req = urllib.request.Request(REMOTE_KEYS_URL, headers={"User-Agent": "LemusStudio/7.6", "Accept": "application/json"})
-            with urllib.request.urlopen(req, timeout=15) as r: remote = json.loads(r.read().decode("utf-8"))
-            for k, v in remote.items(): self.config[k] = v
-            self.config["is_master_activated"] = True; self.config["activated_at"] = time.strftime("%Y-%m-%d %H:%M"); self.config["activation_source"] = "gist"
-            self._key_state = {}; self._gemini_cache = {}; self.save_config_to_disk()
-            Clock.schedule_once(lambda dt: self._on_keys_loaded(True), 0)
-        except Exception as e: Clock.schedule_once(lambda dt: self._on_keys_loaded(False, str(e)), 0)
-
-    def _on_keys_loaded(self, ok, err=""):
-        if ok: self.populate_settings_fields(); self.update_activation_status(); self.root.ids.master_password_input.text = ""; toast("Activated!")
-        else: toast(f"Gist error: {err[:60]}")
-
-    def reset_all_keys(self):
-        self.config = EMPTY_CONFIG.copy(); self._key_state = {}; self._gemini_cache = {}; self.save_config_to_disk(); self.populate_settings_fields(); self.update_activation_status(); toast("Keys reset")
-
-    def set_disclose_ai(self, active):
-        self.config["disclose_ai"] = bool(active); self.save_config_to_disk(); toast("AI status: " + ("on" if active else "off"))
-
-    def update_activation_status(self):
-        label = self.root.ids.activation_status
-        if self.config.get("is_master_activated"):
-            label.text = f"Active\n({self.config.get('activation_source','?')})"; label.theme_text_color = "Custom"; label.text_color = (0.35, 0.85, 0.45, 1)
-        elif self.config.get("gemini_key") or self.config.get("openrouter_key") or self.config.get("replicate_token"):
-            label.text = "Guest mode"; label.theme_text_color = "Custom"; label.text_color = (0.9, 0.75, 0.3, 1)
+async def send_telegram(chat_id, text: str, reply_markup=None, parse_mode="Markdown"):
+    if not text:
+        return
+    if len(text) <= 4000:
+        return await send_single_message(chat_id, text, reply_markup, parse_mode)
+    
+    parts = []
+    current_part = ""
+    for paragraph in text.split("\n\n"):
+        if len(current_part) + len(paragraph) + 2 < 3800:
+            current_part += ("\n\n" if current_part else "") + paragraph
         else:
-            label.text = "Not activated"; label.theme_text_color = "Custom"; label.text_color = (0.62, 0.60, 0.70, 1)
-
-    def save_user_settings(self):
-        r = self.root; uk = r.ids.cfg_gemini.text.strip(); keys = list(self.config.get("gemini_keys", []))
-        if uk:
-            if uk not in keys: keys.insert(0, uk)
-            self.config["gemini_key"] = uk
-        elif keys: self.config["gemini_key"] = keys[0]
-        else: self.config["gemini_key"] = ""
-        self.config["gemini_keys"] = keys
-        self.config["replicate_token"] = r.ids.cfg_replicate.text.strip() or self.config.get("replicate_token", "")
-        self.config["openrouter_key"] = r.ids.cfg_openrouter.text.strip() or self.config.get("openrouter_key", "")
-        self.config["yandex_token"] = r.ids.cfg_yandex.text.strip() or self.config.get("yandex_token", "")
-        self.config["hf_token"] = r.ids.cfg_hf.text.strip() or self.config.get("hf_token", "")
-        self.config["fish_key"] = r.ids.cfg_fish.text.strip() or self.config.get("fish_key", "")
-        self.config["groq_key"] = r.ids.cfg_groq.text.strip() or self.config.get("groq_key", "")
-        self._key_state = {}; self._gemini_cache = {}; self.save_config_to_disk(); self.update_activation_status()
-        toast(f"Saved! Gemini: {len(keys)}")
-
-    def populate_settings_fields(self):
-        r = self.root
-        r.ids.cfg_gemini.text = self.config.get("gemini_key", ""); r.ids.cfg_openrouter.text = self.config.get("openrouter_key", "")
-        r.ids.cfg_yandex.text = self.config.get("yandex_token", ""); r.ids.cfg_hf.text = self.config.get("hf_token", "")
-        r.ids.cfg_fish.text = self.config.get("fish_key", ""); r.ids.cfg_groq.text = self.config.get("groq_key", "")
-        r.ids.cfg_replicate.text = self.config.get("replicate_token", "")
-
-    def show_vault_status(self):
-        if self.config.get("is_master_activated"): toast(f"LemusAI: Gemini {len(self.config.get('gemini_keys', []))}")
-        elif self.config.get("gemini_key") or self.config.get("openrouter_key") or self.config.get("replicate_token"): toast("Guest mode")
-        else: toast("No keys")
-
-    def run_key_diagnostics(self):
-        toast("Diagnostics..."); threading.Thread(target=self._diag_thread).start()
-
-    def _diag_thread(self):
-        from concurrent.futures import ThreadPoolExecutor
-        lines = ["Diagnostics v7.6.0:"]
-        try:
-            req = urllib.request.Request("https://generativelanguage.googleapis.com/v1beta/models?key=invalid_test", headers={"User-Agent": "LemusStudio/7.6"})
-            try: urllib.request.urlopen(req, timeout=10); lines.append("Network/SSL: OK")
-            except urllib.error.HTTPError: lines.append("Network/SSL: OK")
-        except Exception as e: lines.append(f"Network/SSL: ERROR {str(e)[:60]}")
+            if current_part:
+                parts.append(current_part)
+            current_part = paragraph
+    if current_part:
+        parts.append(current_part)
         
-        g_keys = self.config.get("gemini_keys", [])
-        if not g_keys and self.config.get("gemini_key"): g_keys = [self.config.get("gemini_key")]
+    for i, p in enumerate(parts):
+        markup = reply_markup if i == len(parts) - 1 else None
+        await send_single_message(chat_id, p, markup, parse_mode)
+        await asyncio.sleep(0.3)
+
+
+async def send_document_bytes(chat_id, file_bytes: bytes, filename: str, caption: str = "", content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"):
+    form = aiohttp.FormData()
+    form.add_field("chat_id", str(chat_id))
+    if caption:
+        form.add_field("caption", caption[:1024])
+        form.add_field("parse_mode", "Markdown")
+    form.add_field("document", file_bytes, filename=filename, content_type=content_type)
+    async with HTTP.post(f"{TELEGRAM_API}/sendDocument", data=form) as resp:
+        await resp.json()
+
+
+async def http_edit_message_text(chat_id, message_id, text, reply_markup=None):
+    payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    async with HTTP.post(f"{TELEGRAM_API}/editMessageText", json=payload) as resp:
+        await resp.json()
+
+
+async def answer_callback(cb_id: str):
+    try:
+        async with HTTP.post(f"{TELEGRAM_API}/answerCallbackQuery",
+                             json={"callback_query_id": cb_id}) as resp:
+            await resp.json()
+    except Exception:
+        pass
+
+
+def get_keyboard(is_admin=False):
+    kb = [
+        [{"text": "📁 Мои резюме"}, {"text": "📥 Загрузить резюме"}],
+        [{"text": "🔍 Поиск вакансий"}, {"text": "🛠 Адаптация резюме"}],
+        [{"text": "📊 Анализ навыков (Skill Gap)"}, {"text": "📋 Аудит резюме"}],
+        [{"text": "🎤 Тренажер собеседований"}, {"text": "📌 Трекер откликов"}],
+        [{"text": "🎁 Бонусы (Репост & Друзья)"}, {"text": "💎 Оплата и Баланс"}],
+        [{"text": "🚀 Запустить бота"}, {"text": "💬 Обратная связь"}],
+        [{"text": "ℹ️ Помощь"}],
+    ]
+    if is_admin:
+        kb.append([{"text": "👑 Админ-панель"}, {"text": "📩 Сообщения от пользователей"}])
+    return {"keyboard": kb, "resize_keyboard": True}
+
+
+# ---------------- hh.ru поиск и парсинг ----------------
+async def hh_api_search(query: str):
+    try:
+        async with HTTP.get("https://api.hh.ru/vacancies",
+                            params={"text": query, "area": "1", "per_page": "100"},
+                            headers={"User-Agent": "LemusCareerBot/1.8"}) as resp:
+            data = await resp.json()
+        items = []
+        for i in data.get("items", []):
+            salary = i.get("salary")
+            sal_str = ""
+            if salary:
+                frm = salary.get("from")
+                to = salary.get("to")
+                cur_s = salary.get("currency", "RUR")
+                if frm and to: sal_str = f"💰 {frm} – {to} {cur_s}"
+                elif frm: sal_str = f"💰 от {frm} {cur_s}"
+                elif to: sal_str = f"💰 до {to} {cur_s}"
+            
+            items.append({
+                "id": i.get("id"), 
+                "name": i.get("name"),
+                "company": (i.get("employer") or {}).get("name"),
+                "salary": sal_str,
+                "url": i.get("alternate_url") or f"https://hh.ru/vacancy/{i.get('id')}"
+            })
+        return items or None
+    except Exception as e:
+        log.warning("hh API failed: %s", str(e)[:150])
+        return None
+
+
+async def hh_scrape_search(query: str):
+    try:
+        async with HTTP.get("https://hh.ru/search/vacancy",
+                            params={"text": query, "area": "1", "items_on_page": "100"},
+                            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}) as resp:
+            page = await resp.text()
+        match = re.search(r'<template[^>]*id="HH-Lux-InitialState"[^>]*>(.*?)</template>', page, re.S)
+        if not match:
+            return None
+        data = json.loads(html.unescape(match.group(1)))
+        items = (data.get("vacancySearchResult") or {}).get("vacancies") or []
+        out = []
+        for it in items:
+            vid = it.get("vacancyId") or it.get("id")
+            sal = it.get("salary")
+            sal_str = f"💰 {sal}" if sal else ""
+            out.append({
+                "id": vid, 
+                "name": it.get("name"),
+                "company": (it.get("company") or {}).get("name"),
+                "salary": sal_str,
+                "url": f"https://hh.ru/vacancy/{vid}"
+            })
+        return out or None
+    except Exception as e:
+        log.warning("hh scrape failed: %s", str(e)[:150])
+        return None
+
+
+async def get_vacancy_details(vacancy_id: str) -> str:
+    try:
+        async with HTTP.get(f"https://api.hh.ru/vacancies/{vacancy_id}",
+                            headers={"User-Agent": "LemusCareerBot/1.8"}) as resp:
+            data = await resp.json()
+            
+        description = re.sub(r'<[^>]+>', '', data.get("description", ""))
+        skills = ", ".join([s.get("name", "") for s in data.get("key_skills", [])])
+        return f"Требования и описание:\n{description}\n\nКлючевые навыки: {skills}"
+    except Exception as e:
+        log.error(f"Failed to fetch vacancy details {vacancy_id}: {e}")
+        return ""
+
+
+# ---------------- Вывод порции вакансий (Оценка уже посчитана пакетом) ----------------
+async def send_vacancies_page(chat_id: int, user_id: int, page: int = 0):
+    cached = user_search_cache.get(user_id)
+    if not cached or not cached.get("items"):
+        await send_telegram(chat_id, "💡 *Подсказка:* Список вакансий устарел. Нажмите «🔍 Поиск вакансий» в меню, чтобы запустить новый подбор.")
+        return
+
+    items = cached["items"]
+    page_size = 15
+    start = page * page_size
+    end = start + page_size
+    chunk = items[start:end]
+
+    if not chunk:
+        await send_telegram(chat_id, "🏁 Больше нет новых вакансий в этой выдаче. Вы просмотрели все подходящие варианты!")
+        return
+
+    await send_telegram(chat_id, f"📄 Показаны вакансии с {start + 1} по min({end}, {len(items)}) из {len(items)} (отсортированы строго по проценту соответствия):")
+
+    for v in chunk:
+        vid = str(v["id"])
+        name = v.get("name") or "Вакансия"
+        comp = v.get("company") or "Компания"
+        sal = v.get("salary") or ""
+        match_score = v.get("match_score", 0)
+        match_reason = v.get("match_reason", "релевантно профилю")
         
-        def ping(k):
-            models, code = self._gemini_list_models(k)
-            if code in (401, 403, 400): self._mark_key(k, "dead"); return ("dead", f"HTTP {code}")
-            if code in (429, 503): self._mark_key(k, "temp"); return ("temp", f"HTTP {code}")
-            if not models: return ("dead", "no models")
-            for m in models[:5]:
-                try: self._gemini_post("ping", k, m, mime_json=False); self._mark_key(k, "ok"); return ("ok", f"{m} ({len(models)})")
-                except urllib.error.HTTPError as e:
-                    if e.code == 404: continue
-                    if e.code in (401, 403): self._mark_key(k, "dead"); return ("dead", f"HTTP {e.code}")
-                    if e.code in (429, 503): self._mark_key(k, "temp"); return ("temp", f"HTTP {e.code}")
-                    break
-                except Exception as e: break
-            return ("dead", "gen unavailable")
+        temp_vacancies[vid] = {"title": name, "employer": comp}
         
-        try:
-            with ThreadPoolExecutor(max_workers=6) as ex: results = list(ex.map(ping, g_keys))
-        except Exception: results = [ping(k) for k in g_keys]
+        comp_lower = comp.lower()
+        is_top = any(tc in comp_lower for tc in ["сбер", "мтс", "яндекс", "т-банк", "тинькофф", "втб", "альфа", "билайн", "мегафон", "ростелеком", "первый бит", "газпром", "росатом"])
+        badge = "⭐ *[ТОП-КОМПАНИЯ]*\n" if is_top else ""
         
-        alive = 0; temp = 0
-        for i, (k, res) in enumerate(zip(g_keys, results)):
-            status, detail = res
-            if status == "ok": alive += 1; lines.append(f"Gemini #{i+1}: OK - {detail}")
-            elif status == "temp": temp += 1; lines.append(f"Gemini #{i+1}: TEMP - {detail}")
-            else: lines.append(f"Gemini #{i+1}: DEAD - {detail}")
-        lines.append(f"Total: {alive} alive, {temp} temp, {len(g_keys)} total")
+        match_badge = f"🎯 Соответствие: {match_score}% ({match_reason})\n"
+        sal_line = f"{sal}\n" if sal else ""
         
-        rep = self.config.get("replicate_token", "")
-        if rep:
+        markup = {"inline_keyboard": [
+            [
+                {"text": "👍 Откликнулся", "callback_data": f"like_{vid}"},
+                {"text": "✍️ Сопроводительное", "callback_data": f"gen_{vid}"}
+            ],
+            [
+                {"text": "📊 Соответствие", "callback_data": f"match_{vid}"},
+                {"text": "🗑 Мусор", "callback_data": f"hide_{vid}"}
+            ]
+        ]}
+        await send_telegram(chat_id, f"{badge}🏢 *{comp}*\n💼 [{name}]({v.get('url')})\n{sal_line}{match_badge}", markup)
+        await asyncio.sleep(0.2)
+
+    if end < len(items):
+        next_page = page + 1
+        more_markup = {
+            "inline_keyboard": [
+                [{"text": "▶️ Далее (следующие 15)", "callback_data": f"page_{next_page}"}]
+            ]
+        }
+        await send_telegram(chat_id, f"💡 *Онбординг:* Осталось еще {len(items) - end} вакансий. Листайте дальше кнопкой ниже.", more_markup)
+    else:
+        await send_telegram(chat_id, "🎉 Вы просмотрели всю выдачу! Используйте кнопки меню для дальнейших действий.")
+
+
+# ---------------- Поиск и Пакетная сортировка по % (Решение проблемы 429) ----------------
+async def handle_search(chat_id: int, user_id: int, is_admin: bool):
+    if not spend_balance(user_id, cost=1):
+        await send_telegram(chat_id, "⚠️ У вас закончились запросы! Пополните баланс через меню «💎 Оплата и Баланс» или пригласите друзей.", get_keyboard(is_admin))
+        return
+
+    active_resume = get_active_resume(user_id)
+    if not active_resume:
+        await send_telegram(chat_id, "💡 *Подсказка:* Сначала загрузите резюме в чат, чтобы бот мог рассчитать процент соответствия для вакансий!")
+        return
+
+    await send_telegram(chat_id, "🔍 *Онбординг:* Анализирую ваше резюме, чтобы подобрать идеальные поисковые запросы...")
+
+    # Динамическое извлечение запросов на основе резюме
+    extract_prompt = (
+        "Проанализируй резюме и напиши 3 наиболее подходящие должности для поиска на hh.ru. "
+        "Выдай ТОЛЬКО названия должностей через запятую, без нумерации и лишнего текста.\n\n"
+        f"Резюме:\n{active_resume[:3000]}"
+    )
+    extracted_titles = await asyncio.to_thread(ai_generate, extract_prompt)
+    
+    if extracted_titles:
+        queries = [q.strip() for q in extracted_titles.split(",") if q.strip()][:3]
+    else:
+        queries = ["Специалист", "Менеджер"]
+
+    await send_telegram(chat_id, f"🎯 Сформировал запросы по вашему профилю: *{', '.join(queries)}*\nСобираю вакансии (быстрая пакетная ИИ-оценка топ-45 вариантов для защиты от лимитов)...")
+    
+    all_items = []
+    for q in queries:
+        res = await hh_scrape_search(q) or await hh_api_search(q)
+        if res:
+            all_items.extend(res)
+
+    if not all_items:
+        await send_telegram(chat_id, "⚠️ Не удалось найти вакансии. Попробуйте повторить запрос чуть позже.", get_keyboard(is_admin))
+        return
+
+    stop_words = ["сборщик", "упаковщик", "кассир", "повар", "официант", "курьер", "продавец-консультант", "сотрудник ресторана", "дворник", "грузчик"]
+    top_companies = ["сбер", "мтс", "яндекс", "т-банк", "тинькофф", "втб", "альфа", "билайн", "мегафон", "ростелеком", "первый бит", "газпром", "росатом"]
+
+    unique_items = {}
+    for v in all_items:
+        vid = str(v["id"])
+        if vid in unique_items:
+            continue
+            
+        name_lower = (v.get("name") or "").lower()
+        if any(sw in name_lower for sw in stop_words):
+            continue
+        if is_vacancy_hidden(user_id, vid):
+            continue
+            
+        unique_items[vid] = v
+
+    filtered_list = list(unique_items.values())
+
+    # Сортировка по hh-приоритету перед срезкой
+    def pre_sort_priority(item):
+        comp_lower = (item.get("company") or "").lower()
+        is_top = any(tc in comp_lower for tc in top_companies)
+        return (0 if is_top else 1)
+
+    filtered_list.sort(key=pre_sort_priority)
+    
+    # Ограничиваем выборку до 45 вакансий
+    filtered_list = filtered_list[:45]
+
+    # Пакетная оценка по 15 вакансий за 1 запрос (полностью решает проблему лимитов API)
+    scored_list = []
+    batch_size = 15
+    for i in range(0, len(filtered_list), batch_size):
+        batch = filtered_list[i:i+batch_size]
+        
+        vacancies_text = "\n".join([f"ID {v['id']}: {v.get('name')} в {v.get('company')}" for v in batch])
+        
+        quick_prompt = (
+            "Оцени соответствие резюме кандидата сразу для нескольких вакансий по шкале от 0 до 100 процентов.\n"
+            f"Резюме:\n{active_resume[:2500]}\n\n"
+            f"Вакансии:\n{vacancies_text}\n\n"
+            "Выдай ТОЛЬКО чистый JSON-объект, где ключ — это ID вакансии, а значение — объект с оценкой. Строгий формат:\n"
+            "{\"ID\": {\"score\": 85, \"reason\": \"причина в 3-5 слов\"}}"
+        )
+        
+        eval_res = await asyncio.to_thread(ai_generate, quick_prompt)
+        parsed_batch = {}
+        
+        if eval_res:
             try:
-                req = urllib.request.Request("https://api.replicate.com/v1/account", headers={"Authorization": f"Token {rep}"})
-                with urllib.request.urlopen(req, timeout=10) as r: lines.append("Replicate: OK" if r.status == 200 else f"Replicate: {r.status}")
-            except urllib.error.HTTPError as e:
-                body = ""
-                try: body = e.read().decode()[:200]
-                except Exception: pass
-                if e.code == 403 and "1010" in body: lines.append("Replicate: 403/1010 - billing needed")
-                else: lines.append(f"Replicate: HTTP {e.code}")
-            except Exception as e: lines.append(f"Replicate: error {str(e)[:40]}")
-        else: lines.append("Replicate: no token")
+                json_match = re.search(r'\{.*\}', eval_res, re.DOTALL)
+                if json_match:
+                    clean_json = json_match.group(0)
+                    parsed_batch = json.loads(clean_json)
+            except Exception as e:
+                log.warning(f"Batch JSON parse error: {e}")
         
-        or_key = self.config.get("openrouter_key", "")
-        if or_key:
-            try:
-                req = urllib.request.Request("https://openrouter.ai/api/v1/models", headers={"Authorization": f"Bearer {or_key}"})
-                with urllib.request.urlopen(req, timeout=10) as r: lines.append("OpenRouter: OK" if r.status == 200 else f"OpenRouter: {r.status}")
-            except Exception as e: lines.append(f"OpenRouter: error {str(e)[:40]}")
-        else: lines.append("OpenRouter: no key")
+        for v in batch:
+            vid = str(v["id"])
+            v_data = parsed_batch.get(vid) or parsed_batch.get(int(vid)) or {}
+            v["match_score"] = int(v_data.get("score", 60))
+            v["match_reason"] = str(v_data.get("reason", "релевантный профиль"))
+            scored_list.append(v)
+            
+        await asyncio.sleep(1) # Защитная микропауза для Google API
+
+    # Сортировка строго по убыванию процента соответствия (от 100 к 0)
+    def sort_key(item):
+        comp_lower = (item.get("company") or "").lower()
+        is_top = any(tc in comp_lower for tc in top_companies)
+        top_prio = 0 if is_top else 1
+        return (-item["match_score"], top_prio)
+
+    scored_list.sort(key=sort_key)
+
+    if not scored_list:
+        await send_telegram(chat_id, "⚠️ Все подходящие вакансии скрыты или отфильтрованы.", get_keyboard(is_admin))
+        return
+
+    user_search_cache[user_id] = {"items": scored_list}
+
+    await send_telegram(chat_id, f"🔥 Нашел {len(scored_list)} вакансий и отсортировал их строго по максимальному проценту соответствия вашему резюме:", get_keyboard(is_admin))
+    await send_vacancies_page(chat_id, user_id, page=0)
+
+
+async def run_skill_gap_analysis(chat_id: int, user_id: int):
+    if not spend_balance(user_id, cost=1):
+        await send_telegram(chat_id, "⚠️ Недостаточно запросов для анализа навыков!")
+        return
+
+    await send_telegram(chat_id, "📊 *Онбординг:* Провожу анализ навыков (Skill Gap) и формирую матрицу компетенций на основе вашего активного резюме...")
+    resume = get_active_resume(user_id)
+    if not resume:
+        await send_telegram(chat_id, "💡 *Подсказка:* Сначала загрузите резюме!\n\nОтправьте файл с вашим резюме прямо в этот чат.")
+        return
+
+    current_date = datetime.date.today().strftime("%d.%m.%Y")
+    prompt = (
+        f"Текущая дата: {current_date}. Ты — экспертный карьерный консультант. Проведи глубокий анализ навыков (Skill Gap Analysis) для этого кандидата.\n"
+        "ВАЖНО: Оценивай гибридные роли как современное преимущество и широту компетенций.\n"
+        "Выдели:\n"
+        "1. Сильные управленческие и технические компетенции.\n"
+        "2. Зоны роста и пробелы для топ-позиций в профильных компаниях.\n"
+        "3. Рекомендации по развитию на ближайшие 3–6 месяцев.\n\n"
+        f"Резюме кандидата:\n{resume[:8000]}"
+    )
+    analysis = await asyncio.to_thread(ai_generate, prompt)
+    if not analysis:
+        await send_telegram(chat_id, "⚠️ ИИ временно недоступен.")
+        return
+    await send_telegram(chat_id, f"📊 *Анализ навыков (Skill Gap):*\n\n{analysis}\n\n💡 *Совет:* Используйте эти рекомендации для подготовки к собеседованиям в Тренажере!")
+
+
+async def run_ai_generation(chat_id: int, user_id: int, vac_info: dict):
+    await send_telegram(chat_id, f"✍️ *Онбординг:* Готовлю профессиональное сопроводительное письмо для *{vac_info['employer']}* на позицию «{vac_info['title']}»...")
+    resume = get_active_resume(user_id) or "Опыт не указан."
+    letter = await asyncio.to_thread(ai_generate,
+        f"Напиши профессиональное сопроводительное письмо на позицию '{vac_info['title']}' "
+        f"в '{vac_info['employer']}' на основе резюме:\n\n{resume}")
+    if not letter:
+        await send_telegram(chat_id, "⚠️ ИИ недоступен, письмо не получилось. Попробуйте еще раз чуть позже.")
+        return
+    await send_telegram(chat_id, f"📝 *Сопроводительное письмо готово:*\n\n{letter}\n\n💡 Скопируйте текст и используйте при отправке отклика работодателю.")
+
+
+async def run_vacancy_match(chat_id: int, user_id: int, vac_info: dict):
+    await send_telegram(chat_id, f"📊 *Онбординг:* Анализирую соответствие вашего резюме вакансии *{vac_info['title']}* в компании *{vac_info['employer']}*...")
+    resume = get_active_resume(user_id) or "Резюме не найдено."
+    prompt = (
+        f"Проанализируй, насколько резюме кандидата подходит под вакансию '{vac_info['title']}' в компанию '{vac_info['employer']}'. "
+        "Дай оценку соответствия в процентах, перечисли сильные стороны кандидата, "
+        f"а также укажи ключевые пробелы:\n\nРезюме:\n{resume}"
+    )
+    analysis = await asyncio.to_thread(ai_generate, prompt)
+    if not analysis:
+        await send_telegram(chat_id, "⚠️ ИИ временно недоступен.")
+        return
+    await send_telegram(chat_id, f"📊 *Анализ соответствия вакансии:*\n\n{analysis}")
+
+
+async def run_resume_adaptation(chat_id: int, user_id: int, resume_id: int, vacancy_text: str):
+    await send_telegram(chat_id, "🛠 *Онбординг:* Адаптирую резюме под специфику вакансии, пишу сопроводительное письмо и формирую чистый файл Word...")
+    resume_text = get_resume_by_id(user_id, resume_id) or get_active_resume(user_id)
+    
+    if not resume_text:
+        await send_telegram(chat_id, "💡 *Подсказка:* Сначала загрузите резюме в чат!")
+        return
+
+    match = re.search(r'hh\.ru/vacancy/(\d+)', vacancy_text)
+    if match:
+        vac_id = match.group(1)
+        fetched_text = await get_vacancy_details(vac_id)
+        if fetched_text:
+            vacancy_text = fetched_text
+
+    current_date = datetime.date.today().strftime("%d.%m.%Y")
+    prompt_resume = (
+        f"Текущая дата: {current_date}. Ты — элитный карьерный стратег. Перепиши и оптимизируй резюме кандидата строго под требования вакансии. "
+        "Сохрани правдивость фактов, но полностью репозиционируй опыт так, чтобы он закрывал требования вакансии.\n"
+        "ВАЖНО: Выдай ТОЛЬКО текст резюме, начиная сразу с ФИО. Без вступительных фраз.\n"
+        "Структура: 1. ФИО и контакты 2. Summary 3. Ключевые навыки 4. Опыт работы 5. Образование\n\n"
+        f"--- ТРЕБОВАНИЯ ВАКАНСИИ ---\n{vacancy_text[:3000]}\n\n"
+        f"--- ИСХОДНОЕ РЕЗЮМЕ КАНДИДАТА ---\n{resume_text[:6000]}"
+    )
+    adapted_text = await asyncio.to_thread(ai_generate, prompt_resume)
+
+    prompt_letter = (
+        "Напиши короткое, емкое и профессиональное сопроводительное письмо к этой вакансии от лица кандидата (до 1000 знаков). "
+        "Письмо должно подчеркивать релевантный опыт и достижения.\n\n"
+        f"--- ТРЕБОВАНИЯ ВАКАНСИИ ---\n{vacancy_text[:2000]}\n\n"
+        f"--- РЕЗЮМЕ КАНДИДАТА ---\n{resume_text[:4000]}"
+    )
+    cover_letter = await asyncio.to_thread(ai_generate, prompt_letter)
+
+    if not adapted_text:
+        await send_telegram(chat_id, "⚠️ ИИ недоступен. Повторите запрос.")
+        return
+
+    if "---" in adapted_text:
+        adapted_text = adapted_text.split("---")[-1].strip()
+
+    if cover_letter:
+        await send_telegram(chat_id, f"📝 *Сопроводительное письмо:*\n\n{cover_letter}")
+
+    try:
+        doc = Document()
+        for p in adapted_text.split("\n"):
+            clean_p = re.sub(r'[*#]', '', p).strip()
+            if clean_p:
+                doc.add_paragraph(clean_p)
         
-        hf = self.config.get("hf_token", "")
-        if hf:
-            try:
-                req = urllib.request.Request("https://huggingface.co/api/whoami-v2", headers={"Authorization": f"Bearer {hf}"})
-                with urllib.request.urlopen(req, timeout=10) as r: lines.append("HuggingFace: OK" if r.status == 200 else f"HuggingFace: {r.status}")
-            except Exception as e: lines.append(f"HuggingFace: error {str(e)[:40]}")
-        else: lines.append("HuggingFace: no token")
+        stream = io.BytesIO()
+        doc.save(stream)
+        file_bytes = stream.getvalue()
+
+        await send_document_bytes(
+            chat_id, file_bytes, filename="Adapted_Resume.docx", 
+            caption="📄 *Готово! Ваше адаптированное резюме (Word) прикреплено выше. Смело отправляйте его работодателю!*",
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+    except Exception as e:
+        log.error("DOCX generation failed: %s", e)
+        await send_telegram(chat_id, "⚠️ Ошибка формирования файла.")
+
+
+async def run_resume_audit(chat_id: int, user_id: int):
+    if not spend_balance(user_id, cost=1):
+        await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
+        return
+
+    await send_telegram(chat_id, "📋 *Онбординг:* Провожу жесткий аудит вашего резюме и формирую профессиональный Word-документ...")
+    resume = get_active_resume(user_id)
+    if not resume:
+        await send_telegram(chat_id, "💡 *Подсказка:* Сначала загрузите резюме в чат!")
+        return
+
+    current_date = datetime.date.today().strftime("%d.%m.%Y")
+    audit_prompt = (
+        f"Текущая дата: {current_date}. Сделай глубокий аудит этого резюме.\n"
+        "Анализируй бизнес-результаты, метрики и подачу:\n\n"
+        f"{resume[:8000]}"
+    )
+    audit_text = await asyncio.to_thread(ai_generate, audit_prompt)
+
+    rewrite_prompt = (
+        "Перепиши это резюме для позиций более высокого уровня. Убери мелкую операционку, сделай упор на бизнес-результаты и метрики. "
+        "Сохрани структуру (Контакты, Summary, Навыки, Опыт работы, Образование). Выдай ТОЛЬКО чистый текст без звездочек:\n\n"
+        f"{resume[:8000]}"
+    )
+    improved_text = await asyncio.to_thread(ai_generate, rewrite_prompt)
+
+    if audit_text and improved_text:
+        await send_telegram(chat_id, f"📋 *Аудит резюме:*\n\n{audit_text}")
+        doc = Document()
+        for p in improved_text.split("\n"):
+            clean_p = re.sub(r'[*#]', '', p).strip()
+            if clean_p:
+                doc.add_paragraph(clean_p)
+        stream = io.BytesIO()
+        doc.save(stream)
+        await send_document_bytes(chat_id, stream.getvalue(), "Resume_Pro.docx", "✅ Ваше оптимизированное резюме (Word) готово!")
+    else:
+        await send_telegram(chat_id, "⚠️ Ошибка ИИ.")
+
+
+async def handle_document(chat_id: int, user_id: int, document: dict, is_admin: bool):
+    file_id = document["file_id"]
+    file_name = document.get("file_name", "resume.pdf")
+    try:
+        async with HTTP.get(f"{TELEGRAM_API}/getFile", params={"file_id": file_id}) as resp:
+            file_info = await resp.json()
+        file_path = file_info.get("result", {}).get("file_path")
+        if not file_path:
+            await send_telegram(chat_id, "⚠️ Не смог скачать файл.", get_keyboard(is_admin))
+            return
+        async with HTTP.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}") as f_resp:
+            content = await f_resp.read()
+    except Exception as e:
+        log.error("download failed: %s", e)
+        await send_telegram(chat_id, "⚠️ Ошибка скачивания файла.", get_keyboard(is_admin))
+        return
+
+    path = f"tmp_{user_id}_{file_name}"
+    with open(path, "wb") as f:
+        f.write(content)
+    text_content = await asyncio.to_thread(extract_text, path, file_name)
+    if os.path.exists(path):
+        os.remove(path)
+
+    if not text_content or not text_content.strip():
+        await send_telegram(chat_id, "⚠️ Не удалось извлечь текст из файла. Попробуйте формат PDF или DOCX.", get_keyboard(is_admin))
+        return
         
-        fk = self.config.get("fish_key", "")
-        if fk:
+    add_resume(user_id, file_name, text_content)
+    
+    success_text = (
+        f"✅ *Отлично! Резюме «{file_name}» успешно распознано и загружено.*\n\n"
+        "💡 *Что можно сделать прямо сейчас (онбординг):*\n"
+        "1️⃣ Нажмите **«📋 Аудит резюме»**, чтобы получить детальный разбор и улучшения.\n"
+        "2️⃣ Нажмите **«🔍 Поиск вакансий»**, чтобы система подобрала для вас позиции с расчетом совпадения.\n"
+        "3️⃣ Нажмите **«🎤 Тренажер собеседований»**, чтобы потренироваться отвечать на вопросы."
+    )
+    await send_telegram(chat_id, success_text, get_keyboard(is_admin))
+
+
+async def activate_resume(chat_id: int, user_id: int, rid: str):
+    try:
+        rid = int(rid)
+    except ValueError:
+        return
+    cur.execute("UPDATE resumes SET active=0 WHERE user_id=?", (user_id,))
+    cur.execute("UPDATE resumes SET active=1 WHERE id=? AND user_id=?", (rid, user_id))
+    conn.commit()
+    await send_telegram(chat_id, "✅ Резюме успешно переключено и сделано активным для всех ИИ-модулей.", get_keyboard(ADMIN_ID != 0 and user_id == ADMIN_ID))
+
+
+# ---------------- Тренажер собеседований (Интерактивный) ----------------
+async def start_interview_simulator(chat_id: int, user_id: int):
+    if not spend_balance(user_id, cost=1):
+        await send_telegram(chat_id, "⚠️ Недостаточно запросов для запуска тренажера!")
+        return
+    resume = get_active_resume(user_id)
+    if not resume:
+        await send_telegram(chat_id, "💡 *Подсказка:* Сначала загрузите резюме в чат!")
+        return
+
+    await send_telegram(chat_id, "🎤 *Онбординг в тренажер:* Сейчас ИИ изучит ваш профиль и выступит в роли строгого HR-директора.\nВсего будет 3 вопроса. Отвечайте развернуто, как на реальном интервью.")
+    
+    prompt = (
+        "Ты — строгий HR-директор или руководитель. "
+        "На основе этого резюме задай кандидату первый каверзный профессиональный вопрос на собеседовании. "
+        "Вопрос должен быть четким, без воды.\n\nРезюме:\n" + resume[:5000]
+    )
+    first_question = await asyncio.to_thread(ai_generate, prompt)
+    if not first_question:
+        await send_telegram(chat_id, "⚠️ ИИ временно недоступен.")
+        return
+
+    interview_sessions[user_id] = {"question_count": 1, "history": []}
+    user_states[user_id] = "interview_active"
+    
+    await send_telegram(chat_id, f"🎙 *Вопрос 1 из 3:*\n\n{first_question}\n\n_💡 Напишите ваш ответ ответным сообщением в этот чат._")
+
+
+async def handle_interview_answer(chat_id: int, user_id: int, answer_text: str):
+    session = interview_sessions.get(user_id)
+    if not session:
+        user_states.pop(user_id, None)
+        await send_telegram(chat_id, "⚠️ Сессия тренажера завершена или устарела. Запустите новую через меню.")
+        return
+
+    q_count = session["question_count"]
+    await send_telegram(chat_id, "🔎 Анализирую ваш ответ и формирую следующий шаг...")
+
+    prompt = (
+        f"Кандидат ответил на вопрос на профессиональном собеседовании.\n"
+        f"Ответ кандидата: {answer_text}\n\n"
+        "Дай короткий фидбек по ответу (что сильного, чего не хватило) и задай следующий каверзный вопрос (это вопрос номер " + str(q_count + 1) + " из 3). "
+        "Если это был 3-й вопрос, подведи общий итог собеседования и оцени готовность кандидата."
+    )
+    feedback_and_next = await asyncio.to_thread(ai_generate, prompt)
+
+    if q_count >= 3:
+        user_states.pop(user_id, None)
+        interview_sessions.pop(user_id, None)
+        await send_telegram(chat_id, f"🏁 *Итоги тренировки собеседования:*\n\n{feedback_and_next}\n\n🎉 Отличная тренировка! Вы можете пройти тренажер заново в любой момент через меню.")
+    else:
+        session["question_count"] += 1
+        await send_telegram(chat_id, f"💡 *Разбор ответа и следующий вопрос:*\n\n{feedback_and_next}\n\n_💡 Жду ваш ответ на следующий вопрос._")
+
+
+# ---------------- Система оплаты ----------------
+async def send_stars_invoice(chat_id, amount_stars: int, title: str, payload: str):
+    await HTTP.post(f"{TELEGRAM_API}/sendInvoice", json={
+        "chat_id": chat_id,
+        "title": title,
+        "description": "Пополнение баланса карьерного агента",
+        "payload": payload,
+        "currency": "XTR",
+        "prices": [{"label": "Stars", "amount": amount_stars}]
+    })
+
+
+# ---------------- Обработка сообщений ----------------
+async def process_message(msg: dict):
+    chat_id = msg["chat"]["id"]
+    user = msg.get("from", {})
+    user_id = user.get("id", chat_id)
+    username = user.get("username", "")
+    text = (msg.get("text") or "").strip()
+    document = msg.get("document")
+    photo = msg.get("photo")
+
+    referrer_id = None
+    if text.startswith("/start"):
+        parts = text.split()
+        if len(parts) > 1:
             try:
-                payload = json.dumps({"text": "test", "format": "mp3"}).encode()
-                req = urllib.request.Request("https://api.fish.audio/v1/tts", data=payload, headers={"Authorization": f"Bearer {fk}", "Content-Type": "application/json"}, method="POST")
-                with urllib.request.urlopen(req, timeout=20) as r:
-                    d = r.read(); lines.append("Fish.audio: OK" if _looks_like_audio(d) else "Fish.audio: not audio")
-            except urllib.error.HTTPError as e:
-                if e.code == 402: lines.append("Fish.audio: 402 - no balance")
-                elif e.code == 401: lines.append("Fish.audio: 401 - invalid")
-                else: lines.append(f"Fish.audio: HTTP {e.code}")
-            except Exception as e: lines.append(f"Fish.audio: error {str(e)[:40]}")
-        else: lines.append("Fish.audio: no key")
+                referrer_id = int(parts[1])
+            except ValueError:
+                pass
+
+    register_user(user_id, username, referrer_id)
+    is_admin = (ADMIN_ID != 0 and user_id == ADMIN_ID)
+
+    if is_admin and text.startswith("/reply"):
+        parts = text.split(maxsplit=2)
+        if len(parts) >= 3:
+            try:
+                target_uid = int(parts[1])
+                reply_text = parts[2]
+                await send_telegram(target_uid, f"💬 *Сообщение от администратора:*\n\n{reply_text}")
+                await send_telegram(chat_id, f"✅ Ответ успешно отправлен пользователю `{target_uid}`.")
+            except ValueError:
+                await send_telegram(chat_id, "⚠️ Ошибка в ID пользователя.")
+        else:
+            await send_telegram(chat_id, "⚠️ Формат: `/reply <user_id> <текст>`")
+        return
+
+    if user_states.get(user_id) == "interview_active":
+        bg(handle_interview_answer(chat_id, user_id, text))
+        return
+
+    if user_states.get(user_id) == "waiting_for_feedback":
+        user_states.pop(user_id, None)
+        cur.execute("INSERT INTO feedback (user_id, username, message) VALUES (?, ?, ?)", (user_id, username, text))
+        conn.commit()
+        await send_telegram(chat_id, "✅ Спасибо! Ваше сообщение успешно отправлено администратору.")
+        await send_telegram(
+            ADMIN_ID,
+            f"📩 *Новое сообщение обратной связи!*\nОт: @{username or 'нет'} (ID: `{user_id}`)\n\n💬 Текст:\n{text}\n\n_Ответить:_ `/reply {user_id} Текст`"
+        )
+        return
+
+    if user_states.get(user_id) == "waiting_for_repost":
+        user_states.pop(user_id, None)
+        urls = re.findall(r'(https?://[^\s]+)', text) if text else []
+        if urls:
+            url = urls[0].lower()
+            network = "Other"
+            if "vk.com" in url: network = "VK"
+            elif "linkedin" in url: network = "LinkedIn"
+            elif "tenchat" in url: network = "TenChat"
+            elif "setka" in url or "hh.ru" in url: network = "Сетка"
+            elif "t.me" in url: network = "Telegram"
+            
+            cur.execute("SELECT 1 FROM social_shares WHERE user_id=? AND network=?", (user_id, network))
+            if cur.fetchone():
+                await send_telegram(chat_id, f"⚠️ Вы уже получали бонус за репост в платформе {network}.")
+            else:
+                cur.execute("INSERT INTO social_shares (user_id, network) VALUES (?, ?)", (user_id, network))
+                conn.commit()
+                admin_add_balance(user_id, 20)
+                await send_telegram(chat_id, f"🎉 Ссылка распознана! Вам начислено +20 запросов за пост в {network}.")
+            return
+        await send_telegram(chat_id, "⚠️ Ссылка не найдена. Отправьте прямую ссылку, начинающуюся с http:// или https://.")
+        return
+
+    if photo and user_states.get(user_id) == "waiting_for_receipt":
+        user_states.pop(user_id, None)
+        await HTTP.post(f"{TELEGRAM_API}/forwardMessage", json={
+            "chat_id": ADMIN_ID, "from_chat_id": chat_id, "message_id": msg["message_id"]
+        })
+        await send_telegram(chat_id, "✅ Чек отправлен администратору. Ожидайте подтверждения и зачисления запросов!")
+        admin_markup = {
+            "inline_keyboard": [
+                [{"text": "✅ +50 запросов", "callback_data": f"paycred_{user_id}_50"}],
+                [{"text": "⭐ Безлимит 10 дней", "callback_data": f"payunl_{user_id}"}]
+            ]
+        }
+        await send_telegram(ADMIN_ID, f"📸 *Новый чек на проверку!*\nОт: @{username or 'нет'} (ID: `{user_id}`)", reply_markup=admin_markup)
+        return
+
+    if document:
+        await handle_document(chat_id, user_id, document, is_admin)
+        return
+    if not text:
+        return
+
+    if is_admin and text.startswith("/add_credits"):
+        parts = text.split()
+        if len(parts) == 3:
+            try:
+                target_id = int(parts[1])
+                amount = int(parts[2])
+                new_bal = admin_add_balance(target_id, amount)
+                await send_telegram(chat_id, f"✅ Пользователю `{target_id}` добавлено {amount} запросов. Баланс: `{new_bal}`")
+            except ValueError:
+                await send_telegram(chat_id, "⚠️ Формат: `/add_credits 123456789 50`")
+        return
+
+    if user_states.get(user_id) == "waiting_for_adaptation_vacancy":
+        rid = user_adapt_target.get(user_id)
+        user_states.pop(user_id, None)
+        user_adapt_target.pop(user_id, None)
+
+        if not spend_balance(user_id, cost=1):
+            await send_telegram(chat_id, "⚠️ Недостаточно запросов!", get_keyboard(is_admin))
+            return
+        bg(run_resume_adaptation(chat_id, user_id, rid, text))
+        return
+
+    if text.startswith("/start") or text == "🚀 Запустить бота":
+        if is_admin:
+            welcome_text = "👋 Привет, Антон! У тебя активирован бесконечный безлимитный доступ (Админ-режим).\nДля работы отправь файл резюме в чат."
+        else:
+            welcome_text = (
+                "👋 Привет! Я — твой личный ИИ-карьерный агент (Версия 1.8).\n\n"
+                "💡 *Быстрый старт (Онбординг):*\n"
+                "1️⃣ Отправь файл резюме (*PDF или DOCX*) прямо в этот чат.\n"
+                "2️⃣ Используй меню ниже для аудита, поиска вакансий с hh.ru и тренировки на собеседованиях.\n\n"
+                "🎁 Тебе начислено *7 приветственных запросов*!"
+            )
+        await send_telegram(chat_id, welcome_text, get_keyboard(is_admin))
+
+    elif text in ("👥 Пригласить друга", "🎁 Бонусы (Репост & Друзья)"):
+        bot_info = await HTTP.get(f"{TELEGRAM_API}/getMe")
+        bot_data = await bot_info.json()
+        bot_username = bot_data.get("result", {}).get("username", "bot")
+        ref_link = f"https://t.me/{bot_username}?start={user_id}"
         
-        try: lines.append(f"Storage: {get_storage_root()}")
-        except Exception: lines.append("Storage: error")
-        Clock.schedule_once(lambda dt: self._show_diag_dialog("\n".join(lines)), 0)
+        bonus_text = (
+            "🎁 *Программа лояльности и бонусы*\n\n"
+            "👥 *1. Пригласить друга (+7 запросов)*\n"
+            f"Ваша персональная ссылка:\n`{ref_link}`\n\n"
+            "📢 *2. Поделиться в соцсетях (+20 запросов)*\n"
+            "Опубликуйте пост о боте в LinkedIn, TenChat, VK, Сетке или Telegram и пришлите ссылку."
+        )
+        kb = {"inline_keyboard": [[{"text": "🔗 Отправить ссылку на репост", "callback_data": "send_repost_proof"}]]}
+        await send_telegram(chat_id, bonus_text, kb)
 
-    def _show_diag_dialog(self, text):
-        try:
-            if self.diag_dialog: self.diag_dialog.dismiss()
-        except Exception: pass
-        self.diag_dialog = MDDialog(title="Diagnostics", text=text, buttons=[MDRaisedButton(text="Close", on_release=lambda i: self.diag_dialog.dismiss())]); self.diag_dialog.open()
+    elif text == "💬 Обратная связь":
+        user_states[user_id] = "waiting_for_feedback"
+        await send_telegram(chat_id, "💬 Напишите ваш отзыв или вопрос в следующем сообщении, и я передам его администратору.")
 
-    def open_file_manager(self, purpose="voice"):
-        self.file_manager_purpose = purpose
-        if platform == "android":
-            try:
-                from jnius import autoclass
-                Env = autoclass("android.os.Environment")
-                if not Env.isExternalStorageManager(): toast("Need file access"); self._request_all_files_access()
-            except Exception: pass
-        start = "/storage/emulated/0" if platform == "android" else os.path.expanduser("~"); self.file_manager.show(start)
+    elif text == "📩 Сообщения от пользователей":
+        if not is_admin:
+            return
+        cur.execute("SELECT id, user_id, username, message, created_at FROM feedback ORDER BY id DESC LIMIT 10")
+        rows = cur.fetchall()
+        if not rows:
+            await send_telegram(chat_id, "📭 Входящих сообщений пока нет.")
+            return
+        feedbacks_msg = "📩 *Последние сообщения от пользователей:*\n\n"
+        for r in rows:
+            feedbacks_msg += f"🆔 ID: `{r[1]}` (@{r[2] or 'нет'})\n💬 {r[3]}\n⏱ `{r[4]}`\n_Ответ:_ `/reply {r[1]} Текст`\n\n──────────────────\n\n"
+        await send_telegram(chat_id, feedbacks_msg)
 
-    def on_file_selected(self, path):
-        self.exit_file_manager()
-        if self.file_manager_purpose == "keys":
-            if path.lower().endswith(".json"): self._import_keys_from_json(path)
-            else: toast("Need .json!")
-        elif path.lower().endswith((".mp3", ".wav", ".ogg", ".m4a")):
-            self.current_voice_sample = path; self.modes["single"].ids.voice_sample_label.text = f"Voice: {os.path.basename(path)}"; toast("Sample attached!")
-        else: toast("Need audio file!")
+    elif text == "💎 Оплата и Баланс":
+        if is_admin:
+            status_str = "📊 Баланс: `∞ Безлимит` (Администратор — лимиты отключены)"
+        else:
+            data = get_user_data(user_id)
+            balance = data["balance"]
+            unl = data["unlimited_until"]
+            status_str = f"📊 Баланс: `{balance} запросов`"
+            if unl:
+                status_str = f"⭐ Активен безлимит до: `{unl}`"
 
-    def clear_voice_sample(self):
-        self.current_voice_sample = None; self.modes["single"].ids.voice_sample_label.text = "Voice: none"
+        balance_text = (
+            f"💎 *Оплата и Баланс*\n\n{status_str}\n\n"
+            "💳 *Тарифы:*\n"
+            "1️⃣ **Пакет «50 запросов»:** 100 ⭐ ИЛИ 200 руб.\n"
+            "2️⃣ **Безлимит на 10 дней:** 500 ⭐ ИЛИ 500 руб.\n\n"
+            "🏦 *Реквизиты СБП:* `2202208459089018`\n"
+            "_После перевода отправьте скриншот чека в чат._"
+        )
+        kb = {
+            "inline_keyboard": [
+                [{"text": "⭐ Оплатить 50 запросов (100 Звезд)", "callback_data": "buy_pack_stars"}],
+                [{"text": "⭐ Безлимит 10 дней (500 Звезд)", "callback_data": "buy_unl_stars"}],
+                [{"text": "📄 Отправить чек об оплате", "callback_data": "send_receipt"}]
+            ]
+        }
+        await send_telegram(chat_id, balance_text, kb)
 
-    def exit_file_manager(self, *args): self.file_manager.close()
+    elif text == "🛠 Адаптация резюме":
+        rows = list_resumes(user_id)
+        if not rows:
+            await send_telegram(chat_id, "💡 *Онбординг:* Сначала загрузите резюме в чат, чтобы бот знал, что адаптировать!")
+            return
+        kb = {"inline_keyboard": [[{"text": f"📄 {r['name']}", "callback_data": f"adaptsel_{r['id']}"}] for r in rows]}
+        await send_telegram(chat_id, "🛠 *Шаг 1:* Выберите нужное резюме из списка ниже, а затем отправьте текст или прямую ссылку на вакансию с hh.ru.", kb)
 
-    def show_onboarding(self):
-        self.onboard_idx = 0; self._render_onboard_card()
+    elif text == "📋 Аудит резюме":
+        if not get_active_resume(user_id):
+            await send_telegram(chat_id, "💡 *Онбординг:* Сначала отправьте файл с резюме в этот чат.")
+            return
+        bg(run_resume_audit(chat_id, user_id))
 
-    def _render_onboard_card(self):
-        cards = [
-            ("LEMUS AI MUSIC STUDIO", "Producer station with AI.\nModes: Single, Prompt, Hit, Album, Background.\nTrack: enhanced prompt -> plan -> sound -> cover -> master."),
-            ("Sound Quality", "Studio sound: Replicate MusicGen (token + billing).\nFallback: HuggingFace -> Pollinations.\nLast resort: Local Arranger V4 (pads, bass, drums, melody, mastering). NOT a sine wave."),
-            ("Gemini Models", "Models fetched from API automatically.\nAQ.* keys are temporary (~1h). Create permanent AIza* at aistudio.google.com/apikey."),
-            ("Prompt Enhancer", "Write rough - studio finishes.\n'Olesya song about Kuper, soft drumm and base' ->\n'Melodic drum and bass, female vocals, warm pads, 174 bpm, sad mood.'"),
-            ("Built-in Player", "Mini-player with cover and seek (yellow line).\nDownload button saves to Download."),
-            ("Voice & Accents", "• Demo voice 10-30s -> Fish.audio clone\n• Accents via + (auto-clean)\n• Clone copies intonation"),
-            ("Formats", "• WAV 44.1/16 - master\n• MP3 320 always\n• FLAC / m4a with ffmpeg\n• ZIP package"),
-        ]
-        card = cards[self.onboard_idx]; is_last = self.onboard_idx == len(cards) - 1
-        def on_next(i):
-            self.onboard_idx += 1
-            if self.onboard_idx >= len(cards): self._close_onboarding()
-            else: self._render_onboard_card()
-        def on_prev(i):
-            if self.onboard_idx > 0: self.onboard_idx -= 1; self._render_onboard_card()
-        buttons = []
-        if self.onboard_idx > 0: buttons.append(MDFlatButton(text="Back", on_release=on_prev))
-        if is_last: buttons.append(MDRaisedButton(text="Start", on_release=lambda i: self._close_onboarding()))
-        else: buttons.append(MDRaisedButton(text=f"Next ({self.onboard_idx+2}/{len(cards)})", on_release=on_next))
-        try:
-            if self.onboard_dialog: self.onboard_dialog.dismiss()
-        except Exception: pass
-        self.onboard_dialog = MDDialog(title=card[0], text=card[1], buttons=buttons); self.onboard_dialog.open()
+    elif text == "📊 Анализ навыков (Skill Gap)":
+        if not get_active_resume(user_id):
+            await send_telegram(chat_id, "💡 *Онбординг:* Сначала отправьте файл с резюме в этот чат.")
+            return
+        bg(run_skill_gap_analysis(chat_id, user_id))
 
-    def _close_onboarding(self):
-        try:
-            if self.onboard_dialog: self.onboard_dialog.dismiss()
-        except Exception: pass
-        try:
-            with open(os.path.join(self.get_data_path(), ONBOARDING_FLAG), "w") as f: f.write("1")
-        except Exception: pass
-        toast("Welcome!")
+    elif text == "🎤 Тренажер собеседований":
+        if not get_active_resume(user_id):
+            await send_telegram(chat_id, "💡 *Онбординг:* Для запуска тренировки боту нужно ваше резюме. Загрузите его файлом!")
+            return
+        bg(start_interview_simulator(chat_id, user_id))
 
-    def show_monetize_guide(self):
-        self.monetize_idx = 0; self._render_monetize_card()
+    elif text == "📌 Трекер откликов":
+        cur.execute("SELECT vacancy_id, title, status FROM liked_vacancies WHERE user_id=? ORDER BY id DESC LIMIT 15", (user_id,))
+        rows = cur.fetchall()
+        if not rows:
+            await send_telegram(chat_id, "📌 *Трекер откликов пуст.*\n\n💡 *Как сюда попадают вакансии?* При поиске вакансий нажимайте кнопку **«👍 Откликнулся»**, и бот автоматически занесет их в этот список для контроля.")
+        else:
+            tracker_msg = "📌 *Ваш трекер откликов:*\n\n"
+            for r in rows:
+                tracker_msg += f"• [{r[1]}]({f'https://hh.ru/vacancy/{r[0]}'})\nСтатус: `{r[2]}`\n\n"
+            await send_telegram(chat_id, tracker_msg)
 
-    def _render_monetize_card(self):
-        cards = [
-            ("Path to Payouts", "1. Distributor\n2. Files\n3. Registration\n4. Promotion\n5. Analytics"),
-            ("Distributors", "RU: ONErpm (15%), Multiza (20%)\nWorld: DistroKid, TuneCore, CD Baby"),
-            ("Files for Yandex", "• WAV 44.1/16/Stereo (or FLAC)\n• Cover 3000x3000 sRGB\n• MP3 320 kbps\n• -14 LUFS / TP -1.0"),
-            ("AI Status", "Marking AI is your choice.\nIn RU no mandatory marking.\nFlag in passport and ZIP."),
-            ("Revenue Calc", "Button 'Calculator' in library:\nstreams -> money by rates\nSpotify / Yandex / Apple."),
-            ("Upload", "one-rpm.com -> WAV + cover -> release in 2 weeks -> moderation 1-3 days"),
-            ("Economy", "• Spotify 1000 ≈ $3-5\n• Yandex 1000 ≈ 50-100 RUB\n• Apple 1000 ≈ $7\n• Background genres = listening hours"),
-        ]
-        title, body = cards[self.monetize_idx]; is_last = self.monetize_idx == len(cards) - 1
-        def on_next(i):
-            self.monetize_idx += 1
-            if self.monetize_idx >= len(cards):
-                try: self.monetize_dialog.dismiss()
-                except Exception: pass
-            else: self._render_monetize_card()
-        def on_prev(i):
-            if self.monetize_idx > 0: self.monetize_idx -= 1; self._render_monetize_card()
-        buttons = []
-        if self.monetize_idx > 0: buttons.append(MDFlatButton(text="Back", on_release=on_prev))
-        if is_last: buttons.append(MDRaisedButton(text="Close", on_release=lambda i: self.monetize_dialog.dismiss()))
-        else: buttons.append(MDRaisedButton(text=f"Next ({self.monetize_idx+2}/{len(cards)})", on_release=on_next))
-        try:
-            if self.monetize_dialog: self.monetize_dialog.dismiss()
-        except Exception: pass
-        self.monetize_dialog = MDDialog(title=title, text=body, buttons=buttons); self.monetize_dialog.open()
+    elif text == "ℹ️ Помощь":
+        help_text = (
+            "ℹ️ *Справка и гид по боту (Версия 1.8):*\n\n"
+            "• 📥 *Загрузка резюме* — отправьте PDF или DOCX файл.\n"
+            "• 🔍 *Поиск вакансий* — подбор с зарплатами и расчетом Match Rate.\n"
+            "• 🛠 *Адаптация* — переупаковка резюме под конкретное описание вакансии или ссылку с hh.ru с автоотправкой сопроводительного письма.\n"
+            "• 🎤 *Тренажер* — интерактивный раунд вопросов с ИИ.\n"
+            "• 📌 *Трекер* — учет ваших откликов."
+        )
+        await send_telegram(chat_id, help_text, get_keyboard(is_admin))
 
-    def show_revenue_calculator(self):
-        tf = MDTextField(hint_text="Streams", text="10000", mode="rectangle"); dlg = None
-        def calc(inst):
-            try: streams = int(tf.text.strip() or "0")
-            except ValueError: toast("Enter number"); return
-            spotify = streams / 1000 * 4.0; yandex = streams / 1000 * 75.0; apple = streams / 1000 * 7.0
-            try: dlg.dismiss()
-            except Exception: pass
-            self._show_info("Revenue Forecast", f"Streams: {streams}\n\nSpotify: ${spotify:.2f}\nYandex: {yandex:.0f} RUB\nApple: ${apple:.2f}\n\nBackground genres x2-3 sessions.")
-        dlg = MDDialog(title="Revenue Calculator", text="Rates: Spotify $4/1000, Yandex 75RUB/1000, Apple $7/1000.", content_cls=tf, buttons=[MDFlatButton(text="Cancel", on_release=lambda i: dlg.dismiss()), MDRaisedButton(text="Calculate", on_release=calc)]); dlg.open()
+    elif text in ("👑 Админ-панель", "/admin"):
+        if not is_admin:
+            return
+        cur.execute("SELECT COUNT(*) FROM users")
+        total_users = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM resumes")
+        total_resumes = cur.fetchone()[0]
+        await send_telegram(chat_id, f"👑 *Админ-панель*\n\n👥 Пользователей: `{total_users}`\n📁 Резюме: `{total_resumes}`")
 
-    def _show_info(self, title, text):
-        d = MDDialog(title=title, text=text, buttons=[MDRaisedButton(text="Close", on_release=lambda i: d.dismiss())]); d.open()
+    elif text == "📁 Мои резюме":
+        rows = list_resumes(user_id)
+        if not rows:
+            await send_telegram(chat_id, "💡 У вас пока нет загруженных резюме. Отправьте файл в чат.")
+        else:
+            kb = {"inline_keyboard": [[{"text": f"{'✅ Активное' if r['active'] else '📄'} {r['name']}", "callback_data": f"act_{r['id']}"}] for r in rows]}
+            await send_telegram(chat_id, "📁 *Ваши резюме:* (нажмите на нужное, чтобы сделать его активным для ИИ)", kb)
 
-    def add_to_history(self, ptype, text):
-        self.history.append({"type": ptype, "prompt": text[:200], "date": time.strftime("%Y-%m-%d %H:%M")}); self.save_history()
+    elif text == "📥 Загрузить резюме":
+        await send_telegram(chat_id, "📄 *Онбординг:* Отправьте файл вашего резюме (*PDF или DOCX*) прямо в этот чат.")
 
-    def show_prompt_history(self):
-        if not self.history: toast("History empty"); return
-        items = "\n\n".join([f"[{h['type']}] {h['date']}\n{h['prompt']}" for h in reversed(self.history[-8:])]); dlg = None
-        def clear_h(i):
-            self.history = []; self.save_history()
-            try: dlg.dismiss()
-            except Exception: pass
-            toast("Cleared")
-        def use_last(i):
-            self.modes["single"].ids.s_title_input.text = self.history[-1]["prompt"]
-            try: dlg.dismiss()
-            except Exception: pass
-            toast("Inserted")
-        dlg = MDDialog(title="Prompt History", text=items[:1800], buttons=[MDFlatButton(text="Clear", on_release=clear_h), MDRaisedButton(text="Repeat Last", on_release=use_last)]); dlg.open()
+    elif text == "🔍 Поиск вакансий":
+        if not get_active_resume(user_id):
+            await send_telegram(chat_id, "💡 *Онбординг:* Сначала загрузите резюме, чтобы бот мог рассчитать процент соответствия (Match Rate) для каждой вакансии!")
+        else:
+            bg(handle_search(chat_id, user_id, is_admin))
 
-    def show_crash_log(self):
-        parts = []
-        for name in ["startup_debug.log", "crash.log"]:
-            for base in [".", get_storage_root()]:
-                p = os.path.join(base, name)
-                if os.path.exists(p):
-                    try:
-                        with open(p, "r", encoding="utf-8") as f: parts.append(f"--- {name} ---\n" + f.read()[-1500:])
-                    except Exception: pass
-        if not parts: toast("Logs empty"); return
-        text = "\n\n".join(parts)[:3000]; d = MDDialog(title="Startup Logs", text=text, buttons=[MDRaisedButton(text="Close", on_release=lambda i: d.dismiss())]); d.open()
+    else:
+        await send_telegram(chat_id, "ℹ️ Воспользуйтесь кнопками удобного меню ниже.", get_keyboard(is_admin))
 
-    def send_logs_to_me(self):
-        import tempfile; chunks = []
-        for name in ["startup_debug.log", "crash.log"]:
-            for base in [".", get_storage_root()]:
-                p = os.path.join(base, name)
-                if os.path.exists(p):
-                    try:
-                        with open(p, "r", encoding="utf-8") as f:
-                            data = f.read()[-3000:]
-                        if data.strip(): chunks.append(f"===== {name} =====\n{data}")
-                    except Exception: pass
-        if not chunks: toast("Logs empty"); return
-        body = "\n\n".join(chunks)[:6000]; tmp = os.path.join(tempfile.gettempdir(), "lemus_logs.txt")
-        try:
-            with open(tmp, "w", encoding="utf-8") as f: f.write(body)
-        except Exception: toast("Log file error"); return
-        if platform == "android":
-            try:
-                from jnius import autoclass
-                Intent = autoclass("android.content.Intent"); Uri = autoclass("android.net.Uri"); File = autoclass("java.io.File"); PythonActivity = autoclass("org.kivy.android.PythonActivity")
-                intent = Intent(Intent.ACTION_SEND); intent.setType("text/plain"); intent.putExtra(Intent.EXTRA_STREAM, Uri.fromFile(File(tmp))); intent.putExtra(Intent.EXTRA_SUBJECT, f"Lemus logs v{CURRENT_VERSION}")
-                PythonActivity.mActivity.startActivity(Intent.createChooser(intent, "Send logs")); return
-            except Exception as e: toast(f"Send err: {str(e)[:50]}")
-        self._show_info("Logs", body[:1500])
 
-    def backup_to_yandex(self):
-        token = self.config.get("yandex_token", "")
-        if not token: toast("Yandex token not set"); return
-        if not self.projects: toast("No projects"); return
-        toast("Backing up..."); threading.Thread(target=self._yandex_backup_thread, args=(token,)).start()
+# ---------------- Вебхук ----------------
+async def telegram_webhook(request):
+    try:
+        data = await request.json()
+    except Exception:
+        return web.Response(text="OK")
 
-    def _yandex_backup_thread(self, token):
-        base_dir = "/LemusStudio/"
-        try:
-            req = urllib.request.Request(f"https://cloud-api.yandex.net/v1/disk/resources?path={base_dir}", headers={"Authorization": f"OAuth {token}", "Content-Type": "application/json"}, method="PUT")
-            try: urllib.request.urlopen(req, timeout=15)
-            except Exception: pass
-            uploaded = 0
-            for item in self.projects[:5]:
-                mp3 = item.get("mp3_path")
-                if mp3 and os.path.exists(mp3):
-                    fname = os.path.basename(mp3)
-                    req2 = urllib.request.Request(f"https://cloud-api.yandex.net/v1/disk/resources/upload?path={base_dir}{fname}&overwrite=true", headers={"Authorization": f"OAuth {token}"})
-                    with urllib.request.urlopen(req2, timeout=15) as r2:
-                        d = json.loads(r2.read()); href = d.get("href")
-                        if href:
-                            with open(mp3, "rb") as f: data = f.read()
-                            req3 = urllib.request.Request(href, data=data, method="PUT"); urllib.request.urlopen(req3, timeout=60); uploaded += 1
-            Clock.schedule_once(lambda dt: toast(f"Uploaded: {uploaded}"), 0)
-        except Exception as e: Clock.schedule_once(lambda dt: toast(f"Yandex err: {str(e)[:50]}"), 0)
+    if is_duplicate(data.get("update_id")):
+        return web.Response(text="OK")
 
-    def _send_notification(self, title, text):
-        if platform != "android": return
-        try:
-            from jnius import autoclass
-            PythonActivity = autoclass("org.kivy.android.PythonActivity"); NotificationBuilder = autoclass("android.app.Notification$Builder"); Context = autoclass("android.content.Context")
-            activity = PythonActivity.mActivity
-            if activity:
-                builder = NotificationBuilder(activity, "lemus_channel"); builder.setContentTitle(title); builder.setContentText(text); builder.setSmallIcon(activity.getApplicationInfo().icon); builder.setAutoCancel(True)
-                nm = activity.getSystemService(Context.NOTIFICATION_SERVICE); nm.notify(int(time.time()) % 10000, builder.build())
-        except Exception as e: print(f"Notif: {e}")
+    if "pre_checkout_query" in data:
+        pcq = data["pre_checkout_query"]
+        await HTTP.post(f"{TELEGRAM_API}/answerPreCheckoutQuery", json={"pre_checkout_query_id": pcq["id"], "ok": True})
+        return web.Response(text="OK")
 
-    def check_for_updates(self, silent=False): threading.Thread(target=self._check_update_thread, args=(silent,)).start()
+    if "message" in data:
+        msg = data["message"]
+        if msg.get("successful_payment"):
+            uid = msg.get("from", {}).get("id") or msg["chat"]["id"]
+            payload = msg["successful_payment"].get("invoice_payload", "")
+            if "unl" in payload:
+                admin_set_unlimited(uid, 10)
+                await send_telegram(uid, "🎉 Оплата прошла! Безлимит на 10 дней активирован.")
+            else:
+                admin_add_balance(uid, 50)
+                await send_telegram(uid, "🎉 Оплата прошла! Начислено 50 запросов.")
+        else:
+            bg(process_message(msg))
 
-    def _check_update_thread(self, silent):
-        try:
-            req = urllib.request.Request(f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest", headers={"User-Agent": "LemusStudio/7.6", "Accept": "application/vnd.github.v3+json"})
-            with urllib.request.urlopen(req, timeout=10) as r:
-                data = json.loads(r.read().decode()); remote = data.get("tag_name", "").lstrip("v"); apk_url = None
-                for a in data.get("assets", []):
-                    if a.get("name", "").endswith(".apk"): apk_url = a.get("browser_download_url"); break
-                if remote and self._is_newer(remote, CURRENT_VERSION) and apk_url:
-                    Clock.schedule_once(lambda dt: self._show_update_dialog(remote, data.get("body", ""), apk_url), 0)
-                elif not silent: Clock.schedule_once(lambda dt: toast(f"v{CURRENT_VERSION} actual"), 0)
-        except Exception:
-            if not silent: Clock.schedule_once(lambda dt: toast("Update server unavailable"), 0)
+    if "callback_query" in data:
+        cb = data["callback_query"]
+        message = cb.get("message") or {}
+        chat_id = message.get("chat", {}).get("id")
+        user_id = cb.get("from", {}).get("id") or chat_id
+        message_id = message.get("message_id")
+        data_str = cb.get("data", "") or ""
+        bg(answer_callback(cb.get("id", "")))
+        
+        if chat_id and user_id:
+            if data_str.startswith("page_"):
+                bg(send_vacancies_page(chat_id, user_id, page=int(data_str.split("_")[1])))
+            elif data_str == "buy_pack_stars":
+                bg(send_stars_invoice(chat_id, 100, "Пакет 50 запросов", "credits_50"))
+            elif data_str == "buy_unl_stars":
+                bg(send_stars_invoice(chat_id, 500, "Безлимит на 10 дней", "unl_10d"))
+            elif data_str == "send_receipt":
+                user_states[user_id] = "waiting_for_receipt"
+                await send_telegram(chat_id, "📸 Отправьте скриншот чека в чат.")
+            elif data_str == "send_repost_proof":
+                user_states[user_id] = "waiting_for_repost"
+                await send_telegram(chat_id, "🔗 Отправьте прямую ссылку на ваш пост.")
+            elif data_str.startswith("paycred_"):
+                parts = data_str.split("_")
+                admin_add_balance(int(parts[1]), int(parts[2]))
+                await send_telegram(int(parts[1]), f"✅ Платеж подтвержден! Начислено {parts[2]} запросов.")
+                await http_edit_message_text(chat_id, message_id, "✅ Чек одобрен.")
+            elif data_str.startswith("payunl_"):
+                parts = data_str.split("_")
+                admin_set_unlimited(int(parts[1]), 10)
+                await send_telegram(int(parts[1]), f"✅ Платеж подтвержден! Активирован безлимит.")
+                await http_edit_message_text(chat_id, message_id, "✅ Чек одобрен.")
+            elif data_str.startswith("like_"):
+                vid = data_str[5:]
+                vac = temp_vacancies.get(vid, {"title": "Позиция"})
+                like_vacancy(user_id, vid, vac["title"])
+                await send_telegram(chat_id, f"📌 Вакансия «{vac['title']}» успешно добавлена в Трекер откликов!")
+            elif data_str.startswith("gen_"):
+                if not spend_balance(user_id, cost=1):
+                    await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
+                    return
+                bg(run_ai_generation(chat_id, user_id, dict(temp_vacancies.get(data_str[4:], {}))))
+            elif data_str.startswith("match_"):
+                if not spend_balance(user_id, cost=1):
+                    await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
+                    return
+                bg(run_vacancy_match(chat_id, user_id, dict(temp_vacancies.get(data_str[6:], {}))))
+            elif data_str.startswith("act_"):
+                bg(activate_resume(chat_id, user_id, data_str[4:]))
+            elif data_str.startswith("adaptsel_"):
+                user_adapt_target[user_id] = int(data_str[9:])
+                user_states[user_id] = "waiting_for_adaptation_vacancy"
+                bg(http_edit_message_text(chat_id, message_id, "✅ Резюме выбрано!\n\n💡 *Шаг 2:* Теперь отправьте текст или прямую ссылку на вакансию с hh.ru."))
+            elif data_str.startswith("hide_"):
+                hide_vacancy(user_id, data_str[5:])
+                bg(http_edit_message_text(chat_id, message_id, "🗑 Вакансия скрыта из выдачи."))
 
-    def _is_newer(self, r, c):
-        try: return [int(x) for x in r.split(".")] > [int(x) for x in c.split(".")]
-        except Exception: return False
+    return web.Response(text="OK")
 
-    def _show_update_dialog(self, v, cl, url):
-        def confirm(i): self.update_dialog.dismiss(); self._download_apk(url)
-        def cancel(i): self.update_dialog.dismiss()
-        self.update_dialog = MDDialog(title=f"Update v{v}", text=f"Current: v{CURRENT_VERSION}\n\n{cl[:250]}", buttons=[MDFlatButton(text="Later", on_release=cancel), MDRaisedButton(text="Update", on_release=confirm)]); self.update_dialog.open()
 
-    def _download_apk(self, url):
-        toast("Downloading..."); threading.Thread(target=self._dl_worker, args=(url,)).start()
+# ---------------- Запуск ----------------
+async def main():
+    global HTTP
+    HTTP = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60))
 
-    def _dl_worker(self, url):
-        dest = os.path.join(get_storage_root(), "update.apk")
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "LemusStudio"})
-            with urllib.request.urlopen(req, timeout=180) as r, open(dest, "wb") as f: f.write(r.read())
-            Clock.schedule_once(lambda dt: self._install_apk(dest), 0)
-        except Exception as e: Clock.schedule_once(lambda dt: toast(f"Download err: {str(e)[:50]}"), 0)
+    app = web.Application()
+    app.router.add_get("/", lambda r: web.Response(text="Bot is running"))
+    app.router.add_post(f"/{BOT_TOKEN}", telegram_webhook)
 
-    def _install_apk(self, apk_path):
-        if platform == "android":
-            try:
-                from jnius import autoclass
-                PythonActivity = autoclass("org.kivy.android.PythonActivity"); Intent = autoclass("android.content.Intent"); Uri = autoclass("android.net.Uri"); File = autoclass("java.io.File")
-                intent = Intent(Intent.ACTION_VIEW); intent.setDataAndType(Uri.fromFile(File(apk_path)), "application/vnd.android.package-archive"); intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                PythonActivity.mActivity.startActivity(intent)
-            except Exception as e: toast(f"Install err: {str(e)[:50]}")
-        else: toast(f"File: {apk_path}")
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", PORT).start()
+
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "")
+    if render_url:
+        webhook_url = f"{render_url}/{BOT_TOKEN}"
+        async with HTTP.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}") as resp:
+            log.info("setWebhook: %s", (await resp.text())[:200])
+
+    log.info("🚀 Bot v1.8 with Safe Dynamic Search started successfully.")
+    await asyncio.Event().wait()
+
 
 if __name__ == "__main__":
-    _log("=== ENTRY POINT ===")
-    try:
-        LemusStudioApp().run()
-    except Exception as e:
-        _log(f"FATAL: {e}")
-        traceback.print_exc()
-        try:
-            with open("crash_fatal.log", "w", encoding="utf-8") as f:
-                f.write(f"Crash {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(traceback.format_exc())
-        except Exception:
-            pass
+    asyncio.main() if hasattr(asyncio, "main") else asyncio.run(main())
