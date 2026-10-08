@@ -5,3 +5,4 @@ pypdf
 python-docx
 reportlab==4.2.5
 pymupdf
+duckduckgo-search>=6.0.0
