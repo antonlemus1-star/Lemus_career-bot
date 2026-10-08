@@ -10,6 +10,8 @@ import datetime
 import time
 import base64
 import zipfile
+import hashlib
+import hmac
 import aiohttp
 import requests
 import urllib.parse
@@ -187,14 +189,14 @@ async def monitor_load():
                 bot_metrics["last_day_reset"] = today
             metrics_snapshot = {
                 "ai_requests_per_minute": bot_metrics["ai_requests_this_minute"],
-                "active_users_per_hour": len(bot_metrics["active_users_this_hour"]),
+                "active_users_this_hour": len(bot_metrics["active_users_this_hour"]),
                 "cache_size": len(temp_vacancies) + len(user_search_cache) + len(user_states),
                 "avg_ai_response_time": bot_metrics["avg_ai_response_time"],
                 "errors_per_hour": bot_metrics["errors_this_hour"],
                 "active_tasks": len(TASKS),
             }
             log.info(f"📊 Metrics: AI={metrics_snapshot['ai_requests_per_minute']}/min, "
-                     f"Users={metrics_snapshot['active_users_per_hour']}/hr, "
+                     f"Users={metrics_snapshot['active_users_this_hour']}/hr, "
                      f"Cache={metrics_snapshot['cache_size']}, "
                      f"AI_time={metrics_snapshot['avg_ai_response_time']:.1f}s")
             critical_alerts = []
@@ -720,7 +722,7 @@ async def show_typing(chat_id):
 
 
 # ============================================================
-# 🎨 КЛАВИАТУРЫ (с кнопкой приложения)
+# 🎨 КЛАВИАТУРЫ
 # ============================================================
 
 def get_main_keyboard(is_admin=False):
@@ -1020,7 +1022,7 @@ def clean_pitch_text(pitch: str, title: str) -> str:
 async def export_resume_docx(chat_id: int, user_id: int):
     resume = get_active_resume(user_id)
     if not resume:
-        await send_telegram(chat_id, "💡 Нет активного резюме для экспорта. Загрузите резюме.")
+        await send_telegram(chat_id, "💡 Нет активного резюме для экспорта.")
         return
     await show_typing(chat_id)
     try:
@@ -1913,7 +1915,7 @@ async def handle_document(chat_id: int, user_id: int, document: dict, is_admin: 
             "💡 *Что можно сделать:*\n"
             "1️⃣ *🔗 Разобрать вакансию* — скопируй текст вакансии.\n"
             "2️⃣ *🕵️ Найти ЛПР* — прямой выход на менеджера.\n"
-            "3️⃣ *📊 Анализ навыков* — выявит пробелы.\n"
+            "3️⃣ * Анализ навыков* — выявит пробелы.\n"
             "📎 *Форматы:* PDF, DOCX, DOC, ODT, RTF, TXT и фото резюме."
         )
     await send_telegram(chat_id, success_text, keyboard)
@@ -2620,6 +2622,161 @@ async def process_message(msg: dict):
         await send_telegram(chat_id, "ℹ️ Воспользуйтесь меню ниже.", get_main_keyboard(is_admin))
 
 
+# ============================================================
+# 🌐 МИНИ-АП ЭНДПОИНТЫ (ЭТАП 2)
+# ============================================================
+
+def verify_telegram_init_data(init_data: str, bot_token: str) -> bool:
+    """Проверяет подпись initData от Telegram"""
+    if not init_data or not bot_token:
+        return False
+    data_pairs = {}
+    for pair in init_data.split("&"):
+        if "=" in pair:
+            key, value = pair.split("=", 1)
+            data_pairs[key] = value
+    check_hash = data_pairs.pop("hash", None)
+    if not check_hash:
+        return False
+    secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
+    data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(data_pairs.items()))
+    calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+    return calculated_hash == check_hash
+
+
+async def miniapp_verify(request):
+    """POST /miniapp/verify - проверяет подпись и возвращает user_id"""
+    try:
+        data = await request.json()
+        init_data = data.get("initData", "")
+        if not verify_telegram_init_data(init_data, BOT_TOKEN):
+            return web.json_response({"error": "Invalid signature"}, status=403)
+        user_id = None
+        for pair in init_data.split("&"):
+            if pair.startswith("user="):
+                user_json = urllib.parse.unquote(pair[5:])
+                user_obj = json.loads(user_json)
+                user_id = user_obj.get("id")
+                break
+        if not user_id:
+            return web.json_response({"error": "No user found"}, status=400)
+        register_user(int(user_id), "", None)
+        return web.json_response({"ok": True, "user_id": int(user_id)})
+    except Exception as e:
+        log.error(f"Miniapp verify error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def miniapp_data(request):
+    """GET /miniapp/data?user_id=X - возвращает баланс, резюме, трекер"""
+    try:
+        user_id = int(request.query.get("user_id", 0))
+        if not user_id:
+            return web.json_response({"error": "No user_id"}, status=400)
+        data = get_user_data(user_id)
+        resumes = list_resumes(user_id)
+        cur.execute("SELECT vacancy_id, title, status FROM liked_vacancies WHERE user_id=? ORDER BY id DESC LIMIT 20", (user_id,))
+        tracker_rows = cur.fetchall()
+        tracker = [{"vacancy_id": r[0], "title": r[1], "status": r[2]} for r in tracker_rows]
+        active_resume_text = get_active_resume(user_id)
+        has_resume = len(active_resume_text) > 0
+        is_premium = is_premium_user(user_id)
+        return web.json_response({
+            "balance": data["balance"],
+            "unlimited_until": data["unlimited_until"],
+            "is_premium": is_premium,
+            "resumes_count": len(resumes),
+            "has_active_resume": has_resume,
+            "tracker": tracker,
+            "active_resume_preview": active_resume_text[:500] if has_resume else ""
+        })
+    except Exception as e:
+        log.error(f"Miniapp data error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def miniapp_analyze_vacancy(request):
+    """POST /miniapp/analyze - разбирает текст вакансии и возвращает результат"""
+    try:
+        body = await request.json()
+        user_id = int(body.get("user_id", 0))
+        vacancy_text = body.get("vacancy_text", "").strip()
+        if not user_id or not vacancy_text or len(vacancy_text) < 100:
+            return web.json_response({"error": "Недостаточно данных"}, status=400)
+        if not spend_balance(user_id, cost=2):
+            return web.json_response({"error": "Недостаточно запросов! Нужно 2."}, status=402)
+        resume = get_active_resume(user_id)
+        extract_prompt = (
+            "Ты — эксперт по анализу вакансий. Проанализируй текст и вытащи:\n"
+            "1. Название компании.\n2. Название должности.\n3. Имя контактного лица (если есть).\n"
+            f"Текст вакансии:\n{vacancy_text[:4000]}\n\n"
+            "Выдай ТОЛЬКО JSON: {\"company\": \"...\", \"title\": \"...\", \"contact_name\": \"...\"}"
+        )
+        ai_response = await asyncio.to_thread(ai_generate, extract_prompt)
+        company = ""
+        title = ""
+        contact_name = ""
+        if ai_response and validate_ai_response(ai_response, min_length=10):
+            clean = ai_response.replace("```json", "").replace("```", "").strip()
+            json_match = re.search(r'\{.*\}', clean, re.S)
+            if json_match:
+                try:
+                    parsed = json.loads(json_match.group(0))
+                    company = parsed.get("company", "").strip()
+                    title = parsed.get("title", "").strip()
+                    contact_name = parsed.get("contact_name", "").strip()
+                except json.JSONDecodeError:
+                    pass
+        if not company or not title:
+            lines = [l.strip() for l in vacancy_text.split("\n") if l.strip()][:5]
+            for line in lines:
+                match = re.search(r'([А-ЯA-Z][\w\s\-\.]+?)\s+(?:ищет|приглашает|нанимает)\s+(.+?)(?:[,\.\-]|$)', line, re.I)
+                if match and not company:
+                    company = match.group(1).strip()
+                    if not title:
+                        title = match.group(2).strip()[:60]
+        if not company or not title:
+            return web.json_response({"error": "Не удалось определить компанию или должность. Пришли в формате: Компания, Должность"}, status=422)
+        aggressive_results = await aggressive_recruiter_search(0, company, title, contact_name)
+        pitch_prompt = (
+            f"Напиши короткий питч (4-5 строк) для рекрутера компании '{company}' на позицию '{title}'.\n"
+            f"Имя рекрутера: {contact_name or 'неизвестно'}\n"
+            f"Резюме: {resume[:1500] if resume else 'Резюме не загружено'}\nВыдай ТОЛЬКО текст питча."
+        )
+        pitch = await asyncio.to_thread(ai_generate, pitch_prompt)
+        if pitch and validate_ai_response(pitch, min_length=50):
+            pitch = clean_pitch_text(pitch, title)
+        else:
+            pitch = "⚠️ Не удалось сгенерировать питч."
+        cur.execute("INSERT INTO liked_vacancies (user_id, vacancy_id, title, status) VALUES (?, ?, ?, 'Разобрана: Мини-ап')",
+                    (user_id, f"mini_{int(datetime.datetime.now().timestamp())}", f"{title} ({company})"))
+        conn.commit()
+        contacts_list = []
+        if aggressive_results["found"]:
+            for c in aggressive_results["contacts"][:3]:
+                contacts_list.append({
+                    "name": c.get("name", ""),
+                    "email": c.get("email", ""),
+                    "phone": c.get("phone", ""),
+                    "url": c.get("url", "")
+                })
+        email_templates = aggressive_results.get("email_templates", [])
+        search_log = aggressive_results.get("search_log", "")
+        return web.json_response({
+            "company": company,
+            "title": title,
+            "contact_name": contact_name,
+            "pitch": pitch,
+            "contacts": contacts_list,
+            "email_templates": email_templates,
+            "search_log": search_log
+        })
+    except Exception as e:
+        log.error(f"Miniapp analyze error: {e}")
+        track_error()
+        return web.json_response({"error": f"Ошибка сервера: {str(e)[:200]}"}, status=500)
+
+
 # ---------------- Вебхук ----------------
 async def telegram_webhook(request):
     try:
@@ -2745,6 +2902,10 @@ async def main():
     app = web.Application()
     app.router.add_get("/", lambda r: web.Response(text="Bot is running"))
     app.router.add_post(f"/{BOT_TOKEN}", telegram_webhook)
+    # 🆕 ЭНДПОИНТЫ ДЛЯ ПРИЛОЖЕНИЯ
+    app.router.add_post("/miniapp/verify", miniapp_verify)
+    app.router.add_get("/miniapp/data", miniapp_data)
+    app.router.add_post("/miniapp/analyze", miniapp_analyze_vacancy)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
