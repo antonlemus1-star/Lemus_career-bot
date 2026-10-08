@@ -27,7 +27,7 @@ except ImportError:
     DDGS_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("career_bot_v31")
+log = logging.getLogger("career_bot_v32")
 
 # ---------------- Конфиг ----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -350,7 +350,7 @@ COURSES = {
 💡 ГЛАВНОЕ:
 Каверзные вопросы проверяют не ваши знания, а вашу реакцию. Спокойный уверенный ответ важнее идеального содержания.
 
-🔥 ТОП-10 КАВЕРЗНЫХ ВОПРОСОВ:
+🔥 ТОП-5 КАВЕРЗНЫХ ВОПРОСОВ:
 
 1️⃣ "Почему вы ушли с прошлого места?"
 ❌ Плохо: "Начальник был идиот"
@@ -1003,7 +1003,6 @@ def get_user_data(user_id: int):
 
 
 def is_premium_user(user_id: int) -> bool:
-    """Проверяет, является ли пользователь премиум (активен безлимит)"""
     if ADMIN_ID != 0 and user_id == ADMIN_ID:
         return True
     data = get_user_data(user_id)
@@ -1015,11 +1014,10 @@ def is_premium_user(user_id: int) -> bool:
 
 
 def check_free_action(user_id: int, action_type: str, max_free: int = 1) -> bool:
-    """Проверяет, может ли пользователь использовать бесплатное действие"""
     if ADMIN_ID != 0 and user_id == ADMIN_ID:
         return True
     if is_premium_user(user_id):
-        return True  # Премиум безлимит
+        return True
     
     cur.execute("SELECT used_count FROM free_actions WHERE user_id=? AND action_type=?", 
                 (user_id, action_type))
@@ -1041,7 +1039,6 @@ def check_free_action(user_id: int, action_type: str, max_free: int = 1) -> bool
 
 
 def get_free_action_count(user_id: int, action_type: str) -> int:
-    """Возвращает количество использованных бесплатных действий"""
     cur.execute("SELECT used_count FROM free_actions WHERE user_id=? AND action_type=?", 
                 (user_id, action_type))
     row = cur.fetchone()
@@ -1328,7 +1325,7 @@ async def hh_api_search(query: str):
     try:
         async with HTTP.get("https://api.hh.ru/vacancies",
                             params={"text": query, "area": "1", "per_page": "50"},
-                            headers={"User-Agent": "LemusCareerBot/3.1"}) as resp:
+                            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}) as resp:
             if resp.status == 429:
                 log.warning("hh.ru rate limit hit, waiting 5 seconds")
                 await asyncio.sleep(5)
@@ -1393,46 +1390,112 @@ async def hh_scrape_search(query: str):
         return None
 
 
+# 🆕 УЛУЧШЕННАЯ ФУНКЦИЯ С 5-УРОВНЕВЫМ ПАРСИНГОМ
 async def get_vacancy_full_details(vacancy_id: str) -> dict:
     result = {
         "id": vacancy_id, "title": "", "company": "", "description": "",
         "skills": "", "contact_name": "", "contact_email": "", "contact_phone": "",
         "url": f"https://hh.ru/vacancy/{vacancy_id}"
     }
-    try:
-        async with HTTP.get(f"https://api.hh.ru/vacancies/{vacancy_id}",
-                            headers={"User-Agent": "LemusCareerBot/3.1"}) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                description = re.sub(r'<[^>]+>', '', data.get("description", ""))
-                skills = ", ".join([s.get("name", "") for s in data.get("key_skills", [])])
-                contacts = data.get("contacts") or {}
-                employer = data.get("employer") or {}
-                result["title"] = data.get("name", "") or ""
-                result["company"] = employer.get("name", "") or ""
-                result["description"] = description
-                result["skills"] = skills
-                result["contact_name"] = contacts.get("name", "") or ""
-                result["contact_email"] = contacts.get("email", "") or ""
-                contact_phones = contacts.get("phones", [])
-                if contact_phones:
-                    ph = contact_phones[0]
-                    result["contact_phone"] = f"+{ph.get('country', '')}{ph.get('city', '')}{ph.get('number', '')}" if ph.get("number") else ph.get("formatted", "")
-    except Exception as e:
-        log.warning(f"API hh failed for {vacancy_id}: {e}")
-
-    if not result["company"] or not result["title"] or not result["description"]:
+    
+    # === УРОВЕНЬ 1: Официальный API с retry ===
+    for attempt in range(3):
         try:
-            async with HTTP.get(f"https://hh.ru/vacancy/{vacancy_id}",
-                                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}) as resp:
+            async with HTTP.get(f"https://api.hh.ru/vacancies/{vacancy_id}",
+                                headers={
+                                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                                    "Accept": "application/json",
+                                    "Accept-Language": "ru,en;q=0.9"
+                                }) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    description = re.sub(r'<[^>]+>', '', data.get("description", ""))
+                    skills = ", ".join([s.get("name", "") for s in data.get("key_skills", [])])
+                    contacts = data.get("contacts") or {}
+                    employer = data.get("employer") or {}
+                    result["title"] = data.get("name", "") or ""
+                    result["company"] = employer.get("name", "") or ""
+                    result["description"] = description
+                    result["skills"] = skills
+                    result["contact_name"] = contacts.get("name", "") or ""
+                    result["contact_email"] = contacts.get("email", "") or ""
+                    contact_phones = contacts.get("phones", [])
+                    if contact_phones:
+                        ph = contact_phones[0]
+                        result["contact_phone"] = f"+{ph.get('country', '')}{ph.get('city', '')}{ph.get('number', '')}" if ph.get("number") else ph.get("formatted", "")
+                    log.info(f"Level 1 (API): company='{result['company']}', title='{result['title']}'")
+                    break
+                elif resp.status == 429:
+                    log.warning(f"Rate limit hit, waiting... (attempt {attempt+1})")
+                    await asyncio.sleep(5)
+                else:
+                    log.warning(f"API returned {resp.status}")
+                    break
+        except Exception as e:
+            log.warning(f"API attempt {attempt+1} failed: {e}")
+            if attempt < 2:
+                await asyncio.sleep(2)
+
+    # === УРОВЕНЬ 2: Мобильная версия (проще парсится) ===
+    if not result["company"] or not result["description"]:
+        try:
+            async with HTTP.get(f"https://m.hh.ru/vacancy/{vacancy_id}",
+                                headers={
+                                    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+                                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                                    "Accept-Language": "ru,en;q=0.9"
+                                }) as resp:
                 if resp.status == 200:
                     page = await resp.text()
-                    match = re.search(r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', page, re.S)
-                    if not match:
-                        match = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.+?\});\s*</script>', page, re.S)
-                    if match:
+                    title_match = re.search(r'<h1[^>]*class="[^"]*vacancy-title[^"]*"[^>]*>(.*?)</h1>', page, re.S)
+                    if title_match:
+                        result["title"] = html.unescape(title_match.group(1)).strip()
+                    
+                    company_match = re.search(r'<a[^>]*class="[^"]*employer-name[^"]*"[^>]*>(.*?)</a>', page, re.S)
+                    if company_match:
+                        result["company"] = html.unescape(company_match.group(1)).strip()
+                    
+                    desc_match = re.search(r'<div[^>]*class="[^"]*vacancy-description[^"]*"[^>]*>(.*?)</div>', page, re.S)
+                    if desc_match:
+                        result["description"] = re.sub(r'<[^>]+>', '', html.unescape(desc_match.group(1))).strip()
+                    
+                    log.info(f"Level 2 (mobile): company='{result['company']}', title='{result['title']}'")
+        except Exception as e:
+            log.warning(f"Mobile scrape failed: {e}")
+
+    # === УРОВЕНЬ 3: Десктопная версия с улучшенным парсингом ===
+    if not result["company"] or not result["description"]:
+        try:
+            async with HTTP.get(f"https://hh.ru/vacancy/{vacancy_id}",
+                                headers={
+                                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                                    "Accept-Language": "ru,en;q=0.9",
+                                    "Referer": "https://hh.ru/search/vacancy"
+                                }) as resp:
+                if resp.status == 200:
+                    page = await resp.text()
+                    
+                    # Ищем JSON-LD (структурированные данные)
+                    jsonld_match = re.search(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', page, re.S)
+                    if jsonld_match:
                         try:
-                            page_data = json.loads(html.unescape(match.group(1)))
+                            jsonld = json.loads(html.unescape(jsonld_match.group(1)))
+                            if isinstance(jsonld, dict):
+                                if not result["title"] and jsonld.get("title"):
+                                    result["title"] = jsonld["title"]
+                                if not result["company"] and jsonld.get("hiringOrganization", {}).get("name"):
+                                    result["company"] = jsonld["hiringOrganization"]["name"]
+                                if not result["description"] and jsonld.get("description"):
+                                    result["description"] = re.sub(r'<[^>]+>', '', jsonld["description"])
+                        except json.JSONDecodeError:
+                            pass
+                    
+                    # Ищем в <script> с данными страницы
+                    script_matches = re.findall(r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', page, re.S)
+                    for script_content in script_matches:
+                        try:
+                            page_data = json.loads(html.unescape(script_content))
                             vacancy_block = page_data.get("vacancy", {}) or page_data.get("vacancyView", {}) or {}
                             if not result["title"]:
                                 result["title"] = vacancy_block.get("name", "") or vacancy_block.get("title", "") or ""
@@ -1441,15 +1504,42 @@ async def get_vacancy_full_details(vacancy_id: str) -> dict:
                                 result["company"] = employer.get("name", "") or ""
                             if not result["description"]:
                                 result["description"] = re.sub(r'<[^>]+>', '', vacancy_block.get("description", ""))
+                            if result["company"] and result["description"]:
+                                break
                         except json.JSONDecodeError:
-                            pass
+                            continue
+                    
+                    # Fallback: ищем через regex в HTML
+                    if not result["title"]:
+                        title_match = re.search(r'<title>(.*?)(?:\s*[-–|]\s*.*)?</title>', page, re.S)
+                        if title_match:
+                            title_text = html.unescape(title_match.group(1)).strip()
+                            if title_text and title_text != "Вакансия не найдена":
+                                result["title"] = title_text
+                    
+                    if not result["company"]:
+                        company_patterns = [
+                            r'"employer":\s*\{"name":\s*"([^"]+)"',
+                            r'"company":\s*\{"name":\s*"([^"]+)"',
+                            r'class="employer-name"[^>]*>([^<]+)<',
+                            r'работодатель[^>]*>([^<]+)<',
+                        ]
+                        for pattern in company_patterns:
+                            match = re.search(pattern, page, re.S | re.I)
+                            if match:
+                                result["company"] = html.unescape(match.group(1)).strip()
+                                break
+                    
+                    log.info(f"Level 3 (desktop): company='{result['company']}', title='{result['title']}'")
         except Exception as e:
-            log.warning(f"Scrape failed for {vacancy_id}: {e}")
+            log.warning(f"Desktop scrape failed: {e}")
 
+    # === УРОВЕНЬ 4: ИИ-анализ (если есть хоть какое-то описание) ===
     if not result["company"] and result["description"]:
         extract_prompt = (
             "Проанализируй описание вакансии и вытащи:\n"
-            "1. Название компании.\n2. Название должности.\n\n"
+            "1. Название компании-работодателя (например: Сбер, Яндекс, Альфа-Банк).\n"
+            "2. Точное название должности.\n\n"
             f"Описание:\n{result['description'][:2000]}\n\n"
             "Выдай ТОЛЬКО JSON: {\"company\": \"...\", \"title\": \"...\"}"
         )
@@ -1464,17 +1554,21 @@ async def get_vacancy_full_details(vacancy_id: str) -> dict:
                         result["company"] = parsed["company"]
                     if not result["title"] and parsed.get("title"):
                         result["title"] = parsed["title"]
+                    log.info(f"Level 4 (AI): company='{result['company']}', title='{result['title']}'")
         except Exception as e:
             log.warning(f"AI extraction failed: {e}")
 
+    # === УРОВЕНЬ 5: Regex по первым словам описания ===
     if not result["company"] and result["description"]:
-        match = re.match(r'^([А-ЯA-Z][а-яa-zA-Z\s\-\.\"]+?)\s+(ищет|приглашает)',
+        match = re.match(r'^([А-ЯA-Z][а-яa-zA-Z\s\-\.\"]+?)\s+(ищет|приглашает|нанимает|разыскивает|требует)',
                          result["description"], re.IGNORECASE)
         if match:
             result["company"] = match.group(1).strip()
+            log.info(f"Level 5 (regex): company='{result['company']}'")
 
     if not result["title"]:
         result["title"] = "Позиция"
+    
     return result
 
 
@@ -1639,9 +1733,7 @@ async def analyze_hh_vacancy_deep(chat_id: int, user_id: int, user_input: str):
     if not vacancy_id:
         await send_telegram(chat_id,
             "⚠️ Не смог найти ссылку на вакансию.\n\n"
-            "Пришли в следующем сообщении:\n"
-            "• Ссылку вида `https://hh.ru/vacancy/12345678`\n"
-            "• Или полный текст вакансии из приложения hh")
+            "💡 *Лайфхак:* Если ссылка не работает — просто скопируй полный текст вакансии из приложения hh и пришли сюда. Бот разберёт его через ИИ!")
         return
 
     vac_data = await get_vacancy_full_details(vacancy_id)
@@ -1672,8 +1764,12 @@ async def analyze_hh_vacancy_deep(chat_id: int, user_id: int, user_input: str):
     if not company or company.strip() == "":
         resume = get_active_resume(user_id) or "Резюме не указано"
         await send_telegram(chat_id,
-            f"⚠️ *Не удалось определить компанию.*\n\n💼 Позиция: `{title}`\n\n"
-            f"Напиши название компании следующим сообщением (например: `Сбер`).")
+            f"⚠️ *Не удалось определить компанию по ссылке.*\n"
+            f"hh.ru иногда блокирует автоматический доступ.\n\n"
+            f"💼 Позиция: `{title}`\n\n"
+            f"💡 *Что можно сделать:*\n"
+            f"1️⃣ Напиши название компании следующим сообщением (например: `Сбер`)\n"
+            f"2️⃣ ИЛИ скопируй полный текст вакансии из приложения hh и пришли сюда — бот разберёт его через ИИ!")
         user_states[user_id] = "waiting_for_company_correction"
         user_search_cache[user_id] = {
             "pending_vacancy_id": vacancy_id,
@@ -1794,7 +1890,7 @@ async def analyze_vacancy_text(chat_id: int, user_id: int, vacancy_text: str):
 
     if not company:
         await send_telegram(chat_id,
-            f"⚠️ *Не удалось определить компанию.*\n💼 Позиция: `{title}`\n\nНапиши название компании.")
+            f"⚠️ *Не удалось определить компанию из текста.*\n💼 Позиция: `{title}`\n\nНапиши название компании следующим сообщением.")
         user_states[user_id] = "waiting_for_company_correction"
         user_search_cache[user_id] = {
             "pending_vacancy_id": f"text_{int(datetime.datetime.now().timestamp())}",
@@ -2486,7 +2582,8 @@ async def handle_document(chat_id: int, user_id: int, document: dict, is_admin: 
         "3️⃣ *📊 Анализ навыков* — выявит пробелы и исправит резюме.\n"
         "4️⃣ *🎓 Курсы* — доступ к 3 курсам по трудоустройству (премиум).\n"
         "5️⃣ *⏰ Продлить доступ* — пополнить баланс или купить безлимит.\n\n"
-        "🚀 *Лайфхак:* Просто кинь ссылку ИЛИ текст вакансии в чат — бот сам распознает!"
+        "🚀 *Лайфхак:* Просто кинь ссылку ИЛИ текст вакансии в чат — бот сам распознает!\n"
+        "⚠️ *Если ссылка не работает* — скопируй полный текст вакансии из приложения и пришли его сюда."
     )
     await send_telegram(chat_id, success_text, get_keyboard(is_admin))
 
@@ -2604,7 +2701,7 @@ async def process_message(msg: dict):
         elif is_vacancy_text(text) or len(text) > 200:
             bg(analyze_vacancy_text(chat_id, user_id, text))
         else:
-            await send_telegram(chat_id, "⚠️ Пришли ссылку на вакансию или полный текст.")
+            await send_telegram(chat_id, "⚠️ Пришли ссылку на вакансию или полный текст вакансии.")
         return
 
     if user_states.get(user_id) == "waiting_for_company_correction":
@@ -2645,11 +2742,9 @@ async def process_message(msg: dict):
         await send_telegram(chat_id, final_report, {"inline_keyboard": inline_kb})
         return
 
-    # ✅ ИСПРАВЛЕНИЕ: умная проверка для waiting_for_osint_target
     if user_states.get(user_id) == "waiting_for_osint_target":
         user_states.pop(user_id, None)
         
-        # Если пользователь прислал ссылку на вакансию — разбираем её
         if extract_hh_vacancy_id(text):
             if not get_active_resume(user_id):
                 await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
@@ -2657,7 +2752,6 @@ async def process_message(msg: dict):
             bg(analyze_hh_vacancy_deep(chat_id, user_id, text))
             return
         
-        # Если это полный текст вакансии — разбираем его
         if is_vacancy_text(text) or len(text) > 300:
             if not get_active_resume(user_id):
                 await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
@@ -2665,15 +2759,12 @@ async def process_message(msg: dict):
             bg(analyze_vacancy_text(chat_id, user_id, text))
             return
         
-        # Иначе — это company, position для OSINT-поиска
         bg(osint_search_manager(chat_id, user_id, text))
         return
 
-    # ✅ ИСПРАВЛЕНИЕ: умная проверка для waiting_for_pitch_target
     if user_states.get(user_id) == "waiting_for_pitch_target":
         user_states.pop(user_id, None)
         
-        # Если пользователь прислал ссылку на вакансию — разбираем её
         if extract_hh_vacancy_id(text):
             if not get_active_resume(user_id):
                 await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
@@ -2681,7 +2772,6 @@ async def process_message(msg: dict):
             bg(analyze_hh_vacancy_deep(chat_id, user_id, text))
             return
         
-        # Если это полный текст вакансии — разбираем его
         if is_vacancy_text(text) or len(text) > 300:
             if not get_active_resume(user_id):
                 await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
@@ -2689,7 +2779,6 @@ async def process_message(msg: dict):
             bg(analyze_vacancy_text(chat_id, user_id, text))
             return
         
-        # Иначе — это company, position для питча
         bg(generate_pitch_from_menu(chat_id, user_id, text))
         return
 
@@ -2787,11 +2876,12 @@ async def process_message(msg: dict):
             welcome_text = "👋 Привет, Антон! Админ-режим активирован.\nОтправь файл резюме."
         else:
             welcome_text = (
-                "👋 Привет! Я — твой ИИ-карьерный агент (Версия 3.1).\n\n"
+                "👋 Привет! Я — твой ИИ-карьерный агент (Версия 3.2).\n\n"
                 "🔥 *Главная фишка:* Работает и со ссылками hh.ru, и с текстом вакансии из мобильного приложения.\n\n"
                 "💡 *Быстрый старт:*\n"
                 "1️⃣ Отправь файл резюме (PDF или DOCX).\n"
                 "2️⃣ Кинь ссылку ИЛИ скопируй текст вакансии из приложения hh.\n\n"
+                "⚠️ *Если ссылка не работает* — просто скопируй полный текст вакансии из приложения и пришли сюда. Бот разберёт его через ИИ!\n\n"
                 "🎁 *Баланс:* `7 запросов` бесплатно!\n"
                 "🎓 *Премиум:* Курсы, шаблоны, аналитика, план поиска."
             )
@@ -2812,8 +2902,9 @@ async def process_message(msg: dict):
         await send_telegram(chat_id,
             "🔗 *Разбор вакансии*\n\n"
             "Пришли мне в следующем сообщении **ОДНО из двух**:\n"
-            "1️⃣ Ссылку на вакансию hh.ru\n"
-            "2️⃣ Полный текст вакансии из мобильного приложения")
+            "1️⃣ Ссылку на вакансию hh.ru (например: `https://hh.ru/vacancy/12345678`)\n"
+            "2️⃣ Полный текст вакансии из мобильного приложения (просто скопируй и вставь)\n\n"
+            "⚠️ *Важно:* Если ссылка не распознаётся — пришли полный текст вакансии. Бот разберёт его через ИИ!")
 
     elif text == "🕵️ Найти HR / ЛПР":
         if not get_active_resume(user_id):
@@ -2976,11 +3067,12 @@ async def process_message(msg: dict):
 
     elif text == "ℹ️ Помощь":
         help_text = (
-            "ℹ️ *Справка (Версия 3.1):*\n\n"
+            "ℹ️ *Справка (Версия 3.2):*\n\n"
             "🚀 *Прямой выход на ЛПР:*\n"
             "• 🔗 *Разобрать вакансию* — кинь ссылку или текст вакансии.\n"
             "• 🕵️ *Найти ЛПР* — OSINT-поиск контактов.\n"
             "• 📝 *Короткие Питчи* — цепляющие сообщения.\n\n"
+            "⚠️ *Если ссылка не работает:* скопируй полный текст вакансии из приложения hh и пришли сюда. Бот разберёт его через ИИ!\n\n"
             "📋 *Основной функционал:*\n"
             "• 📊 *Skill Gap* — аудит + исправление резюме.\n"
             "• 🌐 *Вакансии из Сетки* — разбор постов.\n"
@@ -3160,7 +3252,7 @@ async def main():
         webhook_url = f"{render_url.rstrip('/')}/{BOT_TOKEN}"
         async with HTTP.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}") as resp:
             log.info("setWebhook: %s", (await resp.text())[:200])
-    log.info("🚀 Bot v3.1 started successfully.")
+    log.info("🚀 Bot v3.2 started successfully.")
     bg(cleanup_old_data())
     try:
         await asyncio.Event().wait()
