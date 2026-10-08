@@ -27,7 +27,7 @@ except ImportError:
     DDGS_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("career_bot_v30")
+log = logging.getLogger("career_bot_v31")
 
 # ---------------- Конфиг ----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -170,7 +170,7 @@ COURSES = {
 ⚠️ ВАЖНО:
 • Не вставляйте слова "для галочки" — пишите в контексте
 • Используйте точные формулировки из вакансий
-• Включайте и русские, и английские варианты (например, "проектное управление" и "project management")
+• Включайте и русские, и английские варианты
 
 📋 ПРИМЕР СЕКЦИИ НАВЫКОВ:
 
@@ -372,21 +372,6 @@ COURSES = {
 ✅ Формула: Ситуация → Действия → Урок
 "В проекте [Х] я недооценил сроки. Понял это через неделю, сразу поднял вопрос, пересобрали план. Вывод: теперь закладываю +20% на риски"
 
-6️⃣ "Какая у вас ожидаемая зарплата?"
-(Смотрите курс "Переговоры о зарплате")
-
-7️⃣ "Что вас демотивирует?"
-✅ Честно, но конструктивно: "Микроменеджмент и отсутствие обратной связи"
-
-8️⃣ "Как вы справляетесь со стрессом?"
-✅ Конкретные примеры: планирование, приоритизация, спорт
-
-9️⃣ "Есть ли у вас другие офферы?"
-✅ Честно: "Да, общаюсь с [Х], но ваш вариант приоритетный, потому что [причина]"
-
-🔟 "Почему в резюме пробел 6 месяцев?"
-✅ Честно: "Посвятил время обучению / семейным обстоятельствам. Сейчас полностью готов вернуться"
-
 📝 ЗАДАНИЕ:
 Выберите 3 самых сложных вопроса из списка и запишите свои ответы на диктофон. Прослушайте и улучшите.
 
@@ -425,12 +410,6 @@ COURSES = {
 • Удалёнка = +10% (экономия на офисе)
 
 3️⃣ Назовите цифру выше желаемой на 15-20%
-(Всегда есть место для торга)
-
-❌ ЧТО НЕ ДЕЛАТЬ:
-• Не называйте точную цифру первым
-• Не говорите "мне нужна любая работа"
-• Не соглашайтесь сразу на первую цифру
 
 📝 ЗАДАНИЕ:
 Определите свою рыночную стоимость и подготовьте диапазон для ответа.
@@ -465,7 +444,7 @@ COURSES = {
 
 🚀 КАК ВЫДЕЛИТЬСЯ:
 
-1️⃣ ПРИНЕСИТЕ ЧТО-ТО ДОПОЛНИТЕЛЬНО:
+1️⃣ ПРИНЕСИТЕ ЧТО-ТО ДОПОЛНИТЕЛЬНОЕ:
 • Распечатанное резюме (даже если онлайн)
 • Портфолио / примеры работ
 • Блокнот с записями
@@ -479,11 +458,6 @@ COURSES = {
 • Улыбайтесь (даже на видео)
 • Говорите уверенно
 • Не бойтесь пауз
-
-4️⃣ ПОМНИТЕ ПРО НЕВЕРБАЛИКУ:
-• Зрительный контакт (60-70% времени)
-• Открытая поза
-• Кивки при слушании
 
 📝 ЗАДАНИЕ:
 Подготовьте 5 вопросов для вашего следующего собеседования.
@@ -519,33 +493,15 @@ COURSES = {
 • Не соглашайтесь сразу
 • Возьмите 2-3 дня на раздумья
 • Сравните с другими предложениями
-• Проверьте условия (зарплата, бонусы, отпуск)
+• Проверьте условия
 
 4️⃣ ЕСЛИ ОТКАЗАЛИ:
 • Попросите обратную связь
-• Сохраняйте контакт (вдруг будут другие роли)
+• Сохраняйте контакт
 • Не воспринимайте лично
-
-📊 КАК ОЦЕНИТЬ СОБЕСЕДОВАНИЕ:
-
-Ответьте себе на вопросы:
-• Понравилась ли мне команда?
-• Понимаю ли я задачи?
-• Соответствует ли зарплата ожиданиям?
-• Есть ли рост?
-• Совпадают ли ценности?
-
-Если 4 из 5 "да" — это хорошая возможность.
 
 🎉 ПОЗДРАВЛЯЮ!
 Вы прошли курс "Собеседование без стресса".
-
-Теперь вы знаете как:
-✅ Подготовиться за 24 часа
-✅ Отвечать на каверзные вопросы
-✅ Обсуждать зарплату
-✅ Произвести впечатление
-✅ Правильно завершить процесс
 
 ⏱ Время выполнения: 20 минут"""
             }
@@ -573,7 +529,7 @@ COURSES = {
 • Простые калькуляторы на hh
 
 2️⃣ СОБЕСЕДОВАНИЯ КАК РАЗВЕДКА:
-Сходите на 2-3 собеседования даже если не хотите менять работу. Спросите вилку. Это даст реальную картину рынка.
+Сходите на 2-3 собеседования даже если не хотите менять работу. Спросите вилку.
 
 3️⃣ ФОРМУЛА РАСЧЁТА:
 
@@ -632,24 +588,10 @@ COURSES = {
 🎯 ПРАВИЛА ПЕРЕГОВОРОВ:
 
 1️⃣ НИКОГДА не называйте первым
-Пусть работодатель сделает первый шаг
-
 2️⃣ Всегда давайте ДИАПАЗОН
-Не точную цифру, а вилку: 150-180к
-
 3️⃣ Верхняя граница = ваша мечта
-Нижняя = минимум на который согласны
-
 4️⃣ Ссылайтесь на рынок
-"По данным Хабр Карьера, средний уровень для этой позиции — [Х]"
-
 5️⃣ Не извиняйтесь
-Говорите уверенно, без "ну, может быть, если возможно..."
-
-❌ ЧТО НЕ ГОВОРИТЬ:
-• "Мне нужно [цифра] на аренду и еду"
-• "Я согласен на всё"
-• "Мне предложили больше, но я выберу вас" (без конкретики)
 
 📝 ЗАДАНИЕ:
 Подготовьте скрипт ответа на вопрос о зарплате для каждого из 4 этапов.
@@ -675,8 +617,7 @@ COURSES = {
 🔧 ТЕХНИКА 2: "ПАУЗА"
 
 После того как назвали цифру — молчите.
-Не оправдывайтесь. Не добавляйте "но если нет, то..."
-Просто ждите ответа. Тишина работает на вас.
+Не оправдывайтесь. Просто ждите ответа. Тишина работает на вас.
 
 🔧 ТЕХНИКА 3: "АЛЬТЕРНАТИВЫ"
 
@@ -684,8 +625,6 @@ COURSES = {
 • Другой оффер
 • Контр-аргументы (опыт, результаты)
 • Другие компании в процессе
-
-"Сейчас общаюсь с [Х] и [У], но ваш проект мне интереснее"
 
 🔧 ТЕХНИКА 4: "УСЛОВИЯ"
 
@@ -697,9 +636,6 @@ COURSES = {
 • Удалёнка
 • Гибкий график
 • Отпуск
-• Парковка
-
-"Если оклад [Х] фиксированный, можем ли обсудить бонус за результат?"
 
 🔧 ТЕХНИКА 5: "КОНТРОФФЕР"
 
@@ -707,17 +643,6 @@ COURSES = {
 • Сравните честно: не только деньги, но и рост, задачи, команду
 • Контроффер часто = временное решение
 • Подумайте что будет через 6 месяцев
-
-📋 КАК ОТВЕЧАТЬ НА ДАВЛЕНИЕ:
-
-"Это наше максимальное предложение"
-→ "Понимаю. Могу ли я взять 2 дня на раздумья?"
-
-"Мы не можем изменить оклад"
-→ "Понимаю. Давайте обсудим бонусную часть или опционы"
-
-"Если не согласны — есть другие кандидаты"
-→ "Понимаю. Мне нужна [цифра] для принятия решения. Если это невозможно, я готов рассмотреть другие варианты"
 
 📝 ЗАДАНИЕ:
 Потренируйтесь отвечать на 3 фразы давления перед зеркалом или с другом.
@@ -743,7 +668,6 @@ COURSES = {
 2️⃣ ОПЦИОНЫ / АКЦИИ:
 • Особенно важно для стартапов и ИТ
 • Уточните вестинг (когда станут доступны)
-• Спросите о возможности продажи
 
 3️⃣ ДМС:
 • Для вас и семьи
@@ -754,45 +678,23 @@ COURSES = {
 4️⃣ ОБУЧЕНИЕ:
 • Курсы, конференции, книги
 • Бюджет: 50-200к в год
-• Сертификаты
 
 5️⃣ УСЛОВИЯ РАБОТЫ:
 • Удалёнка (полная / гибридная)
 • Гибкий график
-• 4-дневная рабочая неделя (эксперимент)
 • Парковка
 
 6️⃣ ОТПУСК:
 • Стандарт 28 дней
 • Можно договориться о 30-35
-• Возможность брать частями
-
-7️⃣ БЫТОВЫЕ МЕЛОЧИ:
-• Оплачиваемый обед
-• Кофе / фрукты
-• Корпоративный транспорт
-• Материальная помощь
 
 📋 КАК ВЕСТИ ТОРГ ЗА ПАКЕТ:
 
 ШАГ 1: Получите базовый оффер
-"Спасибо! Могу ли я уточнить полный пакет?"
-
 ШАГ 2: Уточните все детали
-• Бонусы и их условия
-• ДМС и его покрытие
-• Обучение и бюджет
-• Опционы (если есть)
-
 ШАГ 3: Сравните с вашими ожиданиями
-• Что важно вам?
-• Что можно улучшить?
-
 ШАГ 4: Предложите варианты
-"Если оклад [Х] фиксированный, могу ли я получить [ДМС для семьи + обучение + удалёнку]?"
-
 ШАГ 5: Получите письменное подтверждение
-Все договорённости — в оффер-леттере или договоре.
 
 📝 ЗАДАНИЕ:
 Составьте список из 5 пунктов, которые вы хотите выторговать кроме оклада.
@@ -806,7 +708,7 @@ COURSES = {
 🎯 Цель: Принять лучшее решение и правильно завершить переговоры.
 
 💡 ГЛАВНОЕ:
-Контроффер — это предложение от текущего работодателя, чтобы вас удержать. Это важный момент карьеры.
+Контроффер — это предложение от текущего работодателя, чтобы вас удержать.
 
 📊 КОГДА КОНТРОФФЕР ХОРОШ:
 
@@ -822,33 +724,12 @@ COURSES = {
 • Нет роста
 • Вас не ценят
 
-⚠️ РИСКИ КОНТРОФФЕРА:
-
-• Через 6 месяцев вас могут "попросить"
-• Отношения могут испортиться
-• Вас будут воспринимать как "ненадёжного"
-• Контроффер часто = временное решение
-
 📋 КАК ПРИНИМАТЬ ФИНАЛЬНОЕ РЕШЕНИЕ:
 
-ШАГ 1: Возьмите паузу
-"Спасибо за оффер! Могу ли я взять 2-3 дня на раздумья?"
-
+ШАГ 1: Возьмите паузу (2-3 дня)
 ШАГ 2: Сравните все варианты
-
-| Критерий | Текущая | Новая | Контроффер |
-|----------|---------|-------|------------|
-| Зарплата | ... | ... | ... |
-| Рост | ... | ... | ... |
-| Команда | ... | ... | ... |
-| Задачи | ... | ... | ... |
-| Баланс | ... | ... | ... |
-
 ШАГ 3: Поговорите с близкими
-Мнение семьи и друзей может помочь
-
 ШАГ 4: Примите решение
-Не тяните дольше 3-5 дней
 
 📝 КАК ОТКАЗАТЬСЯ ОТ КОНТРОФФЕРА:
 
@@ -860,13 +741,6 @@ COURSES = {
 
 🎉 ПОЗДРАВЛЯЮ!
 Вы прошли курс "Переговоры о зарплате".
-
-Теперь вы знаете как:
-✅ Определить свою стоимость
-✅ Правильно говорить о деньгах
-✅ Использовать техники торга
-✅ Выторговать бонусы
-✅ Принять финальное решение
 
 Удачи в переговорах! 💪
 
@@ -1178,7 +1052,6 @@ def spend_balance(user_id: int, cost: int = 1) -> bool:
     if ADMIN_ID != 0 and user_id == ADMIN_ID:
         return True
     if is_premium_user(user_id):
-        # ⚡ ПРИОРИТЕТНАЯ ОБРАБОТКА: премиум не тратит баланс
         return True
         
     data = get_user_data(user_id)
@@ -1455,7 +1328,7 @@ async def hh_api_search(query: str):
     try:
         async with HTTP.get("https://api.hh.ru/vacancies",
                             params={"text": query, "area": "1", "per_page": "50"},
-                            headers={"User-Agent": "LemusCareerBot/3.0"}) as resp:
+                            headers={"User-Agent": "LemusCareerBot/3.1"}) as resp:
             if resp.status == 429:
                 log.warning("hh.ru rate limit hit, waiting 5 seconds")
                 await asyncio.sleep(5)
@@ -1528,7 +1401,7 @@ async def get_vacancy_full_details(vacancy_id: str) -> dict:
     }
     try:
         async with HTTP.get(f"https://api.hh.ru/vacancies/{vacancy_id}",
-                            headers={"User-Agent": "LemusCareerBot/3.0"}) as resp:
+                            headers={"User-Agent": "LemusCareerBot/3.1"}) as resp:
             if resp.status == 200:
                 data = await resp.json()
                 description = re.sub(r'<[^>]+>', '', data.get("description", ""))
@@ -1731,7 +1604,30 @@ async def aggressive_recruiter_search(chat_id: int, company: str, position: str 
     }
 
 
-# ---------------- Разбор вакансии (обновлённый) ----------------
+# ---------------- Утилита парсинга ID вакансии ----------------
+def extract_hh_vacancy_id(text: str) -> str:
+    if not text:
+        return None
+    match = re.search(r'hh\.ru/vacanc(?:y|ies)/(\d+)', text)
+    return match.group(1) if match else None
+
+
+def is_vacancy_text(text: str) -> bool:
+    if not text or len(text) < 300:
+        return False
+    if extract_hh_vacancy_id(text):
+        return False
+    if "http://" in text or "https://" in text:
+        return False
+    markers = ["обязанности", "требования", "условия", "ищет", "вакансия",
+               "приглашает", "мы предлагаем", "мы ждём", "мы ждем",
+               "должен иметь", "ваша миссия", "мы ищем", "оформление по тк", "соцпакет", "дмс"]
+    text_lower = text.lower()
+    match_count = sum(1 for m in markers if m in text_lower)
+    return match_count >= 2
+
+
+# ---------------- Разбор вакансии ----------------
 async def analyze_hh_vacancy_deep(chat_id: int, user_id: int, user_input: str):
     if not spend_balance(user_id, cost=2):
         await send_telegram(chat_id, "⚠️ Недостаточно запросов! (Требуется 2 запроса)")
@@ -1961,28 +1857,6 @@ async def analyze_vacancy_text(chat_id: int, user_id: int, vacancy_text: str):
     await send_telegram(chat_id, final_report, {"inline_keyboard": inline_kb})
 
 
-def extract_hh_vacancy_id(text: str) -> str:
-    if not text:
-        return None
-    match = re.search(r'hh\.ru/vacanc(?:y|ies)/(\d+)', text)
-    return match.group(1) if match else None
-
-
-def is_vacancy_text(text: str) -> bool:
-    if not text or len(text) < 300:
-        return False
-    if extract_hh_vacancy_id(text):
-        return False
-    if "http://" in text or "https://" in text:
-        return False
-    markers = ["обязанности", "требования", "условия", "ищет", "вакансия",
-               "приглашает", "мы предлагаем", "мы ждём", "мы ждем",
-               "должен иметь", "ваша миссия", "мы ищем", "оформление по тк", "соцпакет", "дмс"]
-    text_lower = text.lower()
-    match_count = sum(1 for m in markers if m in text_lower)
-    return match_count >= 2
-
-
 # ---------------- Разбор постов из Сетки ----------------
 async def analyze_setka_post(chat_id: int, user_id: int, post_text: str):
     if not spend_balance(user_id, cost=1):
@@ -2075,7 +1949,6 @@ async def handle_search(chat_id: int, user_id: int, is_admin: bool):
     await send_telegram(chat_id, f"🎯 Запросы: *{', '.join(queries)}*\nСобираю вакансии...")
     all_items = []
     for idx, q in enumerate(queries):
-        # ✅ АНТИБАН: задержка между запросами
         if idx > 0:
             await asyncio.sleep(2)
         res = await hh_scrape_search(q) or await hh_api_search(q)
@@ -2163,7 +2036,6 @@ async def run_skill_gap_analysis(chat_id: int, user_id: int):
 
 
 async def run_fix_resume_by_gap(chat_id: int, user_id: int):
-    # ✅ ИЗМЕНЕНИЕ: проверка бесплатного лимита
     if not check_free_action(user_id, "resume_fix", max_free=1):
         await send_telegram(
             chat_id,
@@ -2308,7 +2180,6 @@ async def run_vacancy_match(chat_id: int, user_id: int, vac_info: dict):
 
 
 async def run_resume_adaptation(chat_id: int, user_id: int, resume_id: int, vacancy_text: str):
-    # ✅ ИЗМЕНЕНИЕ: проверка бесплатного лимита
     if not check_free_action(user_id, "resume_adapt", max_free=1):
         await send_telegram(
             chat_id,
@@ -2390,11 +2261,10 @@ async def run_resume_audit(chat_id: int, user_id: int):
 
 
 # ============================================================
-# 🎓 НОВЫЕ ФУНКЦИИ: КУРСЫ, ШАБЛОНЫ, АНАЛИТИКА, ПЛАН ПОИСКА
+# 🎓 КУРСЫ, ШАБЛОНЫ, АНАЛИТИКА, ПЛАН ПОИСКА
 # ============================================================
 
 async def show_courses(chat_id: int, user_id: int):
-    """Показывает список курсов для премиум пользователей"""
     if not is_premium_user(user_id):
         await send_telegram(
             chat_id,
@@ -2427,7 +2297,6 @@ async def show_courses(chat_id: int, user_id: int):
 
 
 async def show_course_lessons(chat_id: int, user_id: int, course_id: str):
-    """Показывает уроки выбранного курса"""
     if course_id not in COURSES:
         await send_telegram(chat_id, "⚠️ Курс не найден.")
         return
@@ -2446,7 +2315,6 @@ async def show_course_lessons(chat_id: int, user_id: int, course_id: str):
 
 
 async def show_lesson(chat_id: int, user_id: int, course_id: str, lesson_num: int):
-    """Показывает содержимое урока"""
     if course_id not in COURSES:
         await send_telegram(chat_id, "⚠️ Курс не найден.")
         return
@@ -2458,7 +2326,6 @@ async def show_lesson(chat_id: int, user_id: int, course_id: str, lesson_num: in
     
     lesson = course["lessons"][lesson_num - 1]
     
-    # Навигация между уроками
     nav_kb = []
     if lesson_num > 1:
         nav_kb.append({"text": f"← Урок {lesson_num - 1}", "callback_data": f"lesson_{course_id}_{lesson_num - 1}"})
@@ -2470,7 +2337,6 @@ async def show_lesson(chat_id: int, user_id: int, course_id: str, lesson_num: in
 
 
 async def show_cover_letter_templates(chat_id: int, user_id: int):
-    """Показывает шаблоны сопроводительных писем"""
     if not is_premium_user(user_id):
         await send_telegram(
             chat_id,
@@ -2491,7 +2357,6 @@ async def show_cover_letter_templates(chat_id: int, user_id: int):
 
 
 async def show_template(chat_id: int, user_id: int, template_num: int):
-    """Показывает содержимое шаблона"""
     if template_num < 1 or template_num > len(COVER_LETTER_TEMPLATES):
         await send_telegram(chat_id, "⚠️ Шаблон не найден.")
         return
@@ -2501,7 +2366,6 @@ async def show_template(chat_id: int, user_id: int, template_num: int):
 
 
 async def show_analytics(chat_id: int, user_id: int):
-    """Показывает расширенную аналитику"""
     if not is_premium_user(user_id):
         await send_telegram(
             chat_id,
@@ -2510,7 +2374,6 @@ async def show_analytics(chat_id: int, user_id: int):
         )
         return
     
-    # Собираем статистику из БД
     cur.execute("SELECT COUNT(*) FROM liked_vacancies WHERE user_id=?", (user_id,))
     total_vacancies = cur.fetchone()[0]
     
@@ -2549,7 +2412,6 @@ async def show_analytics(chat_id: int, user_id: int):
 
 
 async def generate_job_search_plan(chat_id: int, user_id: int):
-    """Генерирует персональный план поиска работы"""
     if not is_premium_user(user_id):
         await send_telegram(
             chat_id,
@@ -2783,13 +2645,51 @@ async def process_message(msg: dict):
         await send_telegram(chat_id, final_report, {"inline_keyboard": inline_kb})
         return
 
+    # ✅ ИСПРАВЛЕНИЕ: умная проверка для waiting_for_osint_target
     if user_states.get(user_id) == "waiting_for_osint_target":
         user_states.pop(user_id, None)
+        
+        # Если пользователь прислал ссылку на вакансию — разбираем её
+        if extract_hh_vacancy_id(text):
+            if not get_active_resume(user_id):
+                await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
+                return
+            bg(analyze_hh_vacancy_deep(chat_id, user_id, text))
+            return
+        
+        # Если это полный текст вакансии — разбираем его
+        if is_vacancy_text(text) or len(text) > 300:
+            if not get_active_resume(user_id):
+                await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
+                return
+            bg(analyze_vacancy_text(chat_id, user_id, text))
+            return
+        
+        # Иначе — это company, position для OSINT-поиска
         bg(osint_search_manager(chat_id, user_id, text))
         return
 
+    # ✅ ИСПРАВЛЕНИЕ: умная проверка для waiting_for_pitch_target
     if user_states.get(user_id) == "waiting_for_pitch_target":
         user_states.pop(user_id, None)
+        
+        # Если пользователь прислал ссылку на вакансию — разбираем её
+        if extract_hh_vacancy_id(text):
+            if not get_active_resume(user_id):
+                await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
+                return
+            bg(analyze_hh_vacancy_deep(chat_id, user_id, text))
+            return
+        
+        # Если это полный текст вакансии — разбираем его
+        if is_vacancy_text(text) or len(text) > 300:
+            if not get_active_resume(user_id):
+                await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
+                return
+            bg(analyze_vacancy_text(chat_id, user_id, text))
+            return
+        
+        # Иначе — это company, position для питча
         bg(generate_pitch_from_menu(chat_id, user_id, text))
         return
 
@@ -2887,7 +2787,7 @@ async def process_message(msg: dict):
             welcome_text = "👋 Привет, Антон! Админ-режим активирован.\nОтправь файл резюме."
         else:
             welcome_text = (
-                "👋 Привет! Я — твой ИИ-карьерный агент (Версия 3.0).\n\n"
+                "👋 Привет! Я — твой ИИ-карьерный агент (Версия 3.1).\n\n"
                 "🔥 *Главная фишка:* Работает и со ссылками hh.ru, и с текстом вакансии из мобильного приложения.\n\n"
                 "💡 *Быстрый старт:*\n"
                 "1️⃣ Отправь файл резюме (PDF или DOCX).\n"
@@ -2920,14 +2820,24 @@ async def process_message(msg: dict):
             await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
             return
         user_states[user_id] = "waiting_for_osint_target"
-        await send_telegram(chat_id, "🕵️ *Прямой выход на ЛПР*\n\nНапиши компанию и должность.")
+        await send_telegram(chat_id, 
+            "🕵️ *Прямой выход на ЛПР*\n\n"
+            "Напиши в следующем сообщении:\n"
+            "• `Компания, должность` (например: `Сбер, Product Manager`)\n"
+            "• ИЛИ просто кинь ссылку на вакансию / текст вакансии\n\n"
+            "Бот сам определит что делать!")
 
     elif text == "📝 Короткие Питчи":
         if not get_active_resume(user_id):
             await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
             return
         user_states[user_id] = "waiting_for_pitch_target"
-        await send_telegram(chat_id, "📝 *Генерация питча*\n\nНапиши компанию и должность.")
+        await send_telegram(chat_id, 
+            "📝 *Генерация питча*\n\n"
+            "Напиши в следующем сообщении:\n"
+            "• `Компания, должность` (например: `Яндекс, Data Scientist`)\n"
+            "• ИЛИ кинь ссылку/текст вакансии\n\n"
+            "Бот сам определит формат!")
 
     elif text == "🎓 Курсы (Премиум)":
         bg(show_courses(chat_id, user_id))
@@ -3066,7 +2976,7 @@ async def process_message(msg: dict):
 
     elif text == "ℹ️ Помощь":
         help_text = (
-            "ℹ️ *Справка (Версия 3.0):*\n\n"
+            "ℹ️ *Справка (Версия 3.1):*\n\n"
             "🚀 *Прямой выход на ЛПР:*\n"
             "• 🔗 *Разобрать вакансию* — кинь ссылку или текст вакансии.\n"
             "• 🕵️ *Найти ЛПР* — OSINT-поиск контактов.\n"
@@ -3163,7 +3073,6 @@ async def telegram_webhook(request):
             elif data_str == "send_repost_proof":
                 user_states[user_id] = "waiting_for_repost"
                 await send_telegram(chat_id, "🔗 Отправьте ссылку на пост.")
-            # 🎓 ОБРАБОТКА КУРСОВ
             elif data_str == "course_resume":
                 bg(show_course_lessons(chat_id, user_id, "resume"))
             elif data_str == "course_interview":
@@ -3176,7 +3085,6 @@ async def telegram_webhook(request):
                     course_id = parts[1]
                     lesson_num = int(parts[2])
                     bg(show_lesson(chat_id, user_id, course_id, lesson_num))
-            # 📝 ОБРАБОТКА ШАБЛОНОВ
             elif data_str.startswith("template_"):
                 template_num = int(data_str.split("_")[1])
                 bg(show_template(chat_id, user_id, template_num))
@@ -3252,7 +3160,7 @@ async def main():
         webhook_url = f"{render_url.rstrip('/')}/{BOT_TOKEN}"
         async with HTTP.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}") as resp:
             log.info("setWebhook: %s", (await resp.text())[:200])
-    log.info("🚀 Bot v3.0 started successfully.")
+    log.info("🚀 Bot v3.1 started successfully.")
     bg(cleanup_old_data())
     try:
         await asyncio.Event().wait()
