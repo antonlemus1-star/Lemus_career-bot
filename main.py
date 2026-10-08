@@ -2623,13 +2623,13 @@ async def process_message(msg: dict):
 
 
 # ============================================================
-# 🌐 МИНИ-АП ЭНДПОИНТЫ (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+# 🌐 МИНИ-АП ЭНДПОИНТЫ (ФИНАЛЬНАЯ РАБОЧАЯ ВЕРСИЯ)
 # ============================================================
 
 def verify_telegram_init_data(init_data: str, bot_token: str) -> bool:
     """
-    Проверяет подпись initData от Telegram.
-    Использует безопасную реализацию через hashlib + hmac.compare_digest.
+    Проверяет подпись initData от Telegram Mini App.
+    Использует стандартный алгоритм HMAC-SHA256.
     """
     if not init_data or not bot_token:
         return False
@@ -2650,13 +2650,13 @@ def verify_telegram_init_data(init_data: str, bot_token: str) -> bool:
     data_check_string = "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs.keys()))
     
     # Секретный ключ = HMAC-SHA256("WebAppData", bot_token)
-    secret_key = hmac.digest(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256)
+    secret_key = hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
     
     # Расчётный хеш = HMAC-SHA256(secret_key, data_check_string)
-    computed_hash = hmac.digest(secret_key, data_check_string.encode("utf-8"), hashlib.sha256)
+    computed_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
     
     # Безопасное сравнение
-    return hmac.compare_digest(computed_hash.hex(), stored_hash)
+    return hmac.compare_digest(computed_hash, stored_hash)
 
 
 async def miniapp_verify(request):
