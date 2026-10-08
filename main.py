@@ -261,7 +261,7 @@ COURSES = {
             {"title": "Урок 2: Когда и как говорить о зарплате", "content": "📚 УРОК 2: Когда говорить о зарплате.\n📝 ЗАДАНИЕ: Подготовьте скрипт ответа.\n⏱ Время: 20 минут"},
             {"title": "Урок 3: Техники переговоров", "content": "📚 УРОК 3: Техники переговоров.\n📝 ЗАДАНИЕ: Потренируйтесь отвечать.\n⏱ Время: 25 минут"},
             {"title": "Урок 4: Торг за бонусы и условия", "content": "📚 УРОК 4: Торг за бонусы.\n📝 ЗАДАНИЕ: Составьте список из 5 пунктов.\n⏱ Время: 15 минут"},
-            {"title": "Урок 5: Контр-оффер и финальное решение", "content": "🎉 ПОЗДРАВЛЯЮ! Вы прошли курс. Удачи! 💪\n⏱ Время: 15 минут"}
+            {"title": "Урок 5: Контр-оффер и финальное решение", "content": "🎉 ПОЗДРАВЛЯЮ! Вы прошли курс. Удачи! 💪\n Время: 15 минут"}
         ]
     }
 }
@@ -2638,6 +2638,7 @@ def verify_telegram_init_data(init_data: str, bot_token: str) -> bool:
     check_hash = data_pairs.pop("hash", None)
     if not check_hash:
         return False
+    # Используем hmac.new (стандартный способ)
     secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
     data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(data_pairs.items()))
     calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
