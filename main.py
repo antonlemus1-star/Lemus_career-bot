@@ -9,6 +9,7 @@ import html
 import datetime
 import aiohttp
 import requests
+import urllib.parse  # <-- ДОБАВЛЕНО для безопасного кодирования URL в OSINT-поиске
 from aiohttp import web
 from docx import Document
 from google import genai
@@ -20,7 +21,7 @@ except ImportError:
     import fitz  # Fallback
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("career_bot_v19")
+log = logging.getLogger("career_bot_v20")
 
 # ---------------- Конфиг ----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -414,7 +415,8 @@ def get_keyboard(is_admin=False):
         [{"text": "📁 Мои резюме"}, {"text": "📥 Загрузить резюме"}],
         [{"text": "🔍 Поиск вакансий"}, {"text": "🌐 Вакансии из Сетки"}],
         [{"text": "🛠 Адаптация резюме"}, {"text": "📋 Аудит резюме"}],
-        [{"text": "📊 Анализ навыков (Skill Gap)"}, {"text": "🎤 Тренажер собеседований"}],
+        [{"text": "🕵️ Найти HR / ЛПР"}, {"text": "🎤 Тренажер собеседований"}],
+        [{"text": "📊 Анализ навыков (Skill Gap)"}, {"text": "📝 Короткие Питчи"}],
         [{"text": "📌 Трекер откликов"}, {"text": "🎁 Бонусы (Репост & Друзья)"}],
         [{"text": "💎 Оплата и Баланс"}, {"text": "💬 Обратная связь"}],
         [{"text": "🚀 Запустить бота"}, {"text": "ℹ️ Помощь"}],
@@ -429,7 +431,7 @@ async def hh_api_search(query: str):
     try:
         async with HTTP.get("https://api.hh.ru/vacancies",
                             params={"text": query, "area": "1", "per_page": "100"},
-                            headers={"User-Agent": "LemusCareerBot/1.9"}) as resp:
+                            headers={"User-Agent": "LemusCareerBot/2.0"}) as resp:
             data = await resp.json()
         items = []
         for i in data.get("items", []):
@@ -488,7 +490,7 @@ async def hh_scrape_search(query: str):
 async def get_vacancy_details(vacancy_id: str) -> str:
     try:
         async with HTTP.get(f"https://api.hh.ru/vacancies/{vacancy_id}",
-                            headers={"User-Agent": "LemusCareerBot/1.9"}) as resp:
+                            headers={"User-Agent": "LemusCareerBot/2.0"}) as resp:
             data = await resp.json()
             
         description = re.sub(r'<[^>]+>', '', data.get("description", ""))
@@ -580,6 +582,9 @@ async def send_vacancies_page(chat_id: int, user_id: int, page: int = 0):
             ],
             [
                 {"text": "📊 Соответствие", "callback_data": f"match_{vid}"},
+                {"text": "🎯 Питч для ЛПР", "callback_data": f"pitch_{vid}"}
+            ],
+            [
                 {"text": "🗑 Мусор", "callback_data": f"hide_{vid}"}
             ]
         ]}
@@ -816,6 +821,108 @@ async def run_ai_generation(chat_id: int, user_id: int, vac_info: dict):
     await send_telegram(chat_id, f"📝 *Сопроводительное письмо готово:*\n\n{letter}\n\n💡 Скопируйте текст и используйте при отправке отклика работодателю.")
 
 
+# ---------------- 🆕 НОВЫЕ ФУНКЦИИ: OSINT-ПОИСК ЛПР И ПИТЧИ ----------------
+
+async def osint_search_manager(chat_id: int, user_id: int, target_info: str):
+    """🕵️ OSINT-поиск контактов нанимающего менеджера через Google Dorks"""
+    if not spend_balance(user_id, cost=1):
+        await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
+        return
+
+    await send_telegram(chat_id, f"🕵️ *OSINT-поиск:* Анализирую компанию и должность «{target_info}», чтобы найти нанимающего менеджера и составить стратегию нетворкинга...")
+    
+    resume = get_active_resume(user_id) or "Резюме не указано"
+    
+    prompt = (
+        f"Ты — эксперт по executive search и OSINT (разведка по открытым источникам). "
+        f"Кандидат хочет устроиться в компанию на определенную позицию, минуя автоотказы hr-роботов. "
+        f"Цель: {target_info}\n"
+        f"Резюме кандидата: {resume[:2000]}\n\n"
+        "Твоя задача:\n"
+        "1. Предположи, кто именно принимает решение о найме (HR-директор, Руководитель отдела, Фаундер, Tech Lead).\n"
+        "2. Напиши 3 точных поисковых запроса (Google Dorks) для поиска профилей этих людей в LinkedIn, TenChat и Telegram.\n"
+        "3. Напиши короткое, цепляющее сообщение (Cold DM) для отправки найденному человеку в личку. Оно должно быть не похожим на спам с hh.ru, а вызывать желание ответить (peer-to-peer, с опорой на боли компании).\n"
+        "4. Подскажи лайфхаки, как легально найти прямой контакт (телефон/TG) через открытые источники, карьерный сайт компании или расширения для браузера."
+    )
+    
+    result = await asyncio.to_thread(ai_generate, prompt)
+    if not result:
+        await send_telegram(chat_id, "⚠️ ИИ недоступен.")
+        return
+        
+    # Формируем быстрые ссылки на поиск
+    company_name = target_info.split(",")[0].strip().split()[0] if target_info else "Company"
+    encoded_company = urllib.parse.quote(company_name)
+    
+    links_markup = {
+        "inline_keyboard": [
+            [{"text": "🔍 Искать HR в Google (LinkedIn/TenChat)", "url": f"https://www.google.com/search?q=site:linkedin.com+%22{encoded_company}%22+%22HR%22+OR+%22Recruiter%22"}],
+            [{"text": "🔍 Искать посты в Telegram", "url": f"https://t.me/search?q=%23вакансия+{encoded_company}"}],
+            [{"text": "🌐 Карьерный сайт компании", "url": f"https://www.google.com/search?q=%22карьера%22+%22{encoded_company}%22+%22вакансии%22"}]
+        ]
+    }
+    
+    await send_telegram(chat_id, f"🕵️ *Стратегия прямого выхода на ЛПР:*\n\n{result}", links_markup)
+
+
+async def generate_pitch_from_menu(chat_id: int, user_id: int, target_info: str):
+    """📝 Генерация короткого питча для конкретной компании из главного меню"""
+    if not spend_balance(user_id, cost=1):
+        await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
+        return
+
+    await send_telegram(chat_id, f"📝 *Генерация питча:* Создаю короткое цепляющее сообщение (4-5 строк) для отправки в личку HR-у или руководителю компании...")
+    
+    resume = get_active_resume(user_id) or "Резюме не указано"
+    
+    prompt = (
+        f"Ты — эксперт по executive search и холодному нетворкингу. "
+        f"Напиши короткий, цепляющий питч (максимум 4-5 строк) для отправки в личку HR-у или нанимающему менеджеру в Telegram/LinkedIn/TenChat.\n\n"
+        f"Цель: {target_info}\n"
+        f"Резюме кандидата: {resume[:2000]}\n\n"
+        f"ПРАВИЛА:\n"
+        f"1. Никаких канцеляризмов типа 'Прошу рассмотреть мою кандидатуру'.\n"
+        f"2. Стиль peer-to-peer (от равного к равному).\n"
+        f"3. С первой строки зацепи болью компании или её текущим проектом.\n"
+        f"4. Покажи оцифрованный результат из опыта, который закроет эту боль.\n"
+        f"5. В конце задай открытый вопрос или призыв к короткому созвону (10-15 минут).\n"
+        f"6. Выдай ТОЛЬКО текст самого сообщения, без префиксов и комментариев."
+    )
+    
+    pitch = await asyncio.to_thread(ai_generate, prompt)
+    if not pitch:
+        await send_telegram(chat_id, "⚠️ ИИ недоступен, питч не получился. Попробуйте еще раз чуть позже.")
+        return
+        
+    await send_telegram(chat_id, f"🎯 *Готовый питч для ЛПР:*\n\n{pitch}\n\n💡 Скопируйте текст и отправьте его в личку нанимающему менеджеру. Такой подход работает в 5 раз лучше стандартного сопроводительного письма на hh.ru!")
+
+
+async def run_pitch_generation(chat_id: int, user_id: int, vac_info: dict):
+    """🎯 Генерация питча для конкретной вакансии из карточки"""
+    if not spend_balance(user_id, cost=1):
+        await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
+        return
+        
+    await send_telegram(chat_id, f"🎯 *Онбординг:* Готовлю короткий цепляющий питч (3-5 строк) для отправки HR-у или руководителю *{vac_info['employer']}* в личку...")
+    resume = get_active_resume(user_id) or "Опыт не указан."
+    pitch = await asyncio.to_thread(ai_generate,
+        f"Ты — эксперт по executive search и холодному нетворкингу. "
+        f"Напиши короткий, цепляющий питч (максимум 4-5 строк) для отправки в личку HR-у или нанимающему менеджеру в Telegram/LinkedIn/TenChat.\n"
+        f"Вакансия: '{vac_info['title']}' в компании '{vac_info['employer']}'.\n"
+        f"Резюме кандидата: {resume[:2000]}\n\n"
+        f"ПРАВИЛА:\n"
+        f"1. Никаких канцеляризмов типа 'Прошу рассмотреть мою кандидатуру'.\n"
+        f"2. Стиль peer-to-peer (от равного к равному).\n"
+        f"3. С первой строки зацепи болью компании или её текущим проектом.\n"
+        f"4. Покажи оцифрованный результат из опыта, который закроет эту боль.\n"
+        f"5. В конце задай открытый вопрос или призыв к короткому созвону (10-15 минут).\n"
+        f"6. Выдай ТОЛЬКО текст самого сообщения, без префиксов и комментариев.")
+    if not pitch:
+        await send_telegram(chat_id, "⚠️ ИИ недоступен, питч не получился. Попробуйте еще раз чуть позже.")
+        return
+    await send_telegram(chat_id, f"🎯 *Готовый питч для ЛПР:*\n\n{pitch}\n\n💡 Скопируйте текст и отправьте его в личку нанимающему менеджеру. Такой подход работает в 5 раз лучше стандартного сопроводительного письма на hh.ru!")
+
+
 async def run_vacancy_match(chat_id: int, user_id: int, vac_info: dict):
     await send_telegram(chat_id, f"📊 *Онбординг:* Анализирую соответствие вашего резюме вакансии *{vac_info['title']}* в компании *{vac_info['employer']}*...")
     resume = get_active_resume(user_id) or "Резюме не найдено."
@@ -966,13 +1073,16 @@ async def handle_document(chat_id: int, user_id: int, document: dict, is_admin: 
         
     add_resume(user_id, file_name, text_content)
     
+    # 🆕 ОБНОВЛЕННЫЙ ОНБОРДИНГ
     success_text = (
         f"✅ *Отлично! Резюме «{file_name}» успешно распознано и загружено.*\n\n"
         "💡 *Что можно сделать прямо сейчас (онбординг):*\n"
-        "1️⃣ Нажмите **«📊 Анализ навыков (Skill Gap)»**, чтобы выявить пробелы и исправить резюме под hh.ru в 1 клик.\n"
-        "2️⃣ Нажмите **«🌐 Вакансии из Сетки»**, чтобы разобрать пост нанимателя и получить DM-сообщение.\n"
-        "3️⃣ Нажмите **«🔍 Поиск вакансий»**, чтобы система подобрала для вас позиции.\n"
-        "4️⃣ Нажмите **«🎤 Тренажер собеседований»**, чтобы потренироваться отвечать на вопросы."
+        "1️⃣ **«🕵️ Найти HR / ЛПР»** — пробить контакты нанимающего менеджера в Альфа-Банке/Сбере/Яндексе и получить стратегию прямого выхода на него.\n"
+        "2️⃣ **«📊 Анализ навыков (Skill Gap)»** — выявить пробелы и исправить резюме под hh.ru в 1 клик.\n"
+        "3️⃣ **«📝 Короткие Питчи»** — сгенерировать цепляющее сообщение из 4 строк для отправки HR-у в личку (работает в 5 раз лучше обычных сопроводительных).\n"
+        "4️⃣ **«🌐 Вакансии из Сетки»** — разобрать пост нанимателя и получить DM-сообщение.\n"
+        "5️⃣ **«🔍 Поиск вакансий»** — система подберет позиции с расчетом Match Rate.\n"
+        "6️⃣ **«🎤 Тренажер собеседований»** — потренироваться отвечать на вопросы."
     )
     await send_telegram(chat_id, success_text, get_keyboard(is_admin))
 
@@ -1100,6 +1210,18 @@ async def process_message(msg: dict):
         bg(analyze_setka_post(chat_id, user_id, text))
         return
 
+    # 🆕 ОБРАБОТКА НОВОГО СОСТОЯНИЯ: OSINT-ПОИСК
+    if user_states.get(user_id) == "waiting_for_osint_target":
+        user_states.pop(user_id, None)
+        bg(osint_search_manager(chat_id, user_id, text))
+        return
+
+    # 🆕 ОБРАБОТКА НОВОГО СОСТОЯНИЯ: ПИТЧ ИЗ МЕНЮ
+    if user_states.get(user_id) == "waiting_for_pitch_target":
+        user_states.pop(user_id, None)
+        bg(generate_pitch_from_menu(chat_id, user_id, text))
+        return
+
     if user_states.get(user_id) == "waiting_for_feedback":
         user_states.pop(user_id, None)
         cur.execute("INSERT INTO feedback (user_id, username, message) VALUES (?, ?, ?)", (user_id, username, text))
@@ -1183,11 +1305,16 @@ async def process_message(msg: dict):
         if is_admin:
             welcome_text = "👋 Привет, Антон! У тебя активирован бесконечный безлимитный доступ (Админ-режим).\nДля работы отправь файл резюме в чат."
         else:
+            # 🆕 ОБНОВЛЕННЫЙ СТАРТ
             welcome_text = (
-                "👋 Привет! Я — твой личный ИИ-карьерный агент (Версия 1.9).\n\n"
+                "👋 Привет! Я — твой личный ИИ-карьерный агент (Версия 2.0).\n\n"
                 "💡 *Быстрый старт:*\n"
                 "1️⃣ Отправь файл резюме (*PDF или DOCX*) прямо в этот чат.\n"
-                "2️⃣ Используй меню ниже для подбора, аудита, поиска вакансий в Сетке и тренировки на интервью.\n\n"
+                "2️⃣ Используй меню ниже:\n"
+                "   • 🕵️ *Найти HR / ЛПР* — прямой выход на рекрутеров, минуя автоотказы hh.ru\n"
+                "   • 📝 *Короткие Питчи* — сообщения для лички, на которые отвечают\n"
+                "   • 🌐 *Вакансии из Сетки* — разбор постов фаундеров\n"
+                "   • 🔍 *Поиск вакансий* — с Match Rate и зарплатами\n\n"
                 "🎁 Тебе начислено *7 приветственных запросов*!"
             )
         await send_telegram(chat_id, welcome_text, get_keyboard(is_admin))
@@ -1206,6 +1333,32 @@ async def process_message(msg: dict):
             "✨ *ИИ оценит соответствие вашему резюме и подготовит персонализированное сообщение для отправки автору поста в личку!*"
         )
         await send_telegram(chat_id, instructions)
+
+    # 🆕 НОВАЯ КНОПКА: OSINT-ПОИСК ЛПР
+    elif text == "🕵️ Найти HR / ЛПР":
+        if not get_active_resume(user_id):
+            await send_telegram(chat_id, "💡 *Онбординг:* Сначала загрузите резюме, чтобы бот мог составить персональный питч для нанимающего менеджера!")
+            return
+        user_states[user_id] = "waiting_for_osint_target"
+        await send_telegram(
+            chat_id, 
+            "🕵️ *Прямой выход на ЛПР (OSINT-поиск)*\n\n"
+            "Напиши компанию и желаемую должность (например: `Альфа-Банк, Python Developer` или `Яндекс, Product Manager`).\n\n"
+            "Бот найдет, кто ведет эту вакансию, даст ссылки для поиска в LinkedIn/TenChat/TG и напишет цепляющее сообщение для лички (Cold DM)!"
+        )
+
+    # 🆕 НОВАЯ КНОПКА: КОРОТКИЕ ПИТЧИ
+    elif text == "📝 Короткие Питчи":
+        if not get_active_resume(user_id):
+            await send_telegram(chat_id, "💡 *Онбординг:* Сначала загрузите резюме, чтобы бот мог составить цепляющий питч на основе твоего опыта!")
+            return
+        user_states[user_id] = "waiting_for_pitch_target"
+        await send_telegram(
+            chat_id,
+            "📝 *Генерация короткого питча для лички*\n\n"
+            "Напиши компанию и должность (например: `Сбер, Data Scientist` или `Ozon, Product Manager`).\n\n"
+            "Бот создаст короткое сообщение из 4-5 строк, которое работает в 5 раз лучше стандартного сопроводительного письма. Идеально для отправки HR-у в Telegram, LinkedIn или TenChat!"
+        )
 
     elif text in ("👥 Пригласить друга", "🎁 Бонусы (Репост & Друзья)"):
         bot_info = await HTTP.get(f"{TELEGRAM_API}/getMe")
@@ -1307,14 +1460,18 @@ async def process_message(msg: dict):
             await send_telegram(chat_id, tracker_msg)
 
     elif text == "ℹ️ Помощь":
+        # 🆕 ОБНОВЛЕННАЯ СПРАВКА
         help_text = (
-            "ℹ️ *Справка и гид по боту (Версия 1.9):*\n\n"
+            "ℹ️ *Справка и гид по боту (Версия 2.0):*\n\n"
+            "🚀 *НОВОЕ — Прямой выход на ЛПР:*\n"
+            "• 🕵️ *Найти HR / ЛПР* — OSINT-поиск контактов нанимающих менеджеров (LinkedIn/TenChat/TG) + стратегия нетворкинга и ссылки на пробив.\n"
+            "• 📝 *Короткие Питчи* — генерация цепляющего сообщения из 4 строк для лички HR-а (работает в 5 раз лучше стандартных сопроводительных).\n\n"
+            "📋 *Основной функционал:*\n"
             "• 📊 *Skill Gap & Исправление* — полный аудит компетенций с кнопкой мгновенного переписывания резюме под стандарты hh.ru в Word-файл.\n"
-            "• 🌐 *Вакансии из Сетки* — разбор постов фаундеров и подготовка персонального сообщения для лички.\n"
-            "• 📥 *Загрузка резюме* — отправьте PDF или DOCX файл.\n"
-            "• 🔍 *Поиск вакансий* — подбор с зарплатами и расчетом Match Rate.\n"
-            "• 🛠 *Адаптация* — переупаковка резюме под конкретное описание вакансии.\n"
-            "• 🎤 *Тренажер* — интерактивный раунд вопросов с ИИ.\n"
+            "• 🌐 *Вакансии из Сетки* — разбор постов фаундеров и подготовка персонального DM.\n"
+            "• 🔍 *Поиск вакансий* — подбор с зарплатами и Match Rate.\n"
+            "• 🛠 *Адаптация* — переупаковка резюме под конкретную вакансию.\n"
+            "• 🎤 *Тренажер* — раунд каверзных вопросов с ИИ.\n"
             "• 📌 *Трекер* — учет ваших откликов."
         )
         await send_telegram(chat_id, help_text, get_keyboard(is_admin))
@@ -1427,6 +1584,12 @@ async def telegram_webhook(request):
                     await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
                     return
                 bg(run_vacancy_match(chat_id, user_id, dict(temp_vacancies.get(data_str[6:], {}))))
+            # 🆕 ОБРАБОТКА НОВОГО CALLBACK: ПИТЧ ИЗ КАРТОЧКИ ВАКАНСИИ
+            elif data_str.startswith("pitch_"):
+                if not spend_balance(user_id, cost=1):
+                    await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
+                    return
+                bg(run_pitch_generation(chat_id, user_id, dict(temp_vacancies.get(data_str[6:], {}))))
             elif data_str.startswith("act_"):
                 bg(activate_resume(chat_id, user_id, data_str[4:]))
             elif data_str.startswith("adaptsel_"):
@@ -1459,7 +1622,7 @@ async def main():
         async with HTTP.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}") as resp:
             log.info("setWebhook: %s", (await resp.text())[:200])
 
-    log.info("🚀 Bot v1.9 started successfully.")
+    log.info("🚀 Bot v2.0 started successfully.")
     
     try:
         await asyncio.Event().wait()
