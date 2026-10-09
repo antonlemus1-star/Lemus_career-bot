@@ -35,9 +35,14 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("career_bot_v43")
 
 # ---------------- Конфиг ----------------
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise SystemExit("🔴 BOT_TOKEN не задан!")
+RAW_BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+# Очищаем токен от возможных пробелов, переносов строк и кавычек
+BOT_TOKEN = RAW_BOT_TOKEN.strip().strip('"').strip("'") 
+
+if not BOT_TOKEN or ":" not in BOT_TOKEN:
+    raise SystemExit(f"🔴 BOT_TOKEN invalid! Got: '{RAW_BOT_TOKEN[:20]}...'")
+
+log.info(f"✅ Using cleaned BOT_TOKEN starting with: {BOT_TOKEN[:10]}...")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GROQ_KEY = os.getenv("GROQ_KEY", "")
@@ -2623,28 +2628,36 @@ async def process_message(msg: dict):
 
 
 # ============================================================
-# 🌐 МИНИ-АП ЭНДПОИНТЫ (С ДИАГНОСТИКОЙ)
+# 🌐 МИНИ-АП ЭНДПОИНТЫ (С ФИКСОМ URL-DECODING)
 # ============================================================
 
 def verify_telegram_init_data(init_data: str, bot_token: str) -> bool:
-    """Проверяет подпись initData от Telegram Mini App с детальной диагностикой."""
+    """Проверяет подпись initData от Telegram Mini App (с фиксом URL-decoding)."""
     if not init_data or not bot_token:
         log.error("Verify failed: Missing init_data or bot_token")
         return False
     
     pairs = {}
+    # Разбиваем строку по &
     for item in init_data.split("&"):
         if "=" not in item:
             continue
         k, v = item.split("=", 1)
-        pairs[k] = v
+        # ВАЖНО: Декодируем ключ и значение из URL-формата (%xx) обратно в текст
+        try:
+            k_decoded = urllib.parse.unquote(k)
+            v_decoded = urllib.parse.unquote(v)
+            pairs[k_decoded] = v_decoded
+        except Exception as e:
+            log.warning(f"Decode error for {k}: {e}")
+            pairs[k] = v
     
     stored_hash = pairs.pop("hash", None)
     if not stored_hash:
-        log.error("Verify failed: No hash found in initData")
+        log.error("Verify failed: No hash found in initData after decoding")
         return False
     
-    # Собираем строку данных
+    # Собираем строку данных (уже декодированную!)
     data_check_string = "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs.keys()))
     
     try:
@@ -2654,16 +2667,16 @@ def verify_telegram_init_data(init_data: str, bot_token: str) -> bool:
         # Вычисляем ожидаемый хеш
         computed_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
         
-        # Логируем детали для диагностики (ТОЛЬКО ВРЕМЕННО!)
-        log.info(f"DEBUG VERIFY:")
+        # Логируем детали для диагностики
+        log.info(f"DEBUG VERIFY (Decoded):")
         log.info(f"  Stored Hash: {stored_hash}")
         log.info(f"  Computed Hash: {computed_hash}")
         log.info(f"  Match: {computed_hash == stored_hash}")
-        log.info(f"  Data String Length: {len(data_check_string)}")
+        log.info(f"  Data String Preview: {data_check_string[:100]}...")
         
         is_valid = hmac.compare_digest(computed_hash, stored_hash)
         if not is_valid:
-            log.warning("Signature mismatch detected!")
+            log.warning("Signature mismatch detected even after decoding!")
             
         return is_valid
         
