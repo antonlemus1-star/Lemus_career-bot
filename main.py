@@ -308,7 +308,7 @@ COURSES = {
             {"title": "Урок 2: Когда и как говорить о зарплате", "content": "📚 УРОК 2: Когда говорить о зарплате.\n📝 ЗАДАНИЕ: Подготовьте скрипт ответа.\n⏱ Время: 20 минут"},
             {"title": "Урок 3: Техники переговоров", "content": "📚 УРОК 3: Техники переговоров.\n📝 ЗАДАНИЕ: Потренируйтесь отвечать.\n⏱ Время: 25 минут"},
             {"title": "Урок 4: Торг за бонусы и условия", "content": "📚 УРОК 4: Торг за бонусы.\n📝 ЗАДАНИЕ: Составьте список из 5 пунктов.\n⏱ Время: 15 минут"},
-            {"title": "Урок 5: Контр-оффер и финальное решение", "content": "🎉 ПОЗДРАВЛЯЮ! Вы прошли курс. Удачи! 💪\n⏱ Время: 15 минут"}
+            {"title": "Урок 5: Контр-оффер и финальное решение", "content": "🎉 ПОЗДРАВЛЯЮ! Вы прошли курс. Удачи! 💪\n Время: 15 минут"}
         ]
     }
 }
@@ -862,14 +862,12 @@ def get_keyboard(is_admin=False):
     return get_main_keyboard(is_admin)
 
 
-# ---------------- hh.ru парсинг (С ФИЛЬТРАМИ) ----------------
-async def hh_api_search(query: str, region_code: int = 1, only_with_salary: bool = False, experience: str = None):
+# ---------------- hh.ru парсинг ----------------
+async def hh_api_search(query: str, region_code: int = 1, only_with_salary: bool = False):
     try:
         params = {"text": query, "area": region_code, "per_page": "50"}
         if only_with_salary:
             params["only_with_salary"] = "true"
-        if experience:
-            params["experience"] = experience
         async with HTTP.get("https://api.hh.ru/vacancies",
                             params=params,
                             headers={"User-Agent": "Mozilla/5.0"}) as resp:
@@ -933,6 +931,22 @@ async def hh_scrape_search(query: str, region_code: int = 1):
         log.warning("hh scrape failed: %s", str(e)[:150])
         track_error()
         return None
+
+
+def parse_salary_from_item(v: dict):
+    """Достаёт числовую зарплату 'от' из элемента (API или scrape-строка)."""
+    if v.get("salary_from"):
+        try:
+            return int(v["salary_from"])
+        except Exception:
+            return 0
+    m = re.search(r'(\d[\d\s]{3,})', str(v.get("salary") or ""))
+    if m:
+        try:
+            return int(m.group(1).replace(" ", ""))
+        except Exception:
+            return 0
+    return 0
 
 
 async def live_search_recruiter(company: str, contact_name: str = "") -> list:
@@ -1451,9 +1465,6 @@ async def send_vacancies_page(chat_id: int, user_id: int, page: int = 0):
         match_score = v.get("match_score", 0)
         match_reason = v.get("match_reason", "релевантно профилю")
         temp_vacancies[vid] = {"title": name, "employer": comp}
-        comp_lower = comp.lower()
-        is_top = any(tc in comp_lower for tc in ["сбер", "мтс", "яндекс", "т-банк", "тинькофф", "втб", "альфа", "билайн", "мегафон", "ростелеком", "первый бит", "газпром", "росатом"])
-        badge = "⭐ *[ТОП-КОМПАНИЯ]*\n" if is_top else ""
         match_badge = f"🎯 Соответствие: {match_score}% ({match_reason})\n"
         sal_line = f"{sal}\n" if sal else ""
         markup = {"inline_keyboard": [
@@ -1463,7 +1474,7 @@ async def send_vacancies_page(chat_id: int, user_id: int, page: int = 0):
              {"text": "🎯 Питч для ЛПР", "callback_data": f"pitch_{vid}"}],
             [{"text": "🗑 Мусор", "callback_data": f"hide_{vid}"}]
         ]}
-        await send_telegram(chat_id, f"{badge}🏢 *{comp}*\n💼 [{name}]({v.get('url')})\n{sal_line}{match_badge}", markup)
+        await send_telegram(chat_id, f"🏢 *{comp}*\n💼 [{name}]({v.get('url')})\n{sal_line}{match_badge}", markup)
         await asyncio.sleep(0.2)
     if end < len(items):
         more_markup = {"inline_keyboard": [[{"text": "▶ Далее", "callback_data": f"page_{page + 1}"}]]}
@@ -1472,7 +1483,7 @@ async def send_vacancies_page(chat_id: int, user_id: int, page: int = 0):
 
 async def handle_search(chat_id: int, user_id: int, is_admin: bool):
     if not spend_balance(user_id, cost=1):
-        await send_telegram(chat_id, "⚠️ У вас закончились запросов!", get_job_seeker_keyboard(is_admin))
+        await send_telegram(chat_id, "⚠️ У вас закончились запросы!", get_job_seeker_keyboard(is_admin))
         return
     active_resume = get_active_resume(user_id)
     if not active_resume:
@@ -1923,7 +1934,7 @@ async def handle_document(chat_id: int, user_id: int, document: dict, is_admin: 
         success_text = (
             f"✅ *Резюме «{file_name}» загружено!*\n"
             "💡 *Что можно сделать:*\n"
-            "1️⃣ *🔗 Разобрать вакансию* — скопируй текст вакансии.\n"
+            "1️⃣ * Разобрать вакансию* — скопируй текст вакансии.\n"
             "2️⃣ *️ Найти ЛПР* — прямой выход на менеджера.\n"
             "3️⃣ * Анализ навыков* — выявит пробелы.\n"
             "📎 *Форматы:* PDF, DOCX, DOC, ODT, RTF, TXT и фото резюме."
@@ -2613,151 +2624,178 @@ async def process_message(msg: dict):
 
 
 # ============================================================
-# 🔍 ЯДРО ПОИСКА ВАКАНСИЙ (УЛУЧШЕННАЯ ВЕРСИЯ)
+# 🔍 ЯДРО ПОИСКА ВАКАНСИЙ (УНИВЕРСАЛЬНОЕ, ПО ПРОФИЛЮ КАНДИДАТА)
 # ============================================================
 
-# Стоп-слова: вырезаем джунов/стажёров/непрофильные должности
-STOP_WORDS_VAC = [
-    "стажер", "стажёр", "trainee", "junior", "джуниор", "студент", "практикант",
-    "ассистент", "без опыта", "стажировка", "курьер", "упаковщик", "сборщик",
-    "кассир", "повар", "официант", "грузчик", "дворник", "продавец-консультант",
-    "начинающий специалист", "помощник", "подработка", "сменный график без опыта",
-]
+# Маркеры управленческого трека в резюме
+SENIORITY_WORDS = ["руководитель", "директор", "head", "chief", "lead", "начальник",
+                   "управляющий", "commercial", "коммерческий", "cco", "c-level", "vp"]
+# Маркеры senior-специалиста без управления
+IC_SENIOR_WORDS = ["ведущий", "главный", "senior", "эксперт"]
+# Маркеры начального уровня в НАЗВАНИИ вакансии
+JUNIOR_TITLE_MARKERS = ["стажер", "стажёр", "trainee", "intern", "junior", "джуниор",
+                        "студент", "начинающий", "без опыта", "практикант", "стажировка"]
+INTERN_TITLE_MARKERS = ["стажер", "стажёр", "trainee", "intern", "студент",
+                        "практикант", "стажировка", "без опыта"]
+# Маркеры директорских ролей в НАЗВАНИИ вакансии
+MANAGEMENT_TITLE_MARKERS = SENIORITY_WORDS
 
-# Негативные фразы в описании вакансии (снижают скор)
-NEGATIVE_DESCRIPTION_PATTERNS = [
-    "1-3 года", "1–3 года", "от 1 года", "опыт от 1", "опыт не требуется",
-    "рассмотрим студентов", "можно без опыта", "для начинающих",
-]
-
-# Расширенный словарь: компании-конкуренты (буст +20) и целевые отрасли
+# Словарь отраслей для буста компаний (ключи подбираются нечётко)
 INDUSTRY_COMPANY_HINTS = {
-    "телеком": ["мегафон", "мтс", "билайн", "ростелеком", "tele2", "т2", "вымпелком", "дом.ru", "эртелеком",
-                "мтс digital", "мтс экосистема", "т2 mobile", "мтс банк", "мегафон ритейл"],
-    "телекоммуникации": ["мегафон", "мтс", "билайн", "ростелеком", "tele2", "т2", "вымпелком"],
-    "банки": ["сбер", "втб", "альфа", "газпромбанк", "т-банк", "тинькофф", "райффайзен", "совкомбанк", "мкб", "псб",
-              "отп", "росбанк", "дом.рф", "банк", "сбертех", "тинькофф бизнес", "втб цифровые", "альфа-лаборатория",
-              "газпромбанк технологии"],
-    "банковский": ["сбер", "втб", "альфа", "газпромбанк", "т-банк", "тинькофф", "райффайзен", "совкомбанк", "банк"],
-    "финтех": ["тинькофф", "т-банк", "юмани", "cloudpayments", "сбп", "fintech"],
-    "it": ["яндекс", "vk", "озон", "avito", "kaspersky", "1с", "sber tech", "сбертех", "mts web", "икт"],
-    "ит": ["яндекс", "vk", "озон", "avito", "kaspersky", "1с"],
+    "телеком": ["мегафон", "мтс", "билайн", "ростелеком", "tele2", "т2", "вымпелком", "дом.ru", "эртелеком"],
+    "связь": ["мегафон", "мтс", "билайн", "ростелеком", "tele2", "т2", "вымпелком"],
+    "банк": ["сбер", "втб", "альфа", "газпромбанк", "т-банк", "тинькофф", "райффайзен", "совкомбанк",
+             "мкб", "псб", "отп", "росбанк", "дом.рф", "банк"],
+    "финтех": ["тинькофф", "т-банк", "юмани", "cloudpayments", "fintech"],
+    "it": ["яндекс", "vk", "озон", "avito", "kaspersky", "1с", "сбертех", "wildberries"],
+    "итей": ["яндекс", "vk", "озон", "avito", "kaspersky", "1с"],
+    "ретейл": ["магнит", "x5", "пятёрочка", "перекрёсток", "лента", "wildberries", "озон"],
+    "фарма": ["фарм", "биотех", "медицин", "клиник", "здравоохранение"],
+    "медиа": ["медиа", "тв", "радио", "пресс", "издатель"],
+    "строитель": ["строй", "девелоп", "инжинир", "проектн"],
+    "нефтегаз": ["нефт", "газ", "лукойл", "роснефт", "газпром", "труб"],
+    "транспорт": ["логистик", "транспорт", "жд", "ржд", "аэро", "авто"],
+    "производ": ["завод", "производ", "промышл", "металл", "машин"],
+    "образован": ["школ", "универ", "институт", "образован", "курсы"],
 }
 
-# Seniority-слова (если есть в резюме → кандидат senior/lead)
-SENIORITY_WORDS = ["руководитель", "директор", "head", "chief", "lead", "начальник", "управляющий", "commercial", "коммерческий", "cco", "c-level"]
-
-# Доменные ключевые слова (boost +8 каждое)
-DOMAIN_KEYWORDS = ["p&l", "юнит-экономика", "unit-экономика", "b2b", "enterprise", "cloud", "saas", "iot",
-                   "трансформация", "цифровизация", "go-to-market", "gtm", "pipeline", " churn", "arpu", "ltv"]
+# Мягкие пороги зарплаты для бонуса к скору (не фильтр!)
+SALARY_SOFT_FLOOR = {"senior": 150000, "middle": 90000, "junior": 50000}
 
 
-def company_industry_boost(company: str, industries: list) -> int:
-    """Буст по компании: если компания из целевых отраслей + бонус для прямых конкурентов."""
+def detect_profile(resume_text: str) -> dict:
+    """Универсальный профиль кандидата: уровень, трек, явная зарплата."""
+    text = (resume_text or "").lower()
+    years = 0
+    m = re.search(r'опыт работы[^\d]{0,30}(\d{1,2})\s*(лет|года)', text)
+    if m:
+        years = int(m.group(1))
+    else:
+        m2 = re.search(r'(\d{1,2})\s+лет\s+опыта', text)
+        if m2:
+            years = int(m2.group(1))
+        else:
+            # Оценка по диапазонам дат (2016 — 2026 => ~10 лет)
+            dates = [int(d) for d in re.findall(r'\b(19[89]\d|20[0-4]\d)\b', text)]
+            if dates:
+                years = max(0, min(40, max(dates) - min(dates)))
+    has_management = any(w in text for w in SENIORITY_WORDS) or \
+        "руководил" in text or "командой" in text or "подчиненными" in text or "в подчинении" in text
+    explicit_salary = 0
+    m3 = re.search(r'зарплат[аы][^\d]{0,40}(\d{3,6})', text)
+    if m3:
+        val = int(m3.group(1))
+        if 30000 <= val <= 1000000:
+            explicit_salary = val
+    if years >= 7 or (has_management and years >= 5):
+        seniority = "senior"
+    elif years >= 3:
+        seniority = "middle"
+    else:
+        seniority = "junior" if years else "middle"
+    return {
+        "years": years,
+        "has_management": has_management,
+        "explicit_salary": explicit_salary,
+        "seniority": seniority,
+    }
+
+
+def company_industry_boost(company: str, industries: list, employers: list) -> int:
+    """Буст компании: бывшие работодатели +15, целевые отрасли +10, прочие из словаря +5."""
     cl = (company or "").lower()
     if not cl:
         return 0
-    # Прямые конкуренты кандидата (МегаФон, МТС, Ростелеком, билайн, Сбер, Т-Банк, ВТБ, Альфа)
-    direct_competitors = ["мегафон", "мтс", "ростелеком", "билайн", "сбер", "т-банк", "тинькофф", "втб", "альфа", "газпромбанк"]
-    for dc in direct_competitors:
-        if dc in cl:
-            return 20
-    # Целевые отрасли
+    for e in (employers or []):
+        e = (e or "").lower().strip()
+        if not e or len(e) < 3:
+            continue
+        tokens = [w for w in re.split(r'[\s\.,«»"\']+', e) if len(w) > 3]
+        if e in cl or any(tok in cl for tok in tokens):
+            return 15
     targeted = set()
     for ind in (industries or []):
-        tokens = INDUSTRY_COMPANY_HINTS.get(ind.strip().lower())
-        if tokens:
-            targeted.update(tokens)
+        key = ind.strip().lower()
+        if not key:
+            continue
+        for dict_key, tokens in INDUSTRY_COMPANY_HINTS.items():
+            if dict_key in key or key in dict_key:
+                targeted.update(tokens)
     if targeted:
         for t in targeted:
             if t in cl:
-                return 15
-    # Любая компания из словаря
+                return 10
     for tokens in INDUSTRY_COMPANY_HINTS.values():
         for t in tokens:
             if t in cl:
-                return 8
+                return 5
     return 0
 
 
-def detect_seniority(resume_text: str) -> str:
-    """Определяем seniority кандидата: senior / middle / junior."""
-    if not resume_text:
-        return "middle"
-    text_lower = resume_text.lower()
-    years_match = re.search(r'опыт работы[^\d]*(\d+)', text_lower)
-    years = int(years_match.group(1)) if years_match else 0
-    senior_markers = sum(1 for w in SENIORITY_WORDS if w in text_lower)
-    if years >= 7 or senior_markers >= 2:
-        return "senior"
-    if years >= 3:
-        return "middle"
-    return "junior"
+def title_level_ok(title: str, profile: dict) -> bool:
+    """Фильтр уровня вакансии относительно уровня кандидата."""
+    t = (title or "").lower()
+    sen = profile["seniority"]
+    if sen == "senior":
+        if any(m in t for m in JUNIOR_TITLE_MARKERS):
+            return False
+    elif sen == "middle":
+        if any(m in t for m in INTERN_TITLE_MARKERS):
+            return False
+    else:  # junior
+        if any(m in t for m in MANAGEMENT_TITLE_MARKERS):
+            return False
+    return True
 
 
-def detect_min_salary(resume_text: str, seniority: str) -> int:
-    """Минимальная зарплата (net, в рублях) для hh.ru фильтра."""
-    if not resume_text:
-        return 0
-    # Москва: senior от 250к, middle от 150к, junior от 80к
-    if "москва" in resume_text.lower() or "санкт-петербург" in resume_text.lower():
-        return {"senior": 250000, "middle": 150000, "junior": 80000}[seniority]
-    return {"senior": 180000, "middle": 100000, "junior": 60000}[seniority]
-
-
-def keyword_fallback_score(title: str, company: str, keywords: list, industries: list, description: str = "") -> tuple:
-    """Fallback-скоринг когда ИИ недоступен: по ключевым словам, домену, seniority."""
+def keyword_fallback_score(title: str, company: str, keywords: list,
+                           industries: list, employers: list, profile: dict) -> tuple:
+    """Резервный скоринг (когда ИИ недоступен): ключевые слова + отрасль + уровень."""
     t = (title or "").lower()
     s = 45
     hits = [k for k in (keywords or []) if k and len(k) > 2 and k.lower() in t]
     s += min(30, 6 * len(hits))
-    s += company_industry_boost(company, industries)
-    # Seniority boost
-    for w in SENIORITY_WORDS:
-        if w in t:
+    s += company_industry_boost(company, industries, employers)
+    if profile["has_management"]:
+        if any(w in t for w in MANAGEMENT_TITLE_MARKERS):
             s += 12
-            break
-    # Доменные ключевые слова в описании
-    desc_lower = (description or "").lower()
-    for kw in DOMAIN_KEYWORDS:
-        if kw in desc_lower:
-            s += 4
-    # Штраф за признаки junior/middle
-    for neg in NEGATIVE_DESCRIPTION_PATTERNS:
-        if neg in desc_lower:
-            s -= 25
-            break
+    elif profile["seniority"] == "senior":
+        if any(w in t for w in IC_SENIOR_WORDS + MANAGEMENT_TITLE_MARKERS):
+            s += 8
+    if profile["seniority"] == "junior":
+        if any(w in t for w in ["junior", "стажер", "стажёр", "начинающий", "ассистент", "помощник", "trainee"]):
+            s += 10
     reason = ("ключевые слова: " + ", ".join(hits[:3])) if hits else "совпадение профиля"
     return min(98, max(10, s)), reason
 
 
 async def core_search_vacancies(user_id: int) -> dict:
-    """Полный цикл поиска: регион -> seniority -> план -> hh -> скоринг."""
+    """Полный цикл поиска: профиль -> регион -> план ИИ -> hh -> фильтры уровня -> скоринг."""
     resume = get_active_resume(user_id)
     if not resume:
-        return {"error": "Сначала загрузите резюме (в приложении или в боте)", "vacancies": [], "queries": [], "industries": []}
+        return {"error": "Сначала загрузите резюме (в приложении или в боте)",
+                "vacancies": [], "queries": [], "industries": []}
+    profile = detect_profile(resume)
     region_code = await extract_region_from_resume(resume)
-    seniority = detect_seniority(resume)
-    min_salary = detect_min_salary(resume, seniority)
-    log.info(f"🎯 Search params: seniority={seniority}, min_salary={min_salary}, region={region_code}")
+    log.info(f"🎯 Search profile: seniority={profile['seniority']}, mgmt={profile['has_management']}, "
+             f"years={profile['years']}, explicit_salary={profile['explicit_salary']}, region={region_code}")
 
-    # План поиска: ИИ генерирует должности, отрасли, ключевые слова
     plan_prompt = (
         "Ты — карьерный аналитик. По резюме составь план поиска вакансий на hh.ru.\n"
         f"Резюме:\n{resume[:4000]}\n\n"
-        "ВАЖНО: кандидат senior уровня с опытом " + str(seniority) + ". НЕ предлагай junior/middle позиции.\n"
+        f"Уровень кандидата: {profile['seniority']}. "
+        f"Трек: {'управленческий' if profile['has_management'] else 'специалист/эксперт'}.\n"
         "Верни ТОЛЬКО JSON вида:\n"
         "{\"queries\": [\"должность 1\", \"должность 2\", \"должность 3\"], "
         "\"industries\": [\"отрасль 1\", \"отрасль 2\"], "
         "\"keywords\": [\"навык 1\", \"... до 10\"], "
-        "\"seniority\": \"senior|middle|junior\"}\n"
-        "Правила: должности строго уровня кандидата (добавь 'руководитель/директор/head' где уместно); "
-        "отрасли — где кандидат работал и хочет работать; keywords — ключевые навыки и домены из резюме."
+        "\"employers\": [\"компания из опыта 1\", \"...\"]}\n"
+        "Правила: должности строго уровня и трека кандидата (не ниже и не выше); "
+        "отрасли — где кандидат работал и куда целится; keywords — ключевые навыки и домены; "
+        "employers — названия компаний из блоков опыта."
     )
     plan_raw = await asyncio.to_thread(ai_generate, plan_prompt)
-    queries = []
-    industries = []
-    keywords = []
+    queries, industries, keywords, employers = [], [], [], []
     if plan_raw:
         clean = plan_raw.replace("```json", "").replace("```", "").strip()
         m = re.search(r'\{.*\}', clean, re.S)
@@ -2767,28 +2805,37 @@ async def core_search_vacancies(user_id: int) -> dict:
                 queries = [str(q).strip() for q in (parsed.get("queries") or []) if str(q).strip()][:3]
                 industries = [str(i).strip() for i in (parsed.get("industries") or []) if str(i).strip()][:4]
                 keywords = [str(k).strip() for k in (parsed.get("keywords") or []) if str(k).strip()][:10]
+                employers = [str(e).strip() for e in (parsed.get("employers") or []) if str(e).strip()][:8]
             except Exception as e:
                 log.warning(f"Search plan parse error: {e}")
     if not queries:
-        # Fallback для senior кандидатов с твоим профилем
-        queries = ["Руководитель направления", "Коммерческий директор", "Head of Business Development"]
-    
-    # Если seniority=senior, добавляем seniority-фильтр в запросы
-    if seniority == "senior":
-        enhanced_queries = []
-        for q in queries:
-            if not any(w in q.lower() for w in ["руководитель", "директор", "head", "chief", "lead"]):
-                enhanced_queries.append(f"Руководитель {q}")
-            else:
-                enhanced_queries.append(q)
-        queries = enhanced_queries[:3]
+        if profile["has_management"]:
+            queries = ["Руководитель направления", "Директор по развитию", "Head of department"]
+        elif profile["seniority"] == "senior":
+            queries = ["Ведущий специалист", "Главный эксперт", "Senior manager"]
+        else:
+            queries = ["Специалист", "Менеджер", "Ассистент"]
+
+    # Приводим запросы к уровню и треку кандидата
+    adjusted = []
+    for q in queries:
+        ql = q.lower()
+        if profile["has_management"]:
+            if not any(w in ql for w in MANAGEMENT_TITLE_MARKERS):
+                q = f"Руководитель {q}"
+        elif profile["seniority"] == "senior":
+            if not any(w in ql for w in IC_SENIOR_WORDS + MANAGEMENT_TITLE_MARKERS):
+                q = f"Ведущий {q}"
+        adjusted.append(q)
+    queries = adjusted[:3]
 
     all_items = []
+    use_salary_filter = profile["explicit_salary"] > 0
     for idx, q in enumerate(queries):
         if idx > 0:
             await asyncio.sleep(1)
-        # Приоритет: hh API с фильтром по зарплате, затем scrape
-        res = await hh_api_search(q, region_code, only_with_salary=(min_salary > 0)) or await hh_scrape_search(q, region_code)
+        res = await hh_api_search(q, region_code, only_with_salary=use_salary_filter) \
+            or await hh_scrape_search(q, region_code)
         if res:
             all_items.extend(res)
         if len(all_items) >= 90:
@@ -2796,40 +2843,33 @@ async def core_search_vacancies(user_id: int) -> dict:
     if not all_items:
         return {"error": "", "vacancies": [], "queries": queries, "industries": industries}
 
-    # Фильтрация
     unique = {}
     for v in all_items:
         vid = str(v.get("id"))
         if not vid or vid in unique:
             continue
-        name_lower = (v.get("name") or "").lower()
-        # Стоп-слова
-        if any(sw in name_lower for sw in STOP_WORDS_VAC):
+        if not title_level_ok(v.get("name"), profile):
             continue
-        # Скрытые вакансии
         if is_vacancy_hidden(user_id, vid):
             continue
-        # Фильтр по минимальной зарплате (если указана)
-        if min_salary > 0:
-            sal_from = v.get("salary_from")
+        # Жёсткий фильтр зарплаты ТОЛЬКО если кандидат явно указал желаемую
+        if use_salary_filter:
             sal_to = v.get("salary_to")
-            # Пропускаем вакансии с з/п ниже минимума
-            if sal_to and sal_to < min_salary:
+            if sal_to and sal_to < profile["explicit_salary"] * 0.7:
                 continue
-            # Если з/п не указана — оставляем (может быть выше)
         unique[vid] = v
     filtered = list(unique.values())[:45]
     log.info(f"📊 Filtered: {len(filtered)} / {len(all_items)}")
 
-    # ИИ-скоринг пакетами по 15
     scored = []
     for i in range(0, len(filtered), 15):
         batch = filtered[i:i + 15]
         vacancies_text = "\n".join([f"ID {v['id']}: {v.get('name')} в {v.get('company')}" for v in batch])
         quick_prompt = (
-            f"Оцени соответствие резюме кандидата (senior уровень, опыт {seniority}) каждой вакансии (0-100).\n"
-            "Учитывай: уровень должности, отрасль, доменные навыки (B2B, Enterprise, Cloud, SaaS, P&L, юнит-экономика).\n"
-            "Штраф за junior/middle позиции.\n"
+            f"Оцени соответствие резюме кандидата каждой вакансии (0-100).\n"
+            f"Уровень кандидата: {profile['seniority']}, трек: "
+            f"{'управленческий' if profile['has_management'] else 'специалист'}.\n"
+            "Учитывай: уровень должности, отрасль, ключевые навыки. Штрафуй вакансии не того уровня.\n"
             f"Резюме:\n{resume[:2500]}\n\nВакансии:\n{vacancies_text}\n\n"
             "Верни ТОЛЬКО JSON: {\"ID\": {\"score\": 85, \"reason\": \"причина\"}}"
         )
@@ -2846,7 +2886,7 @@ async def core_search_vacancies(user_id: int) -> dict:
         for v in batch:
             vid = str(v["id"])
             v_data = parsed_batch.get(vid) or {}
-            boost = company_industry_boost(v.get("company"), industries)
+            boost = company_industry_boost(v.get("company"), industries, employers)
             if v_data.get("score") is not None:
                 try:
                     base = int(v_data["score"])
@@ -2854,10 +2894,15 @@ async def core_search_vacancies(user_id: int) -> dict:
                     base = 60
                 reason = str(v_data.get("reason", "релевантный профиль"))
             else:
-                base, reason = keyword_fallback_score(v.get("name"), v.get("company"), keywords, industries, "")
+                base, reason = keyword_fallback_score(
+                    v.get("name"), v.get("company"), keywords, industries, employers, profile)
             final_score = min(98, base + boost)
-            if boost >= 15:
-                reason += " • целевая отрасль/конкурент"
+            # Мягкий бонус за зарплату уровня кандидата (без жёсткого фильтра)
+            sal_from = parse_salary_from_item(v)
+            if sal_from and sal_from >= SALARY_SOFT_FLOOR.get(profile["seniority"], 0):
+                final_score = min(98, final_score + 6)
+            if boost >= 10:
+                reason += " • целевая отрасль/работодатель"
             scored.append({
                 "id": vid,
                 "title": v.get("name"),
@@ -3015,7 +3060,6 @@ async def miniapp_upload_resume(request):
 
 
 async def miniapp_resumes_list(request):
-    """GET /miniapp/resumes?user_id=X — список всех резюме пользователя."""
     try:
         user_id = int(request.query.get("user_id", 0))
         if not user_id:
@@ -3028,7 +3072,6 @@ async def miniapp_resumes_list(request):
 
 
 async def miniapp_activate_resume(request):
-    """POST /miniapp/activate-resume — активировать резюме по ID."""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -3456,12 +3499,7 @@ async def miniapp_hr_scoring(request):
         return web.json_response({"error": str(e)[:200]}, status=500)
 
 
-# ============================================================
-# 🆕 HR-ФУНКЦИИ ДЛЯ МИНИ-АПА (новые эндпоинты)
-# ============================================================
-
 async def miniapp_hr_questions(request):
-    """POST /miniapp/hr-questions — вопросы для интервью."""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -3492,7 +3530,6 @@ async def miniapp_hr_questions(request):
 
 
 async def miniapp_hr_test(request):
-    """POST /miniapp/hr-test — тестовое задание."""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -3525,7 +3562,6 @@ async def miniapp_hr_test(request):
 
 
 async def miniapp_hr_description(request):
-    """POST /miniapp/hr-description — описание вакансии."""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -3557,7 +3593,6 @@ async def miniapp_hr_description(request):
 
 
 async def miniapp_hr_rejection(request):
-    """POST /miniapp/hr-rejection — вежливый отказ."""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -3582,7 +3617,6 @@ async def miniapp_hr_rejection(request):
 
 
 async def miniapp_hr_offer(request):
-    """POST /miniapp/hr-offer — шаблон оффера."""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -3607,7 +3641,6 @@ async def miniapp_hr_offer(request):
 
 
 async def miniapp_hr_salary(request):
-    """POST /miniapp/hr-salary — оценка зарплаты."""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -3637,7 +3670,6 @@ async def miniapp_hr_salary(request):
 
 
 async def miniapp_hr_candidate_pitch(request):
-    """POST /miniapp/hr-candidate-pitch — питч кандидату."""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -3662,7 +3694,6 @@ async def miniapp_hr_candidate_pitch(request):
 
 
 async def miniapp_hr_followup(request):
-    """POST /miniapp/hr-followup — фоллоу-ап после интервью."""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -3853,7 +3884,6 @@ async def main():
         ("POST", "/miniapp/skill-gap", miniapp_skill_gap),
         ("POST", "/miniapp/hr-match", miniapp_hr_match),
         ("POST", "/miniapp/hr-scoring", miniapp_hr_scoring),
-        # 🆕 Новые HR-эндпоинты
         ("POST", "/miniapp/hr-questions", miniapp_hr_questions),
         ("POST", "/miniapp/hr-test", miniapp_hr_test),
         ("POST", "/miniapp/hr-description", miniapp_hr_description),
