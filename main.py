@@ -261,7 +261,7 @@ COURSES = {
             {"title": "Урок 2: Когда и как говорить о зарплате", "content": "📚 УРОК 2: Когда говорить о зарплате.\n📝 ЗАДАНИЕ: Подготовьте скрипт ответа.\n⏱ Время: 20 минут"},
             {"title": "Урок 3: Техники переговоров", "content": "📚 УРОК 3: Техники переговоров.\n📝 ЗАДАНИЕ: Потренируйтесь отвечать.\n⏱ Время: 25 минут"},
             {"title": "Урок 4: Торг за бонусы и условия", "content": "📚 УРОК 4: Торг за бонусы.\n📝 ЗАДАНИЕ: Составьте список из 5 пунктов.\n⏱ Время: 15 минут"},
-            {"title": "Урок 5: Контр-оффер и финальное решение", "content": "🎉 ПОЗДРАВЛЯЮ! Вы прошли курс. Удачи! 💪\n⏱ Время: 15 минут"}
+            {"title": "Урок 5: Контр-оффер и финальное решение", "content": "🎉 ПОЗДРАВЛЯЮ! Вы прошли курс. Удачи! 💪\n Время: 15 минут"}
         ]
     }
 }
@@ -2623,18 +2623,14 @@ async def process_message(msg: dict):
 
 
 # ============================================================
-# 🌐 МИНИ-АП ЭНДПОИНТЫ (ФИНАЛЬНАЯ РАБОЧАЯ ВЕРСИЯ)
+# 🌐 МИНИ-АП ЭНДПОИНТЫ (С CORS SUPPORT)
 # ============================================================
 
 def verify_telegram_init_data(init_data: str, bot_token: str) -> bool:
-    """
-    Проверяет подпись initData от Telegram Mini App.
-    Использует стандартный алгоритм HMAC-SHA256.
-    """
+    """Проверяет подпись initData от Telegram Mini App."""
     if not init_data or not bot_token:
         return False
     
-    # Парсим пары ключ=значение
     pairs = {}
     for item in init_data.split("&"):
         if "=" not in item:
@@ -2646,17 +2642,25 @@ def verify_telegram_init_data(init_data: str, bot_token: str) -> bool:
     if not stored_hash:
         return False
     
-    # Собираем отсортированную строку данных
     data_check_string = "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs.keys()))
     
-    # Секретный ключ = HMAC-SHA256("WebAppData", bot_token)
-    secret_key = hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
-    
-    # Расчётный хеш = HMAC-SHA256(secret_key, data_check_string)
-    computed_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
-    
-    # Безопасное сравнение
-    return hmac.compare_digest(computed_hash, stored_hash)
+    try:
+        secret_key = hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
+        computed_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(computed_hash, stored_hash)
+    except Exception as e:
+        log.error(f"HMAC verification error: {e}")
+        return False
+
+
+async def handle_options(request):
+    """Обрабатывает OPTIONS запросы для CORS Preflight"""
+    return web.Response(status=200, headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        "Access-Control-Max-Age": "86400"
+    })
 
 
 async def miniapp_verify(request):
@@ -3205,16 +3209,28 @@ async def main():
     app.router.add_get("/", lambda r: web.Response(text="Bot is running"))
     app.router.add_post(f"/{BOT_TOKEN}", telegram_webhook)
     
-    # 🆕 МИНИ-АП ЭНДПОИНТЫ
-    app.router.add_post("/miniapp/verify", miniapp_verify)
-    app.router.add_get("/miniapp/data", miniapp_data)
-    app.router.add_post("/miniapp/analyze", miniapp_analyze_vacancy)
-    app.router.add_post("/miniapp/search", miniapp_search_vacancies)
-    app.router.add_post("/miniapp/find-lpr", miniapp_find_lpr)
-    app.router.add_post("/miniapp/pitch", miniapp_generate_pitch)
-    app.router.add_post("/miniapp/skill-gap", miniapp_skill_gap)
-    app.router.add_post("/miniapp/hr-match", miniapp_hr_match)
-    app.router.add_post("/miniapp/hr-scoring", miniapp_hr_scoring)
+    # ============================================================
+    # 🌐 МИНИ-АП ЭНДПОИНТЫ + CORS SUPPORT
+    # ============================================================
+    
+    routes = [
+        ("/miniapp/verify", miniapp_verify),
+        ("/miniapp/data", miniapp_data),
+        ("/miniapp/analyze", miniapp_analyze_vacancy),
+        ("/miniapp/search", miniapp_search_vacancies),
+        ("/miniapp/find-lpr", miniapp_find_lpr),
+        ("/miniapp/pitch", miniapp_generate_pitch),
+        ("/miniapp/skill-gap", miniapp_skill_gap),
+        ("/miniapp/hr-match", miniapp_hr_match),
+        ("/miniapp/hr-scoring", miniapp_hr_scoring),
+    ]
+
+    for path, handler in routes:
+        method = "post" if "data" not in path else "get"
+        app.router.add_route(method, path, handler)
+        app.router.add_route("OPTIONS", path, handle_options)
+        
+    log.info("✅ MiniApp endpoints registered with CORS support")
     
     runner = web.AppRunner(app)
     await runner.setup()
