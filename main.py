@@ -261,7 +261,7 @@ COURSES = {
             {"title": "Урок 2: Когда и как говорить о зарплате", "content": "📚 УРОК 2: Когда говорить о зарплате.\n📝 ЗАДАНИЕ: Подготовьте скрипт ответа.\n⏱ Время: 20 минут"},
             {"title": "Урок 3: Техники переговоров", "content": "📚 УРОК 3: Техники переговоров.\n📝 ЗАДАНИЕ: Потренируйтесь отвечать.\n⏱ Время: 25 минут"},
             {"title": "Урок 4: Торг за бонусы и условия", "content": "📚 УРОК 4: Торг за бонусы.\n📝 ЗАДАНИЕ: Составьте список из 5 пунктов.\n⏱ Время: 15 минут"},
-            {"title": "Урок 5: Контр-оффер и финальное решение", "content": "🎉 ПОЗДРАВЛЯЮ! Вы прошли курс. Удачи! 💪\n Время: 15 минут"}
+            {"title": "Урок 5: Контр-оффер и финальное решение", "content": "🎉 ПОЗДРАВЛЯЮ! Вы прошли курс. Удачи! 💪\n⏱ Время: 15 минут"}
         ]
     }
 }
@@ -2623,12 +2623,13 @@ async def process_message(msg: dict):
 
 
 # ============================================================
-# 🌐 МИНИ-АП ЭНДПОИНТЫ (С CORS SUPPORT)
+# 🌐 МИНИ-АП ЭНДПОИНТЫ (С ДИАГНОСТИКОЙ)
 # ============================================================
 
 def verify_telegram_init_data(init_data: str, bot_token: str) -> bool:
-    """Проверяет подпись initData от Telegram Mini App."""
+    """Проверяет подпись initData от Telegram Mini App с детальной диагностикой."""
     if not init_data or not bot_token:
+        log.error("Verify failed: Missing init_data or bot_token")
         return False
     
     pairs = {}
@@ -2640,16 +2641,34 @@ def verify_telegram_init_data(init_data: str, bot_token: str) -> bool:
     
     stored_hash = pairs.pop("hash", None)
     if not stored_hash:
+        log.error("Verify failed: No hash found in initData")
         return False
     
+    # Собираем строку данных
     data_check_string = "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs.keys()))
     
     try:
+        # Вычисляем секретный ключ
         secret_key = hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
+        
+        # Вычисляем ожидаемый хеш
         computed_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
-        return hmac.compare_digest(computed_hash, stored_hash)
+        
+        # Логируем детали для диагностики (ТОЛЬКО ВРЕМЕННО!)
+        log.info(f"DEBUG VERIFY:")
+        log.info(f"  Stored Hash: {stored_hash}")
+        log.info(f"  Computed Hash: {computed_hash}")
+        log.info(f"  Match: {computed_hash == stored_hash}")
+        log.info(f"  Data String Length: {len(data_check_string)}")
+        
+        is_valid = hmac.compare_digest(computed_hash, stored_hash)
+        if not is_valid:
+            log.warning("Signature mismatch detected!")
+            
+        return is_valid
+        
     except Exception as e:
-        log.error(f"HMAC verification error: {e}")
+        log.error(f"HMAC verification exception: {e}", exc_info=True)
         return False
 
 
