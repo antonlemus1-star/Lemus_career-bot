@@ -36,7 +36,6 @@ log = logging.getLogger("career_bot_v43")
 
 # ---------------- Конфиг ----------------
 RAW_BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-# Очищаем токен от возможных пробелов, переносов строк и кавычек
 BOT_TOKEN = RAW_BOT_TOKEN.strip().strip('"').strip("'") 
 
 if not BOT_TOKEN or ":" not in BOT_TOKEN:
@@ -732,7 +731,6 @@ async def show_typing(chat_id):
 
 def get_main_keyboard(is_admin=False):
     kb = [
-        # [{"text": "📱 Открыть приложение"}],  <-- УДАЛЕНО
         [{"text": "💼 Я ищу работу"}, {"text": "🏢 Я нанимаю"}],
         [{"text": "📁 Мои резюме"}, {"text": "💎 Оплата и Баланс"}],
         [{"text": "⏰ Продлить доступ"}, {"text": "🎁 Бонусы (Репост & Друзья)"}],
@@ -2609,7 +2607,7 @@ async def process_message(msg: dict):
 
 
 # ============================================================
-# 🌐 МИНИ-АП ЭНДПОИНТЫ (С ФИКСОМ URL-DECODING)
+# 🌐 МИНИ-АП ЭНДПОИНТЫ (С ФИКСОМ URL-DECODING И CORRECT CORS)
 # ============================================================
 
 def verify_telegram_init_data(init_data: str, bot_token: str) -> bool:
@@ -2667,13 +2665,19 @@ def verify_telegram_init_data(init_data: str, bot_token: str) -> bool:
 
 
 async def handle_options(request):
-    """Обрабатывает OPTIONS запросы для CORS Preflight"""
-    return web.Response(status=200, headers={
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization",
-        "Access-Control-Max-Age": "86400"
-    })
+    """Обрабатывает OPTIONS запросы для CORS Preflight (ФИКС ДЛЯ TELEGRAM ANDROID)"""
+    # Возвращаем 204 No Content с правильными заголовками
+    # Это критически важно для корректной работы fetch() в WebView Telegram
+    return web.Response(
+        status=204, 
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With",
+            "Access-Control-Max-Age": "86400",
+            "Content-Type": "text/plain; charset=utf-8"
+        }
+    )
 
 
 async def miniapp_verify(request):
