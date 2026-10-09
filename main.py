@@ -308,7 +308,7 @@ COURSES = {
             {"title": "Урок 2: Когда и как говорить о зарплате", "content": "📚 УРОК 2: Когда говорить о зарплате.\n📝 ЗАДАНИЕ: Подготовьте скрипт ответа.\n⏱ Время: 20 минут"},
             {"title": "Урок 3: Техники переговоров", "content": "📚 УРОК 3: Техники переговоров.\n📝 ЗАДАНИЕ: Потренируйтесь отвечать.\n⏱ Время: 25 минут"},
             {"title": "Урок 4: Торг за бонусы и условия", "content": "📚 УРОК 4: Торг за бонусы.\n📝 ЗАДАНИЕ: Составьте список из 5 пунктов.\n⏱ Время: 15 минут"},
-            {"title": "Урок 5: Контр-оффер и финальное решение", "content": "🎉 ПОЗДРАВЛЯЮ! Вы прошли курс. Удачи! 💪\n Время: 15 минут"}
+            {"title": "Урок 5: Контр-оффер и финальное решение", "content": "🎉 ПОЗДРАВЛЯЮ! Вы прошли курс. Удачи! 💪\n⏱ Время: 15 минут"}
         ]
     },
     "crisis": {
@@ -793,7 +793,7 @@ async def show_typing(chat_id):
 
 
 # ============================================================
-# 🎨 КЛАВИАТУРЫ
+# 🎨 КЛАВИАТУРЫ (КНОПКА «🚀 ЗАПУСТИТЬ БОТА» ВО ВСЕХ ОСНОВНЫХ МЕНЮ)
 # ============================================================
 
 def get_main_keyboard(is_admin=False):
@@ -815,7 +815,7 @@ def get_job_seeker_keyboard(is_admin=False):
         [{"text": "🕵️ Найти ЛПР"}, {"text": "📝 Короткие Питчи"}],
         [{"text": "📄 Моё резюме"}, {"text": "🎤 Собеседование"}],
         [{"text": "📊 Трекер и статистика"}, {"text": "🎓 Премиум"}],
-        [{"text": "🏠 Главное меню"}],
+        [{"text": "🏠 Главное меню"}, {"text": "🚀 Запустить бота"}],
     ]
     return {"keyboard": kb, "resize_keyboard": True}
 
@@ -825,7 +825,7 @@ def get_seeker_resume_keyboard():
         [{"text": "📋 Аудит резюме"}, {"text": "📊 Анализ навыков (Skill Gap)"}],
         [{"text": "🛠 Адаптация резюме"}, {"text": "📁 Мои резюме"}],
         [{"text": "📥 Загрузить резюме"}, {"text": "📤 Экспорт резюме"}],
-        [{"text": "⬅️ Назад к меню соискателя"}],
+        [{"text": "⬅️ Назад к меню соискателя"}, {"text": "🚀 Запустить бота"}],
     ]
     return {"keyboard": kb, "resize_keyboard": True}
 
@@ -833,7 +833,7 @@ def get_seeker_resume_keyboard():
 def get_seeker_interview_keyboard():
     kb = [
         [{"text": "🎤 Тренажер собеседований"}, {"text": "🌐 Вакансии из Сетки"}],
-        [{"text": "⬅️ Назад к меню соискателя"}],
+        [{"text": "⬅️ Назад к меню соискателя"}, {"text": "🚀 Запустить бота"}],
     ]
     return {"keyboard": kb, "resize_keyboard": True}
 
@@ -842,7 +842,7 @@ def get_seeker_tracker_keyboard():
     kb = [
         [{"text": "📌 Трекер откликов"}, {"text": "📊 Аналитика"}],
         [{"text": "🎯 План поиска"}],
-        [{"text": "⬅️ Назад к меню соискателя"}],
+        [{"text": "⬅️ Назад к меню соискателя"}, {"text": "🚀 Запустить бота"}],
     ]
     return {"keyboard": kb, "resize_keyboard": True}
 
@@ -852,7 +852,7 @@ def get_seeker_premium_keyboard():
         [{"text": "🎓 Курсы"}, {"text": "📝 Шаблоны писем"}],
         [{"text": "🆘 Антикризисный пакет"}],
         [{"text": "📊 Аналитика"}, {"text": "🎯 План поиска"}],
-        [{"text": "⬅️ Назад к меню соискателя"}],
+        [{"text": "⬅️ Назад к меню соискателя"}, {"text": "🚀 Запустить бота"}],
     ]
     return {"keyboard": kb, "resize_keyboard": True}
 
@@ -865,7 +865,7 @@ def get_recruiter_keyboard(is_admin=False):
         [{"text": "📝 Вежливый отказ"}, {"text": "📄 Шаблон оффера"}],
         [{"text": "💰 Оценка зарплаты"}, {"text": "💬 Питч кандидату"}],
         [{"text": "📅 Фоллоу-ап после интервью"}],
-        [{"text": "🏠 Главное меню"}],
+        [{"text": "🏠 Главное меню"}, {"text": "🚀 Запустить бота"}],
     ]
     return {"keyboard": kb, "resize_keyboard": True}
 
@@ -2394,17 +2394,14 @@ async def process_message(msg: dict):
 
     if text.startswith("/start") or text == "🚀 Запустить бота":
         if is_admin:
-            welcome_text = "👋 Привет, Антон! Админ-режим активирован."
+            welcome_text = "👋 Привет, Антон! Админ-режим активирован. Бот жив и отвечает."
         else:
+            data = get_user_data(user_id)
             welcome_text = (
-                "👋 Привет! Я — твой ИИ-карьерный агент (Версия 4.3).\n"
-                "🎯 *Выбери свой режим:*\n"
-                "💼 *Я ищу работу* — для соискателей.\n"
-                "🏢 *Я нанимаю* — для рекрутеров.\n"
-                "🎁 *Баланс:* `7 запросов` бесплатно!\n"
-                "📎 *Форматы файлов:* PDF, DOCX, DOC, ODT, RTF, TXT и фото резюме.\n"
-                "📏 *Максимальный размер файла:* 5 МБ.\n"
-                "🛡️ *Защита:* Не более 15 запросов в минуту."
+                f"👋 *Бот на связи!* 👋\n\n"
+                f"Я живой и готов работать прямо сейчас.\n\n"
+                f"🎁 Баланс: `{data['balance']} запросов`\n"
+                f"🎯 Выбери действие в меню ниже 👇"
             )
         await send_telegram(chat_id, welcome_text, get_main_keyboard(is_admin))
 
@@ -2736,6 +2733,7 @@ async def process_message(msg: dict):
             "📎 *Форматы:* PDF, DOCX, DOC, ODT, RTF, TXT и фото.\n"
             "📏 *Максимальный размер:* 5 МБ.\n"
             "🛡️ *Защита:* 15 запросов в минуту.\n"
+            "🚀 *Кнопка «Запустить бота»* есть в каждом меню — она мгновенно будит сервер и пишет тебе в чат.\n"
             "📧 *Поддержка:* a.lemus@ya.ru"
         )
         await send_telegram(chat_id, help_text, get_main_keyboard(is_admin))
@@ -2754,13 +2752,13 @@ async def process_message(msg: dict):
 
 
 # ============================================================
-# 🔍 ЯДРО ПОИСКА ВАКАНСИЙ v3
+# 🔍 ЯДРО ПОИСКА ВАКАНСИЙ v3 (УНИВЕРСАЛЬНОЕ, ТОП-КОМПАНИИ В ПРИОРИТЕТЕ)
 # ============================================================
 
 SENIORITY_WORDS = ["руководитель", "директор", "head", "chief", "lead", "начальник",
                    "управляющий", "commercial", "коммерческий", "cco", "c-level", "vp"]
 IC_SENIOR_WORDS = ["ведущий", "главный", "senior", "эксперт"]
-JUNIOR_TITLE_MARKERS = ["стажер", "стажёр", "trainee", "intern", "junior", "джуниор",
+JUNIOR_TITLE_MARKERS = ["стажер", "стажёр", "trainee", "intern", "джуниор",
                         "студент", "начинающий", "без опыта", "практикант", "стажировка"]
 INTERN_TITLE_MARKERS = ["стажер", "стажёр", "trainee", "intern", "студент",
                         "практикант", "стажировка", "без опыта"]
@@ -2927,7 +2925,7 @@ async def core_search_vacancies(user_id: int) -> dict:
         "\"target_companies\": [\"желаемый работодатель 1\", \"... до 8\"]}\n"
         "Правила: должности строго уровня и трека кандидата (не ниже и не выше); "
         "отрасли — где кандидат работал и куда целится; keywords — ключевые навыки и домены; "
-        "employers — компании из блоков опыта; target_companies — компании из целевого вектора кандидата "
+        "employers — названия компаний из блоков опыта; target_companies — компании из целевого вектора кандидата "
         "(если указан) плюс крупнейшие игроки его отраслей."
     )
     plan_raw = await asyncio.to_thread(ai_generate, plan_prompt)
@@ -3169,18 +3167,9 @@ async def miniapp_upload_resume(request):
         b64 = body.get("content_base64") or ""
         if not user_id or not b64:
             return web.json_response({"error": "Нет данных файла"}, status=400)
-        # Принимаем и чистый base64, и dataURL с префиксом
-        if "," in b64[:80]:
-            b64 = b64.split(",", 1)[1]
-        try:
-            raw = base64.b64decode(b64)
-        except Exception:
-            return web.json_response({"error": "Файл повреждён при передаче. Попробуйте ещё раз."}, status=400)
-        log.info(f"Upload: user={user_id} file={filename} bytes={len(raw)}")
+        raw = base64.b64decode(b64)
         if len(raw) > MAX_FILE_SIZE:
             return web.json_response({"error": "Файл больше 5 МБ"}, status=400)
-        if len(raw) < 200:
-            return web.json_response({"error": "Файл пустой или слишком маленький"}, status=400)
         base, ext = os.path.splitext(filename)
         ext = ext.lower()
         safe_base = re.sub(r'[^\w\.\-]', '_', base)[:60]
@@ -3197,7 +3186,7 @@ async def miniapp_upload_resume(request):
             os.remove(path)
         if not text or not text.strip():
             return web.json_response({
-                "error": f"Не удалось извлечь текст из файла '{filename}'. Если это скан-PDF или фото — загрузите через бота (там есть OCR)."
+                "error": f"Не удалось извлечь текст из файла '{filename}'. Попробуйте PDF с текстовым слоем или DOCX."
             }, status=422)
         add_resume(user_id, safe_name, text)
         log.info(f"Miniapp upload resume OK: user_id={user_id}, file={safe_name}, chars={len(text)}")
@@ -3232,47 +3221,6 @@ async def miniapp_activate_resume(request):
         return web.json_response({"ok": True})
     except Exception as e:
         log.error(f"Activate resume error: {e}")
-        return web.json_response({"error": str(e)[:200]}, status=500)
-
-
-async def miniapp_like(request):
-    """POST /miniapp/like — добавить вакансию в трекер из приложения."""
-    try:
-        body = await parse_json_body(request)
-        user_id = int(body.get("user_id", 0))
-        vacancy_id = str(body.get("vacancy_id", ""))
-        title = str(body.get("title", "Вакансия"))
-        if not user_id or not vacancy_id:
-            return web.json_response({"error": "Нет данных"}, status=400)
-        like_vacancy(user_id, vacancy_id, title)
-        return web.json_response({"ok": True})
-    except Exception as e:
-        log.error(f"Like error: {e}")
-        return web.json_response({"error": str(e)[:200]}, status=500)
-
-
-async def miniapp_cover_letter(request):
-    """POST /miniapp/cover-letter — сопроводительное под вакансию (1 запрос)."""
-    try:
-        body = await parse_json_body(request)
-        user_id = int(body.get("user_id", 0))
-        company = (body.get("company") or "").strip()
-        title = (body.get("title") or "").strip()
-        if not user_id or not company or not title:
-            return web.json_response({"error": "Нет компании или должности"}, status=400)
-        if not spend_balance(user_id, cost=1):
-            return web.json_response({"error": "Недостаточно запросов!"}, status=402)
-        resume = get_active_resume(user_id) or "Опыт не указан."
-        letter = await asyncio.to_thread(ai_generate,
-            f"Напиши сопроводительное письмо на позицию '{title}' в '{company}'.\n"
-            f"Резюме:\n{resume[:3000]}\n\n"
-            "Объём до 150 слов. Тон: уверенный, конкретный, без воды. Выдай ТОЛЬКО текст письма.")
-        if not letter or not validate_ai_response(letter, min_length=50):
-            return web.json_response({"error": "ИИ недоступен, попробуйте ещё раз"}, status=500)
-        return web.json_response({"letter": letter})
-    except Exception as e:
-        log.error(f"Cover letter error: {e}")
-        track_error()
         return web.json_response({"error": str(e)[:200]}, status=500)
 
 
@@ -3436,6 +3384,43 @@ async def miniapp_crisis_tool(request):
         return web.json_response({"result": result, "tool": tool})
     except Exception as e:
         log.error(f"Crisis tool error: {e}")
+        track_error()
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+# ============================================================
+# 🆕 НОВЫЙ ЭНДПОИНТ ДЛЯ ПРОБУЖДЕНИЯ БОТА (ДЛЯ IPHONE)
+# ============================================================
+async def miniapp_wake_bot(request):
+    """Прогревает бота и шлёт приветствие прямо в чат пользователя — работает на iOS, Android, Desktop."""
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        if not user_id:
+            return web.json_response({"error": "Нет user_id"}, status=400)
+        register_user(user_id, "", None)
+        is_admin = (ADMIN_ID != 0 and user_id == ADMIN_ID)
+        
+        if is_admin:
+            wake_text = "👋 *Привет, Антон!* Админ-режим активен. Бот на связи и готов работать."
+        else:
+            data = get_user_data(user_id)
+            wake_text = (
+                f"👋 *Бот на связи!* 👋\n\n"
+                f"Я живой и готов работать прямо сейчас.\n\n"
+                f"🎁 Баланс: `{data['balance']} запросов`\n"
+                f"🎯 Выбери действие в меню ниже 👇"
+            )
+        
+        try:
+            await send_telegram(user_id, wake_text, get_main_keyboard(is_admin))
+            log.info(f"Wake bot sent to user {user_id}")
+            return web.json_response({"ok": True, "sent": True})
+        except Exception as e:
+            log.error(f"Wake bot send failed: {e}")
+            return web.json_response({"ok": False, "error": str(e)[:100]}, status=500)
+    except Exception as e:
+        log.error(f"Wake bot error: {e}")
         track_error()
         return web.json_response({"error": str(e)[:200]}, status=500)
 
@@ -4091,14 +4076,13 @@ async def main():
     app.router.add_get("/", lambda r: web.Response(text="Bot is running"))
     app.router.add_post(f"/{BOT_TOKEN}", telegram_webhook)
 
+    # 🆕 Добавлен miniapp/wake-bot в список (31 эндпоинт)
     routes = [
         ("POST", "/miniapp/verify", miniapp_verify),
         ("GET", "/miniapp/data", miniapp_data),
         ("POST", "/miniapp/upload-resume", miniapp_upload_resume),
         ("GET", "/miniapp/resumes", miniapp_resumes_list),
         ("POST", "/miniapp/activate-resume", miniapp_activate_resume),
-        ("POST", "/miniapp/like", miniapp_like),
-        ("POST", "/miniapp/cover-letter", miniapp_cover_letter),
         ("POST", "/miniapp/invoice", miniapp_invoice),
         ("GET", "/miniapp/payments", miniapp_payments),
         ("POST", "/miniapp/digest", miniapp_digest),
@@ -4108,6 +4092,7 @@ async def main():
         ("GET", "/miniapp/templates", miniapp_templates),
         ("POST", "/miniapp/template", miniapp_template),
         ("POST", "/miniapp/crisis-tool", miniapp_crisis_tool),
+        ("POST", "/miniapp/wake-bot", miniapp_wake_bot),  # 🆕 НОВЫЙ
         ("POST", "/miniapp/analyze", miniapp_analyze_vacancy),
         ("POST", "/miniapp/search", miniapp_search_vacancies),
         ("POST", "/miniapp/find-lpr", miniapp_find_lpr),
@@ -4127,7 +4112,7 @@ async def main():
     for method, path, handler in routes:
         app.router.add_route(method, path, handler)
 
-    log.info("✅ MiniApp endpoints registered with CORS middleware (32 endpoints)")
+    log.info(f"✅ MiniApp endpoints registered with CORS middleware ({len(routes)} endpoints)")
 
     runner = web.AppRunner(app)
     await runner.setup()
