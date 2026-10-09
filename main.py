@@ -275,7 +275,7 @@ async def monitor_load():
 
 
 # ============================================================
-# 🎓 КУРСЫ
+# 🎓 КУРСЫ (ВКЛЮЧАЯ АНТИКРИЗИСНЫЙ)
 # ============================================================
 COURSES = {
     "resume": {
@@ -309,6 +309,18 @@ COURSES = {
             {"title": "Урок 3: Техники переговоров", "content": "📚 УРОК 3: Техники переговоров.\n📝 ЗАДАНИЕ: Потренируйтесь отвечать.\n⏱ Время: 25 минут"},
             {"title": "Урок 4: Торг за бонусы и условия", "content": "📚 УРОК 4: Торг за бонусы.\n📝 ЗАДАНИЕ: Составьте список из 5 пунктов.\n⏱ Время: 15 минут"},
             {"title": "Урок 5: Контр-оффер и финальное решение", "content": "🎉 ПОЗДРАВЛЯЮ! Вы прошли курс. Удачи! 💪\n Время: 15 минут"}
+        ]
+    },
+    "crisis": {
+        "title": "🆘 Поиск работы в кризис: план выхода из ямы",
+        "description": "Для тех, кто ищет 3+ месяца: деньги, голова, пробелы, тишина, безопасность",
+        "lessons": [
+            {"title": "Урок 1: Деньги — комплект выживания", "content": "📚 УРОК 1: Деньги — комплект выживания\n\n🎯 Цель: остановить финансовое кровотечение за 1-2 дня, чтобы искать работу с ясной головой.\n\n1️⃣ *Аудит минимального бюджета.* Выпиши только обязательные расходы: жильё, еда, кредиты, дети, лекарства. Всё остальное — на паузу. Это твой пол.\n\n2️⃣ *Кредитные каникулы (106-ФЗ).* Право требовать каникулы, если доход упал более чем на 30% к среднемесячному за прошлый год. Один раз по каждому кредиту, до 6 месяцев. Заявление — в свой банк, можно онлайн. Альтернатива — реструктуризация: срок длиннее, платёж меньше.\n\n3️⃣ *Центр занятости.* Официальный статус безработного: пособие, бесплатное обучение, иногда оплачиваемые общественные работы. Оформление через Госуслуги.\n\n4️⃣ *Детские выплаты и субсидии.* Проверь право на пособия и субсидию на ЖКУ (если коммуналка съедает больше региональной доли дохода).\n\n5️⃣ *Письмо в банк.* Если под каникулы не проходишь — проси реструктуризацию человеческим письмом.\n\n📝 ЗАДАНИЕ: Прогони инструмент «Мой минимум оффера» и запиши свой пол на бумаге.\n⏱ Время: 40 минут"},
+            {"title": "Урок 2: Голова — система микро-шагов", "content": "📚 УРОК 2: Голова — система микро-шагов\n\n💡 4 месяца поиска — марафон без видимого финиша. Выгорание — не слабость, а физиология.\n\n✅ *Правило 3 микро-шагов:* в день — 2 целевых отклика + 1 контакт с человеком (фоллоу-ап, тёплое письмо, звонок). Не 20 откликов в панике.\n\n✅ *Стрик важнее интенсивности:* 3 шага каждый день 30 дней сильнее, чем 50 откликов за ночь и неделя апатии.\n\n✅ *Вечерний ритуал:* запиши 3 сделанных сегодня дела. Мозгу нужна видимость прогресса.\n\n✅ *Один выходной в неделю:* день без поиска. Без чувства вины — это часть плана.\n\n📝 ЗАДАНИЕ: Запусти инструмент «План на сегодня» и выполни 3 шага до вечера.\n⏱ Время: 15 минут"},
+            {"title": "Урок 3: Пробел — как объяснять дыру в резюме", "content": "📚 УРОК 3: Пробел — как объяснять дыру в резюме\n\n💡 Рекрутер боится не пробела, а сбивчивой оправдывающейся истории.\n\n📐 ФОРМУЛА: факт (спокойно, одним предложением) → что делал в паузе (учёба, фрилас, семейные обстоятельства без деталей) → почему сейчас сильнее (навыки, ясность фокуса).\n\n❌ ТАБУ: «меня никто не берёт», «я в депрессии», извинения, длинные оправдания.\n\n✅ ПРИМЕР: «После сокращения взял паузу: закрыл семейные обстоятельства и прошёл курс аналитики. Сейчас возвращаюсь с обновлённым стеком и чётким пониманием, какой продукт хочу развивать».\n\n📝 ЗАДАНИЕ: Сгенерируй свою версию инструментом «Объяснение пробела» и проговори её вслух 3 раза.\n⏱ Время: 20 минут"},
+            {"title": "Урок 4: Тишина — система фоллоу-апов", "content": "📚 УРОК 4: Тишина — система фоллоу-апов\n\n💡 60% тишины — это процесс (отпуск согласующего, бюрократия), а не отказ тебе.\n\n📅 СХЕМА: отклик → фоллоу-ап на 5-7 день → второй на 12-14 день → закрыл вакансию и живёшь дальше.\n\n📐 ФОРМУЛА фоллоу-апа: благодарность + один новый факт о себе + вопрос о сроках решения.\n\n✅ ПРИМЕР: «Мария, здравствуйте! Спасибо за разговор 12-го. С тех пор закрыл сертификацию по X. Подскажите, сориентируете по срокам решения?»\n\n📝 ЗАДАНИЕ: Проставь статусы в трекере и отправь фоллоу-апы всем откликам старше 5 дней — инструмент «Фоллоу-ап после тишины» напишет их за тебя.\n⏱ Время: 25 минут"},
+            {"title": "Урок 5: Минимум — не продавать себя дёшево", "content": "📚 УРОК 5: Минимум — не продавать себя дёшево\n\n💡 Оффер, принятый из страха на -40% от рынка, превращается в двухлетнюю яму дохода и самооценки.\n\n📐 ПОЛ = обязательные расходы месяца + 20% буфер. Ниже пола — только как временный мост с чётким сроком (например, 3 месяца) и продолжением поиска.\n\n✅ ФРАЗА-ДЕРЖАТЕЛЬ: «Я понимаю рынок и свой уровень: рассматриваю предложения от X. Ниже обсуждать не готов, но открыт к разговору о бонусной структуре».\n\n✅ Если давят «решайте сегодня» — нормальная компания даёт 2-3 дня. Давление — красный флаг.\n\n📝 ЗАДАНИЕ: Посчитай свой пол инструментом «Мой минимум оффера».\n⏱ Время: 15 минут"},
+            {"title": "Урок 6: Безопасность, тёплые контакты, мост-доход", "content": "📚 УРОК 6: Безопасность, тёплые контакты, мост-доход\n\n🚩 КРАСНЫЕ ФЛАГИ СКАМА: предоплата за «обучение» или «документы», зарплата в 2-3 раза выше рынка за простую работу, нет юрлица и договора, давление «решите сегодня», просят CVC/коды из СМС.\n\n🤝 ТЁПЛЫЕ КОНТАКТЫ: до 70% руководящих вакансий не доходят до публикации. Формула письма: общее воспоминание → суть поиска одной фразой → конкретная лёгкая просьба (рекомендация/знакомство/15 минут звонка). Инструмент «Письмо тёплому контакту».\n\n🌉 МОСТ-ДОХОД: монетизируй свою экспертизу на время поиска — консультации, interim-проекты, фриланс по профилю, менторство. Не подработка веером, а 2-3 канала твоего уровня. Инструмент «Мост-доход».\n\n🎉 Ты прошёл антикризисный пакет. У тебя есть план, пол, история и инструменты. Дальше — микро-шагами. И помни: поиск работы — не приговор тебе как человеку.\n⏱ Время: 30 минут"}
         ]
     }
 }
@@ -839,6 +851,7 @@ def get_seeker_tracker_keyboard():
 def get_seeker_premium_keyboard():
     kb = [
         [{"text": "🎓 Курсы"}, {"text": "📝 Шаблоны писем"}],
+        [{"text": "🆘 Антикризисный пакет"}],
         [{"text": "📊 Аналитика"}, {"text": "🎯 План поиска"}],
         [{"text": "⬅️ Назад к меню соискателя"}],
     ]
@@ -863,11 +876,9 @@ def get_keyboard(is_admin=False):
 
 
 # ---------------- hh.ru парсинг ----------------
-async def hh_api_search(query: str, region_code: int = 1, only_with_salary: bool = False):
+async def hh_api_search(query: str, region_code: int = 1):
     try:
         params = {"text": query, "area": region_code, "per_page": "50"}
-        if only_with_salary:
-            params["only_with_salary"] = "true"
         async with HTTP.get("https://api.hh.ru/vacancies",
                             params=params,
                             headers={"User-Agent": "Mozilla/5.0"}) as resp:
@@ -892,8 +903,6 @@ async def hh_api_search(query: str, region_code: int = 1, only_with_salary: bool
                 "id": i.get("id"), "name": i.get("name"),
                 "company": (i.get("employer") or {}).get("name"),
                 "salary": sal_str,
-                "salary_from": (salary or {}).get("from"),
-                "salary_to": (salary or {}).get("to"),
                 "url": i.get("alternate_url") or f"https://hh.ru/vacancy/{i.get('id')}"
             })
         return items or None
@@ -931,22 +940,6 @@ async def hh_scrape_search(query: str, region_code: int = 1):
         log.warning("hh scrape failed: %s", str(e)[:150])
         track_error()
         return None
-
-
-def parse_salary_from_item(v: dict):
-    """Достаёт числовую зарплату 'от' из элемента (API или scrape-строка)."""
-    if v.get("salary_from"):
-        try:
-            return int(v["salary_from"])
-        except Exception:
-            return 0
-    m = re.search(r'(\d[\d\s]{3,})', str(v.get("salary") or ""))
-    if m:
-        try:
-            return int(m.group(1).replace(" ", ""))
-        except Exception:
-            return 0
-    return 0
 
 
 async def live_search_recruiter(company: str, contact_name: str = "") -> list:
@@ -1490,7 +1483,7 @@ async def handle_search(chat_id: int, user_id: int, is_admin: bool):
         await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
         return
     await show_typing(chat_id)
-    await send_telegram(chat_id, "🔍 Подбираю вакансии по резюме (регион, отрасль, уровень)...")
+    await send_telegram(chat_id, "🔍 Подбираю вакансии по резюме (регион, отрасль, уровень, топ-компании)...")
     result = await core_search_vacancies(user_id)
     if result.get("error"):
         await send_telegram(chat_id, f"⚠️ {result['error']}", get_job_seeker_keyboard(is_admin))
@@ -1757,7 +1750,8 @@ async def show_courses(chat_id: int, user_id: int):
         "inline_keyboard": [
             [{"text": "🎓 Резюме за 1 час", "callback_data": "course_resume"}],
             [{"text": "🎤 Собеседование без стресса", "callback_data": "course_interview"}],
-            [{"text": "💰 Переговоры о зарплате", "callback_data": "course_salary"}]
+            [{"text": "💰 Переговоры о зарплате", "callback_data": "course_salary"}],
+            [{"text": "🆘 Поиск работы в кризис", "callback_data": "course_crisis"}]
         ]
     }
     await send_telegram(chat_id, courses_msg, kb)
@@ -1859,6 +1853,117 @@ async def generate_job_search_plan(chat_id: int, user_id: int):
         await send_telegram(chat_id, "⚠️ ИИ недоступен.")
         return
     await send_telegram(chat_id, f"🎯 *Персональный план поиска работы на неделю:*\n\n{plan}")
+
+
+# ============================================================
+# 🆘 АНТИКРИЗИСНЫЙ ПАКЕТ (ПРЕМИУМ)
+# ============================================================
+
+CRISIS_TOOLS_SET = {"gap", "followup", "scam", "min", "warm", "bridge", "day"}
+
+CRISIS_HINTS = {
+    "gap": "🕳 *Объяснение пробела*\nНапиши: сколько длился пробел и причина своими словами.\n_Пример: 8 месяцев, сокращение + уход за болеющим родственником._",
+    "followup": "📮 *Фоллоу-ап после тишины*\nНапиши: компания, должность, сколько дней тишины.\n_Пример: Сбер, Руководитель продукта, 9 дней._",
+    "scam": "🛡 *Проверка вакансии на скам*\nПришли полный текст вакансии следующим сообщением.",
+    "min": "💰 *Мой минимум оффера*\nНапиши обязательные расходы в месяц.\n_Пример: кредиты 25000, аренда 45000, дети 30000, прочее 20000._",
+    "warm": "🤝 *Письмо тёплому контакту*\nНапиши: имя и где работали вместе.\n_Пример: Мария, экс-коллега из МТС (мой руководитель)._",
+}
+
+CRISIS_TITLES = {
+    "gap": "🕳 *Твоя история пробела:*",
+    "followup": "📮 *Фоллоу-ап готов:*",
+    "scam": "🛡 *Проверка вакансии:*",
+    "min": "💰 *Твой минимум и стратегия:*",
+    "warm": "🤝 *Письмо готово:*",
+    "bridge": "🌉 *Мост-доход по твоим навыкам:*",
+    "day": "📅 *План на сегодня:*",
+}
+
+
+def build_crisis_prompt(tool: str, params: str, resume: str) -> str:
+    if tool == "gap":
+        return (
+            "Ты — карьерный консультант и психолог. Ситуация кандидата: пробел в занятости.\n"
+            f"Вводные: {params}\n"
+            "Составь:\n"
+            "1) Уверенный нарратив пробела на 2-3 предложения (формула: факт → чем занимался в паузе → почему сейчас сильнее);\n"
+            "2) Короткие ответы на 3 каверзных вопроса рекрутера о пробеле;\n"
+            "3) Три фразы-табу, которые нельзя говорить.\n"
+            "Тон: достойный, без извинений и драмы.\n"
+            f"Резюме кандидата для контекста:\n{resume[:1500]}"
+        )
+    if tool == "followup":
+        return (
+            "Ты — мастер деловой коммуникации. Напиши фоллоу-ап письмо HR после тишины на отклик.\n"
+            f"Вводные: {params}\n"
+            "Структура: благодарность за возможность отклика/интервью → один новый конкретный факт о себе "
+            "(достижение, сертификация, проект) → вопрос о сроках решения и следующих шагах.\n"
+            "Объём до 120 слов. Тон: тёплый, уверенный, без давления и без отчаяния."
+        )
+    if tool == "scam":
+        return (
+            "Ты — эксперт по трудовому мошенничеству. Проанализируй вакансию на признаки скама.\n"
+            f"Текст вакансии:\n{params[:4000]}\n\n"
+            "Выдай:\n"
+            "1) Список найденных красных флагов (или «не найдены»);\n"
+            "2) Уровень риска: низкий/средний/высокий;\n"
+            "3) Что проверить до согласия (юрлицо в ЕГРЮЛ, отзывы, договор, оформление по ТК);\n"
+            "4) Что нельзя отправлять и платить ни при каких условиях."
+        )
+    if tool == "min":
+        return (
+            "Ты — финансовый советник и коуч по переговорам. Вводные — обязательные расходы кандидата в месяц: "
+            f"{params}\n"
+            "Выдай:\n"
+            "1) Расчёт минимального приемлемого оффера: сумма расходов + 20% буфер (покажи арифметику);\n"
+            "2) Точную фразу для переговоров, удерживающую этот пол;\n"
+            "3) Две стратегии, если оффер ниже пола: временный мост с дедлайном и торг немедными условиями;\n"
+            "4) Одно поддерживающее предложение: почему согласие ниже пола из страха — это потерянные 2 года."
+        )
+    if tool == "warm":
+        return (
+            "Ты — эксперт по нетворкингу. Напиши сообщение тёплому контакту с просьбой о рекомендации или тёплом знакомстве.\n"
+            f"Вводные: {params}\n"
+            "Структура: тёплое приветствие с общим воспоминанием → суть поиска одной фразой (позиция, ценность) → "
+            "конкретная лёгкая просьба (рекомендация / знакомство с нужным человеком / 15 минут звонка) → благодарность без давления.\n"
+            "Объём до 100 слов. Тон: на равных, без стыда и просьб «выручить»."
+        )
+    if tool == "bridge":
+        return (
+            "Ты — карьерный стратег. Кандидату нужен мост-доход на период поиска работы.\n"
+            f"Резюме:\n{resume[:2500]}\n\n"
+            "Предложи 5 идей мост-дохода именно по навыкам кандидата. Для каждой:\n"
+            "• суть одной фразой;\n"
+            "• где продавать (платформы, типы компаний, каналы);\n"
+            "• как упаковать предложение в одну фразу;\n"
+            "• реалистичный срок до первых денег.\n"
+            "Идеи должны соответствовать уровню кандидата, а не быть случайными подработками."
+        )
+    # day
+    extra = f"\nДополнительно о ситуации: {params}" if params else ""
+    return (
+        "Ты — поддерживающий коуч. Составь план на СЕГОДНЯ для кандидата в поиске работы.\n"
+        f"Резюме:\n{resume[:1500]}{extra}\n\n"
+        "Выдай:\n"
+        "1) Три микро-шага на сегодня (2 целевых отклика + 1 контакт с человеком) с конкретикой из резюме;\n"
+        "2) Один пункт заботы о себе и теле;\n"
+        "3) Вечернюю фразу поддержки: что записать в дневник перед сном.\n"
+        "Формат: простой чек-лист. Тон: тёплый, без токсичного позитива."
+    )
+
+
+async def crisis_generate(chat_id: int, user_id: int, tool: str, params: str):
+    if not is_premium_user(user_id):
+        await send_telegram(chat_id, "🔒 *Антикризисный пакет входит в Премиум.*\nБезлимит на 10 дней — 500 ⭐: кнопка «💎 Оплата и Баланс».")
+        return
+    resume = get_active_resume(user_id) or ""
+    await show_typing(chat_id)
+    prompt = build_crisis_prompt(tool, params, resume)
+    res = await asyncio.to_thread(ai_generate, prompt)
+    if not res or not validate_ai_response(res, min_length=50):
+        await send_telegram(chat_id, "⚠️ ИИ недоступен. Попробуй ещё раз через минуту.")
+        return
+    await send_telegram(chat_id, f"{CRISIS_TITLES.get(tool, '🆘 *Результат:*')}\n\n{res}")
 
 
 async def handle_document(chat_id: int, user_id: int, document: dict, is_admin: bool):
@@ -2126,6 +2231,13 @@ async def process_message(msg: dict):
             bg(hr_followup_after_interview(chat_id, user_id, text))
         elif hr_action == "vacancy_description":
             bg(hr_generate_vacancy_description(chat_id, user_id, text))
+        return
+
+    # 🆘 АНТИКРИЗИС: ввод параметров инструмента
+    if user_states.get(user_id) == "waiting_for_crisis_input":
+        user_states.pop(user_id, None)
+        tool = user_search_cache.get(user_id, {}).get("crisis_tool", "")
+        bg(crisis_generate(chat_id, user_id, tool, text))
         return
 
     if user_states.get(user_id) == "waiting_for_company_correction":
@@ -2422,6 +2534,27 @@ async def process_message(msg: dict):
     elif text == "🎯 План поиска":
         bg(generate_job_search_plan(chat_id, user_id))
 
+    elif text == "🆘 Антикризисный пакет":
+        if not is_premium_user(user_id):
+            await send_telegram(chat_id,
+                "🔒 *Антикризисный пакет входит в Премиум.*\n"
+                "Внутри: курс «Поиск работы в кризис» (6 уроков) и 7 персональных генераторов:\n"
+                "🕳 объяснение пробела • 📮 фоллоу-ап после тишины • 🛡 проверка на скам • "
+                "💰 минимум оффера • 🤝 письмо тёплому контакту • 🌉 мост-доход • 📅 план на сегодня.\n"
+                "💳 Безлимит на 10 дней — 500 ⭐: кнопка «💎 Оплата и Баланс».")
+            return
+        kb = {"inline_keyboard": [
+            [{"text": "🕳 Объяснить пробел", "callback_data": "crisis_gap"},
+             {"text": "📮 Фоллоу-ап после тишины", "callback_data": "crisis_followup"}],
+            [{"text": "🛡 Проверить вакансию", "callback_data": "crisis_scam"},
+             {"text": "💰 Мой минимум оффера", "callback_data": "crisis_min"}],
+            [{"text": "🤝 Письмо тёплому контакту", "callback_data": "crisis_warm"}],
+            [{"text": "🌉 Мост-доход по навыкам", "callback_data": "crisis_bridge"},
+             {"text": "📅 План на сегодня", "callback_data": "crisis_day"}],
+            [{"text": "🎓 Курс «Поиск работы в кризис»", "callback_data": "course_crisis"}]
+        ]}
+        await send_telegram(chat_id, "🆘 *Антикризисный пакет*\nВыбери инструмент:", kb)
+
     elif text == "📌 Трекер откликов":
         cur.execute("SELECT vacancy_id, title, status FROM liked_vacancies WHERE user_id=? ORDER BY id DESC LIMIT 15", (user_id,))
         rows = cur.fetchall()
@@ -2556,7 +2689,7 @@ async def process_message(msg: dict):
             f"💎 *Оплата и Баланс*\n{status_str}\n"
             "💳 *Тарифы:*\n"
             "1️⃣ Пакет «50 запросов»: 100 ⭐ ИЛИ 200 руб.\n"
-            "2️⃣ Безлимит на 10 дней: 500 ⭐ ИЛИ 500 руб.\n"
+            "2️⃣ Безлимит на 10 дней: 500 ⭐ ИЛИ 500 руб. (включает Премиум: курсы, шаблоны, 🆘 антикризисный пакет).\n"
             "🏦 СБП: `2202208459089018`\n"
             "_После перевода отправьте скриншот чека._"
         )
@@ -2579,7 +2712,7 @@ async def process_message(msg: dict):
             f"⏰ *Продление доступа*\n{status_str}\n"
             "💳 *Выберите вариант:*\n"
             "⭐ 50 запросов — 100 ⭐\n"
-            "⭐ Безлимит 10 дней — 500 ⭐"
+            "⭐ Безлимит 10 дней — 500 ⭐ (включает Премиум и 🆘 пакет)"
         )
         kb = {"inline_keyboard": [
             [{"text": "⭐ 50 запросов (100 Звезд)", "callback_data": "buy_pack_stars"}],
@@ -2624,23 +2757,29 @@ async def process_message(msg: dict):
 
 
 # ============================================================
-# 🔍 ЯДРО ПОИСКА ВАКАНСИЙ (УНИВЕРСАЛЬНОЕ, ПО ПРОФИЛЮ КАНДИДАТА)
+# 🔍 ЯДРО ПОИСКА ВАКАНСИЙ v3 (УНИВЕРСАЛЬНОЕ, ТОП-КОМПАНИИ В ПРИОРИТЕТЕ)
 # ============================================================
 
-# Маркеры управленческого трека в резюме
 SENIORITY_WORDS = ["руководитель", "директор", "head", "chief", "lead", "начальник",
                    "управляющий", "commercial", "коммерческий", "cco", "c-level", "vp"]
-# Маркеры senior-специалиста без управления
 IC_SENIOR_WORDS = ["ведущий", "главный", "senior", "эксперт"]
-# Маркеры начального уровня в НАЗВАНИИ вакансии
 JUNIOR_TITLE_MARKERS = ["стажер", "стажёр", "trainee", "intern", "junior", "джуниор",
                         "студент", "начинающий", "без опыта", "практикант", "стажировка"]
 INTERN_TITLE_MARKERS = ["стажер", "стажёр", "trainee", "intern", "студент",
                         "практикант", "стажировка", "без опыта"]
-# Маркеры директорских ролей в НАЗВАНИИ вакансии
 MANAGEMENT_TITLE_MARKERS = SENIORITY_WORDS
 
-# Словарь отраслей для буста компаний (ключи подбираются нечётко)
+TOP_COMPANIES_RU = [
+    "сбер", "яндекс", "мтс", "мегафон", "ростелеком", "билайн", "втб", "т-банк", "тинькофф",
+    "альфа-банк", "газпромбанк", "совкомбанк", "райффайзен", "росбанк", "дом.рф", "псб",
+    "ozon", "озон", "wildberries", "вайлдберриз", "avito", "авито", "vk", "x5", "магнит",
+    "лента", "мвидео", "dns", "касперский", "kaspersky", "1с", "сбертех", "мтс digital",
+    "мегафон технологии", "ozon tech", "yandex", "газпром", "роснефть", "лукойл", "сибур",
+    "северсталь", "нлмк", "росатом", "ростех", "ржд", "аэрофлот", "почта россии",
+    "шереметьево", "транснефть", "россети", "интер рао", "норникель", "фосагро",
+    "леруа мерлен", "спортмастер", "эльдорадо", "хоум банк",
+]
+
 INDUSTRY_COMPANY_HINTS = {
     "телеком": ["мегафон", "мтс", "билайн", "ростелеком", "tele2", "т2", "вымпелком", "дом.ru", "эртелеком"],
     "связь": ["мегафон", "мтс", "билайн", "ростелеком", "tele2", "т2", "вымпелком"],
@@ -2650,21 +2789,17 @@ INDUSTRY_COMPANY_HINTS = {
     "it": ["яндекс", "vk", "озон", "avito", "kaspersky", "1с", "сбертех", "wildberries"],
     "итей": ["яндекс", "vk", "озон", "avito", "kaspersky", "1с"],
     "ретейл": ["магнит", "x5", "пятёрочка", "перекрёсток", "лента", "wildberries", "озон"],
-    "фарма": ["фарм", "биотех", "медицин", "клиник", "здравоохранение"],
+    "фарма": ["фарм", "биотех", "медицин", "клиник"],
     "медиа": ["медиа", "тв", "радио", "пресс", "издатель"],
     "строитель": ["строй", "девелоп", "инжинир", "проектн"],
     "нефтегаз": ["нефт", "газ", "лукойл", "роснефт", "газпром", "труб"],
     "транспорт": ["логистик", "транспорт", "жд", "ржд", "аэро", "авто"],
     "производ": ["завод", "производ", "промышл", "металл", "машин"],
-    "образован": ["школ", "универ", "институт", "образован", "курсы"],
+    "образован": ["школ", "универ", "институт", "образован"],
 }
-
-# Мягкие пороги зарплаты для бонуса к скору (не фильтр!)
-SALARY_SOFT_FLOOR = {"senior": 150000, "middle": 90000, "junior": 50000}
 
 
 def detect_profile(resume_text: str) -> dict:
-    """Универсальный профиль кандидата: уровень, трек, явная зарплата."""
     text = (resume_text or "").lower()
     years = 0
     m = re.search(r'опыт работы[^\d]{0,30}(\d{1,2})\s*(лет|года)', text)
@@ -2675,18 +2810,11 @@ def detect_profile(resume_text: str) -> dict:
         if m2:
             years = int(m2.group(1))
         else:
-            # Оценка по диапазонам дат (2016 — 2026 => ~10 лет)
             dates = [int(d) for d in re.findall(r'\b(19[89]\d|20[0-4]\d)\b', text)]
             if dates:
                 years = max(0, min(40, max(dates) - min(dates)))
     has_management = any(w in text for w in SENIORITY_WORDS) or \
         "руководил" in text or "командой" in text or "подчиненными" in text or "в подчинении" in text
-    explicit_salary = 0
-    m3 = re.search(r'зарплат[аы][^\d]{0,40}(\d{3,6})', text)
-    if m3:
-        val = int(m3.group(1))
-        if 30000 <= val <= 1000000:
-            explicit_salary = val
     if years >= 7 or (has_management and years >= 5):
         seniority = "senior"
     elif years >= 3:
@@ -2696,44 +2824,55 @@ def detect_profile(resume_text: str) -> dict:
     return {
         "years": years,
         "has_management": has_management,
-        "explicit_salary": explicit_salary,
         "seniority": seniority,
     }
 
 
-def company_industry_boost(company: str, industries: list, employers: list) -> int:
-    """Буст компании: бывшие работодатели +15, целевые отрасли +10, прочие из словаря +5."""
+def company_boost(company: str, industries: list, employers: list) -> int:
     cl = (company or "").lower()
     if not cl:
         return 0
+    boost = 0
     for e in (employers or []):
         e = (e or "").lower().strip()
         if not e or len(e) < 3:
             continue
         tokens = [w for w in re.split(r'[\s\.,«»"\']+', e) if len(w) > 3]
         if e in cl or any(tok in cl for tok in tokens):
-            return 15
-    targeted = set()
-    for ind in (industries or []):
-        key = ind.strip().lower()
-        if not key:
-            continue
-        for dict_key, tokens in INDUSTRY_COMPANY_HINTS.items():
-            if dict_key in key or key in dict_key:
-                targeted.update(tokens)
-    if targeted:
-        for t in targeted:
-            if t in cl:
-                return 10
-    for tokens in INDUSTRY_COMPANY_HINTS.values():
-        for t in tokens:
-            if t in cl:
-                return 5
-    return 0
+            boost = max(boost, 15)
+            break
+    if boost == 0:
+        targeted = set()
+        for ind in (industries or []):
+            key = ind.strip().lower()
+            if not key:
+                continue
+            for dict_key, tokens in INDUSTRY_COMPANY_HINTS.items():
+                if dict_key in key or key in dict_key:
+                    targeted.update(tokens)
+        if targeted:
+            for t in targeted:
+                if t in cl:
+                    boost = max(boost, 10)
+                    break
+    if boost == 0:
+        for tokens in INDUSTRY_COMPANY_HINTS.values():
+            hit = False
+            for t in tokens:
+                if t in cl:
+                    boost = max(boost, 5)
+                    hit = True
+                    break
+            if hit:
+                break
+    for tc in TOP_COMPANIES_RU:
+        if tc in cl:
+            boost += 12
+            break
+    return min(boost, 27)
 
 
 def title_level_ok(title: str, profile: dict) -> bool:
-    """Фильтр уровня вакансии относительно уровня кандидата."""
     t = (title or "").lower()
     sen = profile["seniority"]
     if sen == "senior":
@@ -2742,7 +2881,7 @@ def title_level_ok(title: str, profile: dict) -> bool:
     elif sen == "middle":
         if any(m in t for m in INTERN_TITLE_MARKERS):
             return False
-    else:  # junior
+    else:
         if any(m in t for m in MANAGEMENT_TITLE_MARKERS):
             return False
     return True
@@ -2750,12 +2889,11 @@ def title_level_ok(title: str, profile: dict) -> bool:
 
 def keyword_fallback_score(title: str, company: str, keywords: list,
                            industries: list, employers: list, profile: dict) -> tuple:
-    """Резервный скоринг (когда ИИ недоступен): ключевые слова + отрасль + уровень."""
     t = (title or "").lower()
     s = 45
     hits = [k for k in (keywords or []) if k and len(k) > 2 and k.lower() in t]
     s += min(30, 6 * len(hits))
-    s += company_industry_boost(company, industries, employers)
+    s += company_boost(company, industries, employers)
     if profile["has_management"]:
         if any(w in t for w in MANAGEMENT_TITLE_MARKERS):
             s += 12
@@ -2770,7 +2908,6 @@ def keyword_fallback_score(title: str, company: str, keywords: list,
 
 
 async def core_search_vacancies(user_id: int) -> dict:
-    """Полный цикл поиска: профиль -> регион -> план ИИ -> hh -> фильтры уровня -> скоринг."""
     resume = get_active_resume(user_id)
     if not resume:
         return {"error": "Сначала загрузите резюме (в приложении или в боте)",
@@ -2778,7 +2915,7 @@ async def core_search_vacancies(user_id: int) -> dict:
     profile = detect_profile(resume)
     region_code = await extract_region_from_resume(resume)
     log.info(f"🎯 Search profile: seniority={profile['seniority']}, mgmt={profile['has_management']}, "
-             f"years={profile['years']}, explicit_salary={profile['explicit_salary']}, region={region_code}")
+             f"years={profile['years']}, region={region_code}")
 
     plan_prompt = (
         "Ты — карьерный аналитик. По резюме составь план поиска вакансий на hh.ru.\n"
@@ -2786,37 +2923,40 @@ async def core_search_vacancies(user_id: int) -> dict:
         f"Уровень кандидата: {profile['seniority']}. "
         f"Трек: {'управленческий' if profile['has_management'] else 'специалист/эксперт'}.\n"
         "Верни ТОЛЬКО JSON вида:\n"
-        "{\"queries\": [\"должность 1\", \"должность 2\", \"должность 3\"], "
+        "{\"queries\": [\"должность 1\", \"... 5 должностей\"], "
         "\"industries\": [\"отрасль 1\", \"отрасль 2\"], "
         "\"keywords\": [\"навык 1\", \"... до 10\"], "
-        "\"employers\": [\"компания из опыта 1\", \"...\"]}\n"
+        "\"employers\": [\"компания из опыта 1\", \"...\"], "
+        "\"target_companies\": [\"желаемый работодатель 1\", \"... до 8\"]}\n"
         "Правила: должности строго уровня и трека кандидата (не ниже и не выше); "
         "отрасли — где кандидат работал и куда целится; keywords — ключевые навыки и домены; "
-        "employers — названия компаний из блоков опыта."
+        "employers — компании из блоков опыта; target_companies — компании из целевого вектора кандидата "
+        "(если указан) плюс крупнейшие игроки его отраслей."
     )
     plan_raw = await asyncio.to_thread(ai_generate, plan_prompt)
-    queries, industries, keywords, employers = [], [], [], []
+    queries, industries, keywords, employers, target_companies = [], [], [], [], []
     if plan_raw:
         clean = plan_raw.replace("```json", "").replace("```", "").strip()
         m = re.search(r'\{.*\}', clean, re.S)
         if m:
             try:
                 parsed = json.loads(m.group(0))
-                queries = [str(q).strip() for q in (parsed.get("queries") or []) if str(q).strip()][:3]
+                queries = [str(q).strip() for q in (parsed.get("queries") or []) if str(q).strip()][:5]
                 industries = [str(i).strip() for i in (parsed.get("industries") or []) if str(i).strip()][:4]
                 keywords = [str(k).strip() for k in (parsed.get("keywords") or []) if str(k).strip()][:10]
                 employers = [str(e).strip() for e in (parsed.get("employers") or []) if str(e).strip()][:8]
+                target_companies = [str(t).strip() for t in (parsed.get("target_companies") or []) if str(t).strip()][:8]
             except Exception as e:
                 log.warning(f"Search plan parse error: {e}")
     if not queries:
         if profile["has_management"]:
-            queries = ["Руководитель направления", "Директор по развитию", "Head of department"]
+            queries = ["Руководитель направления", "Директор по развитию", "Коммерческий директор",
+                       "Руководитель проектов", "Head of business development"]
         elif profile["seniority"] == "senior":
-            queries = ["Ведущий специалист", "Главный эксперт", "Senior manager"]
+            queries = ["Ведущий специалист", "Главный эксперт", "Senior manager", "Ведущий менеджер", "Эксперт"]
         else:
-            queries = ["Специалист", "Менеджер", "Ассистент"]
+            queries = ["Специалист", "Менеджер", "Ассистент", "Начинающий специалист", "Стажер"]
 
-    # Приводим запросы к уровню и треку кандидата
     adjusted = []
     for q in queries:
         ql = q.lower()
@@ -2827,19 +2967,23 @@ async def core_search_vacancies(user_id: int) -> dict:
             if not any(w in ql for w in IC_SENIOR_WORDS + MANAGEMENT_TITLE_MARKERS):
                 q = f"Ведущий {q}"
         adjusted.append(q)
-    queries = adjusted[:3]
+    queries = adjusted[:5]
 
     all_items = []
-    use_salary_filter = profile["explicit_salary"] > 0
     for idx, q in enumerate(queries):
         if idx > 0:
             await asyncio.sleep(1)
-        res = await hh_api_search(q, region_code, only_with_salary=use_salary_filter) \
-            or await hh_scrape_search(q, region_code)
+        res = await hh_api_search(q, region_code) or await hh_scrape_search(q, region_code)
         if res:
             all_items.extend(res)
-        if len(all_items) >= 90:
-            break
+    senior_word = "руководитель" if profile["has_management"] else (queries[0] if queries else "специалист")
+    for comp in target_companies[:6]:
+        await asyncio.sleep(1)
+        tq = f"{comp} {senior_word}"
+        res = await hh_api_search(tq, region_code) or await hh_scrape_search(tq, region_code)
+        if res:
+            all_items.extend(res)
+    log.info(f"📊 Raw collected: {len(all_items)}")
     if not all_items:
         return {"error": "", "vacancies": [], "queries": queries, "industries": industries}
 
@@ -2852,13 +2996,8 @@ async def core_search_vacancies(user_id: int) -> dict:
             continue
         if is_vacancy_hidden(user_id, vid):
             continue
-        # Жёсткий фильтр зарплаты ТОЛЬКО если кандидат явно указал желаемую
-        if use_salary_filter:
-            sal_to = v.get("salary_to")
-            if sal_to and sal_to < profile["explicit_salary"] * 0.7:
-                continue
         unique[vid] = v
-    filtered = list(unique.values())[:45]
+    filtered = list(unique.values())[:60]
     log.info(f"📊 Filtered: {len(filtered)} / {len(all_items)}")
 
     scored = []
@@ -2869,7 +3008,9 @@ async def core_search_vacancies(user_id: int) -> dict:
             f"Оцени соответствие резюме кандидата каждой вакансии (0-100).\n"
             f"Уровень кандидата: {profile['seniority']}, трек: "
             f"{'управленческий' if profile['has_management'] else 'специалист'}.\n"
-            "Учитывай: уровень должности, отрасль, ключевые навыки. Штрафуй вакансии не того уровня.\n"
+            "ВАЖНО: отрасли телеком, IT, SaaS, банки, финтех и экосистемы — взаимозаменяемые домены для "
+            "коммерческих, продуктовых и управленческих ролей. НЕ снижай оценку сильно за другую отрасль, "
+            "если совпадают уровень, трек и компетенции (P&L, B2B, команды, продукты, юнит-экономика).\n"
             f"Резюме:\n{resume[:2500]}\n\nВакансии:\n{vacancies_text}\n\n"
             "Верни ТОЛЬКО JSON: {\"ID\": {\"score\": 85, \"reason\": \"причина\"}}"
         )
@@ -2886,7 +3027,7 @@ async def core_search_vacancies(user_id: int) -> dict:
         for v in batch:
             vid = str(v["id"])
             v_data = parsed_batch.get(vid) or {}
-            boost = company_industry_boost(v.get("company"), industries, employers)
+            boost = company_boost(v.get("company"), industries, employers)
             if v_data.get("score") is not None:
                 try:
                     base = int(v_data["score"])
@@ -2897,12 +3038,8 @@ async def core_search_vacancies(user_id: int) -> dict:
                 base, reason = keyword_fallback_score(
                     v.get("name"), v.get("company"), keywords, industries, employers, profile)
             final_score = min(98, base + boost)
-            # Мягкий бонус за зарплату уровня кандидата (без жёсткого фильтра)
-            sal_from = parse_salary_from_item(v)
-            if sal_from and sal_from >= SALARY_SOFT_FLOOR.get(profile["seniority"], 0):
-                final_score = min(98, final_score + 6)
-            if boost >= 10:
-                reason += " • целевая отрасль/работодатель"
+            if boost >= 12:
+                reason += " • приоритет: топ-компания/целевой работодатель"
             scored.append({
                 "id": vid,
                 "title": v.get("name"),
@@ -2918,7 +3055,7 @@ async def core_search_vacancies(user_id: int) -> dict:
 
 
 # ============================================================
-# 🌙 ДАЙДЖЕСТ ВАКАНСИЙ (ФОНОВАЯ РАССЫЛКА)
+# 🌙 ДАЙДЖЕСТ ВАКАНСИЙ
 # ============================================================
 
 async def digest_loop():
@@ -3038,7 +3175,10 @@ async def miniapp_upload_resume(request):
         raw = base64.b64decode(b64)
         if len(raw) > MAX_FILE_SIZE:
             return web.json_response({"error": "Файл больше 5 МБ"}, status=400)
-        safe_name = re.sub(r'[^\w\.\-]', '_', filename)[:80]
+        base, ext = os.path.splitext(filename)
+        ext = ext.lower()
+        safe_base = re.sub(r'[^\w\.\-]', '_', base)[:60]
+        safe_name = (safe_base + ext) if ext else safe_base
         path = f"tmp_up_{user_id}_{safe_name}"
         with open(path, "wb") as f:
             f.write(raw)
@@ -3050,9 +3190,11 @@ async def miniapp_upload_resume(request):
         if os.path.exists(path):
             os.remove(path)
         if not text or not text.strip():
-            return web.json_response({"error": "Не удалось извлечь текст из файла"}, status=422)
+            return web.json_response({
+                "error": f"Не удалось извлечь текст из файла '{filename}'. Попробуйте PDF с текстовым слоем или DOCX."
+            }, status=422)
         add_resume(user_id, safe_name, text)
-        log.info(f"Miniapp upload resume OK: user_id={user_id}, file={safe_name}")
+        log.info(f"Miniapp upload resume OK: user_id={user_id}, file={safe_name}, chars={len(text)}")
         return web.json_response({"ok": True, "resumes_count": len(list_resumes(user_id))})
     except Exception as e:
         log.error(f"Upload resume error: {e}")
@@ -3095,7 +3237,7 @@ async def miniapp_invoice(request):
         if not user_id:
             return web.json_response({"error": "Нет user_id"}, status=400)
         if tariff == "unl10":
-            amount, title = 500, "Безлимит 10 дней"
+            amount, title = 500, "Безлимит 10 дней + Премиум"
         else:
             amount, title = 100, "Пакет 50 запросов"
         payload = f"mini_{tariff}_{user_id}"
@@ -3224,6 +3366,31 @@ async def miniapp_template(request):
         return web.json_response({"name": t["name"], "content": t["content"]})
     except Exception as e:
         log.error(f"Template error: {e}")
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_crisis_tool(request):
+    """POST /miniapp/crisis-tool — антикризисные генераторы (премиум)."""
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        tool = body.get("tool", "")
+        params = (body.get("params") or "").strip()
+        if not user_id or tool not in CRISIS_TOOLS_SET:
+            return web.json_response({"error": "Некорректный запрос"}, status=400)
+        if not is_premium_user(user_id):
+            return web.json_response({"error": "Доступно по подписке Премиум (Безлимит 10 дней)"}, status=403)
+        if tool not in ("day", "bridge") and len(params) < 5:
+            return web.json_response({"error": "Заполни параметры инструмента"}, status=400)
+        resume = get_active_resume(user_id) or ""
+        prompt = build_crisis_prompt(tool, params, resume)
+        result = await asyncio.to_thread(ai_generate, prompt)
+        if not result or not validate_ai_response(result, min_length=50):
+            return web.json_response({"error": "ИИ недоступен, попробуйте ещё раз"}, status=500)
+        return web.json_response({"result": result, "tool": tool})
+    except Exception as e:
+        log.error(f"Crisis tool error: {e}")
+        track_error()
         return web.json_response({"error": str(e)[:200]}, status=500)
 
 
@@ -3747,7 +3914,7 @@ async def telegram_webhook(request):
                 puid = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else uid
                 if tariff == "unl10":
                     admin_set_unlimited(puid, 10)
-                    await send_telegram(puid, "🎉 *Безлимит на 10 дней активирован!*")
+                    await send_telegram(puid, "🎉 *Безлимит на 10 дней активирован!*\nОткрыты: курсы, шаблоны, аналитика, план и 🆘 антикризисный пакет.")
                 else:
                     admin_add_balance(puid, 50)
                     await send_telegram(puid, "🎉 *Начислено 50 запросов!*")
@@ -3768,14 +3935,27 @@ async def telegram_webhook(request):
         data_str = cb.get("data", "") or ""
         bg(answer_callback(cb.get("id", "")))
         if chat_id and user_id:
-            if data_str == "fix_resume_from_gap":
+            if data_str.startswith("crisis_"):
+                tool = data_str[len("crisis_"):]
+                if tool not in CRISIS_TOOLS_SET:
+                    return web.Response(text="OK")
+                if not is_premium_user(user_id):
+                    await send_telegram(chat_id, "🔒 *Антикризисный пакет входит в Премиум.*\nБезлимит 10 дней — 500 ⭐: кнопка «💎 Оплата и Баланс».")
+                elif tool in ("day", "bridge"):
+                    bg(crisis_generate(chat_id, user_id, tool, ""))
+                else:
+                    user_search_cache[user_id] = user_search_cache.get(user_id, {})
+                    user_search_cache[user_id]["crisis_tool"] = tool
+                    user_states[user_id] = "waiting_for_crisis_input"
+                    await send_telegram(chat_id, CRISIS_HINTS.get(tool, "Опиши ситуацию своими словами."))
+            elif data_str == "fix_resume_from_gap":
                 bg(run_fix_resume_by_gap(chat_id, user_id))
             elif data_str.startswith("page_"):
                 bg(send_vacancies_page(chat_id, user_id, page=int(data_str.split("_")[1])))
             elif data_str == "buy_pack_stars":
                 bg(send_stars_invoice(chat_id, 100, "Пакет 50 запросов", "credits_50"))
             elif data_str == "buy_unl_stars":
-                bg(send_stars_invoice(chat_id, 500, "Безлимит 10 дней", "unl_10d"))
+                bg(send_stars_invoice(chat_id, 500, "Безлимит 10 дней + Премиум", "unl_10d"))
             elif data_str == "send_receipt":
                 user_states[user_id] = "waiting_for_receipt"
                 await send_telegram(chat_id, "📸 Отправьте скриншот чека.")
@@ -3788,6 +3968,8 @@ async def telegram_webhook(request):
                 bg(show_course_lessons(chat_id, user_id, "interview"))
             elif data_str == "course_salary":
                 bg(show_course_lessons(chat_id, user_id, "salary"))
+            elif data_str == "course_crisis":
+                bg(show_course_lessons(chat_id, user_id, "crisis"))
             elif data_str.startswith("lesson_"):
                 parts = data_str.split("_")
                 if len(parts) == 3:
@@ -3859,7 +4041,7 @@ async def main():
             BOT_USERNAME = me.get("result", {}).get("username", BOT_USERNAME)
     except Exception as e:
         log.warning(f"getMe failed: {e}")
-    app = web.Application(middlewares=[cors_middleware])
+    app = web.Application(middlewares=[cors_middleware], client_max_size=32 * 1024 * 1024)
     app.router.add_get("/", lambda r: web.Response(text="Bot is running"))
     app.router.add_post(f"/{BOT_TOKEN}", telegram_webhook)
 
@@ -3877,6 +4059,7 @@ async def main():
         ("POST", "/miniapp/lesson", miniapp_lesson),
         ("GET", "/miniapp/templates", miniapp_templates),
         ("POST", "/miniapp/template", miniapp_template),
+        ("POST", "/miniapp/crisis-tool", miniapp_crisis_tool),
         ("POST", "/miniapp/analyze", miniapp_analyze_vacancy),
         ("POST", "/miniapp/search", miniapp_search_vacancies),
         ("POST", "/miniapp/find-lpr", miniapp_find_lpr),
@@ -3896,7 +4079,7 @@ async def main():
     for method, path, handler in routes:
         app.router.add_route(method, path, handler)
 
-    log.info("✅ MiniApp endpoints registered with CORS middleware (28 endpoints)")
+    log.info("✅ MiniApp endpoints registered with CORS middleware (30 endpoints)")
 
     runner = web.AppRunner(app)
     await runner.setup()
