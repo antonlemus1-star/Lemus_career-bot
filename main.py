@@ -530,7 +530,6 @@ def _openai_compat(prompt: str, base: str, key: str, model: str) -> str:
 
 
 def ai_generate(prompt: str):
-    """Генерация с ретраями: при 503/сбоях пробуем ВСЕ модели-кандидаты дважды."""
     track_ai_request()
     start_time = time.time()
     result = None
@@ -1939,7 +1938,6 @@ def build_crisis_prompt(tool: str, params: str, resume: str) -> str:
             "• реалистичный срок до первых денег.\n"
             "Идеи должны соответствовать уровню кандидата, а не быть случайными подработками."
         )
-    # day
     extra = f"\nДополнительно о ситуации: {params}" if params else ""
     return (
         "Ты — поддерживающий коуч. Составь план на СЕГОДНЯ для кандидата в поиске работы.\n"
@@ -2233,7 +2231,6 @@ async def process_message(msg: dict):
             bg(hr_generate_vacancy_description(chat_id, user_id, text))
         return
 
-    # 🆘 АНТИКРИЗИС: ввод параметров инструмента
     if user_states.get(user_id) == "waiting_for_crisis_input":
         user_states.pop(user_id, None)
         tool = user_search_cache.get(user_id, {}).get("crisis_tool", "")
@@ -2757,7 +2754,7 @@ async def process_message(msg: dict):
 
 
 # ============================================================
-# 🔍 ЯДРО ПОИСКА ВАКАНСИЙ v3 (УНИВЕРСАЛЬНОЕ, ТОП-КОМПАНИИ В ПРИОРИТЕТЕ)
+# 🔍 ЯДРО ПОИСКА ВАКАНСИЙ v3
 # ============================================================
 
 SENIORITY_WORDS = ["руководитель", "директор", "head", "chief", "lead", "начальник",
@@ -3172,9 +3169,18 @@ async def miniapp_upload_resume(request):
         b64 = body.get("content_base64") or ""
         if not user_id or not b64:
             return web.json_response({"error": "Нет данных файла"}, status=400)
-        raw = base64.b64decode(b64)
+        # Принимаем и чистый base64, и dataURL с префиксом
+        if "," in b64[:80]:
+            b64 = b64.split(",", 1)[1]
+        try:
+            raw = base64.b64decode(b64)
+        except Exception:
+            return web.json_response({"error": "Файл повреждён при передаче. Попробуйте ещё раз."}, status=400)
+        log.info(f"Upload: user={user_id} file={filename} bytes={len(raw)}")
         if len(raw) > MAX_FILE_SIZE:
             return web.json_response({"error": "Файл больше 5 МБ"}, status=400)
+        if len(raw) < 200:
+            return web.json_response({"error": "Файл пустой или слишком маленький"}, status=400)
         base, ext = os.path.splitext(filename)
         ext = ext.lower()
         safe_base = re.sub(r'[^\w\.\-]', '_', base)[:60]
@@ -3191,7 +3197,7 @@ async def miniapp_upload_resume(request):
             os.remove(path)
         if not text or not text.strip():
             return web.json_response({
-                "error": f"Не удалось извлечь текст из файла '{filename}'. Попробуйте PDF с текстовым слоем или DOCX."
+                "error": f"Не удалось извлечь текст из файла '{filename}'. Если это скан-PDF или фото — загрузите через бота (там есть OCR)."
             }, status=422)
         add_resume(user_id, safe_name, text)
         log.info(f"Miniapp upload resume OK: user_id={user_id}, file={safe_name}, chars={len(text)}")
@@ -3226,6 +3232,47 @@ async def miniapp_activate_resume(request):
         return web.json_response({"ok": True})
     except Exception as e:
         log.error(f"Activate resume error: {e}")
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_like(request):
+    """POST /miniapp/like — добавить вакансию в трекер из приложения."""
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        vacancy_id = str(body.get("vacancy_id", ""))
+        title = str(body.get("title", "Вакансия"))
+        if not user_id or not vacancy_id:
+            return web.json_response({"error": "Нет данных"}, status=400)
+        like_vacancy(user_id, vacancy_id, title)
+        return web.json_response({"ok": True})
+    except Exception as e:
+        log.error(f"Like error: {e}")
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_cover_letter(request):
+    """POST /miniapp/cover-letter — сопроводительное под вакансию (1 запрос)."""
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        company = (body.get("company") or "").strip()
+        title = (body.get("title") or "").strip()
+        if not user_id or not company or not title:
+            return web.json_response({"error": "Нет компании или должности"}, status=400)
+        if not spend_balance(user_id, cost=1):
+            return web.json_response({"error": "Недостаточно запросов!"}, status=402)
+        resume = get_active_resume(user_id) or "Опыт не указан."
+        letter = await asyncio.to_thread(ai_generate,
+            f"Напиши сопроводительное письмо на позицию '{title}' в '{company}'.\n"
+            f"Резюме:\n{resume[:3000]}\n\n"
+            "Объём до 150 слов. Тон: уверенный, конкретный, без воды. Выдай ТОЛЬКО текст письма.")
+        if not letter or not validate_ai_response(letter, min_length=50):
+            return web.json_response({"error": "ИИ недоступен, попробуйте ещё раз"}, status=500)
+        return web.json_response({"letter": letter})
+    except Exception as e:
+        log.error(f"Cover letter error: {e}")
+        track_error()
         return web.json_response({"error": str(e)[:200]}, status=500)
 
 
@@ -3370,7 +3417,6 @@ async def miniapp_template(request):
 
 
 async def miniapp_crisis_tool(request):
-    """POST /miniapp/crisis-tool — антикризисные генераторы (премиум)."""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -4051,6 +4097,8 @@ async def main():
         ("POST", "/miniapp/upload-resume", miniapp_upload_resume),
         ("GET", "/miniapp/resumes", miniapp_resumes_list),
         ("POST", "/miniapp/activate-resume", miniapp_activate_resume),
+        ("POST", "/miniapp/like", miniapp_like),
+        ("POST", "/miniapp/cover-letter", miniapp_cover_letter),
         ("POST", "/miniapp/invoice", miniapp_invoice),
         ("GET", "/miniapp/payments", miniapp_payments),
         ("POST", "/miniapp/digest", miniapp_digest),
@@ -4079,7 +4127,7 @@ async def main():
     for method, path, handler in routes:
         app.router.add_route(method, path, handler)
 
-    log.info("✅ MiniApp endpoints registered with CORS middleware (30 endpoints)")
+    log.info("✅ MiniApp endpoints registered with CORS middleware (32 endpoints)")
 
     runner = web.AppRunner(app)
     await runner.setup()
