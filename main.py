@@ -64,6 +64,7 @@ GROQ_MODEL = "llama-3.1-8b-instant"
 _working_model = {"name": None}
 HTTP = None
 TASKS = set()
+BOT_USERNAME = "LemusCareer_Bot"
 temp_vacancies = {}
 user_states = {}
 user_adapt_target = {}
@@ -72,7 +73,7 @@ interview_sessions = {}
 user_skillgap_cache = {}
 
 # ============================================================
-# 🌐 CORS (ГЛОБАЛЬНЫЙ MIDDLEWARE) — КЛЮЧЕВОЙ ФИКС
+# 🌐 CORS MIDDLEWARE
 # ============================================================
 
 CORS_HEADERS = {
@@ -85,8 +86,6 @@ CORS_HEADERS = {
 
 @web.middleware
 async def cors_middleware(request, handler):
-    """Добавляет CORS-заголовки КАЖДОМУ ответу. Без этого браузер
-    получает 200 от сервера, но блокирует чтение ответа -> 'Failed to fetch'."""
     if request.method == "OPTIONS":
         return web.Response(status=204, headers=dict(CORS_HEADERS))
     try:
@@ -102,7 +101,6 @@ async def cors_middleware(request, handler):
 
 
 async def parse_json_body(request):
-    """Универсальный разбор тела: работает и с application/json, и с text/plain."""
     try:
         raw = await request.text()
     except Exception:
@@ -310,7 +308,7 @@ COURSES = {
             {"title": "Урок 2: Когда и как говорить о зарплате", "content": "📚 УРОК 2: Когда говорить о зарплате.\n📝 ЗАДАНИЕ: Подготовьте скрипт ответа.\n⏱ Время: 20 минут"},
             {"title": "Урок 3: Техники переговоров", "content": "📚 УРОК 3: Техники переговоров.\n📝 ЗАДАНИЕ: Потренируйтесь отвечать.\n⏱ Время: 25 минут"},
             {"title": "Урок 4: Торг за бонусы и условия", "content": "📚 УРОК 4: Торг за бонусы.\n📝 ЗАДАНИЕ: Составьте список из 5 пунктов.\n⏱ Время: 15 минут"},
-            {"title": "Урок 5: Контр-оффер и финальное решение", "content": "🎉 ПОЗДРАВЛЯЮ! Вы прошли курс. Удачи! 💪\n⏱ Время: 15 минут"}
+            {"title": "Урок 5: Контр-оффер и финальное решение", "content": "🎉 ПОЗДРАВЛЯЮ! Вы прошли курс. Удачи! 💪\n Время: 15 минут"}
         ]
     }
 }
@@ -343,11 +341,15 @@ CREATE TABLE IF NOT EXISTS free_actions (user_id INTEGER, action_type TEXT, used
 """)
 conn.commit()
 
-try:
-    cur.execute("ALTER TABLE users ADD COLUMN user_mode TEXT DEFAULT 'seeker'")
-    conn.commit()
-except sqlite3.OperationalError:
-    pass
+for _alter in (
+    "ALTER TABLE users ADD COLUMN user_mode TEXT DEFAULT 'seeker'",
+    "ALTER TABLE users ADD COLUMN digest_active INTEGER DEFAULT 0",
+):
+    try:
+        cur.execute(_alter)
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
 
 
 def register_user(user_id: int, username: str, referrer_id: int = None) -> bool:
@@ -502,7 +504,7 @@ def like_vacancy(user_id: int, vacancy_id: str, title: str):
     conn.commit()
 
 
-# ---------------- ИИ-слой ----------------
+# ---------------- ИИ-слой (С РЕТРАЯМИ) ----------------
 def _openai_compat(prompt: str, base: str, key: str, model: str) -> str:
     r = requests.post(
         f"{base}/chat/completions",
@@ -516,22 +518,31 @@ def _openai_compat(prompt: str, base: str, key: str, model: str) -> str:
 
 
 def ai_generate(prompt: str):
+    """Генерация с ретраями: при 503/сбоях пробуем ВСЕ модели-кандидаты дважды."""
     track_ai_request()
     start_time = time.time()
     result = None
     if client:
-        cands = [_working_model["name"]] if _working_model["name"] else GEMINI_MODEL_CANDIDATES
-        for m in cands:
-            try:
-                resp = client.models.generate_content(
-                    model=m, contents=prompt,
-                    config=gtypes.GenerateContentConfig(temperature=0.7))
-                if resp is not None and resp.text:
-                    _working_model["name"] = m
-                    result = resp.text
-                    break
-            except Exception as e:
-                log.warning("Gemini model %s failed: %s", m, str(e)[:100])
+        for attempt in range(2):
+            cands = list(GEMINI_MODEL_CANDIDATES)
+            if _working_model["name"] in cands:
+                cands.remove(_working_model["name"])
+                cands.insert(0, _working_model["name"])
+            for m in cands:
+                try:
+                    resp = client.models.generate_content(
+                        model=m, contents=prompt,
+                        config=gtypes.GenerateContentConfig(temperature=0.7))
+                    if resp is not None and resp.text:
+                        _working_model["name"] = m
+                        result = resp.text
+                        break
+                except Exception as e:
+                    log.warning("Gemini model %s failed: %s", m, str(e)[:100])
+            if result:
+                break
+            _working_model["name"] = None
+            time.sleep(2)
     if result is None and GROQ_KEY:
         try:
             result = _openai_compat(prompt, "https://api.groq.com/openai/v1", GROQ_KEY, GROQ_MODEL)
@@ -1461,75 +1472,19 @@ async def handle_search(chat_id: int, user_id: int, is_admin: bool):
         await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
         return
     await show_typing(chat_id)
-    await send_telegram(chat_id, "🔍 Определяю регион из резюме...")
-    region_code = await extract_region_from_resume(active_resume)
-    await show_typing(chat_id)
-    extract_prompt = (
-        "Проанализируй резюме и напиши 3 подходящие должности для поиска. ТОЛЬКО названия через запятую.\n\n" + active_resume[:3000]
-    )
-    extracted = await asyncio.to_thread(ai_generate, extract_prompt)
-    queries = [q.strip() for q in extracted.split(",") if q.strip()][:3] if extracted else ["Специалист", "Менеджер"]
-    await send_telegram(chat_id, f"🎯 Запросы: *{', '.join(queries)}*\nСобираю вакансии...")
-    all_items = []
-    for idx, q in enumerate(queries):
-        if idx > 0:
-            await asyncio.sleep(2)
-        res = await hh_scrape_search(q, region_code) or await hh_api_search(q, region_code)
-        if res:
-            all_items.extend(res)
-        if len(all_items) >= 150:
-            break
-    if not all_items:
+    await send_telegram(chat_id, "🔍 Подбираю вакансии по резюме (регион, отрасль, уровень)...")
+    result = await core_search_vacancies(user_id)
+    if result.get("error"):
+        await send_telegram(chat_id, f"⚠️ {result['error']}", get_job_seeker_keyboard(is_admin))
+        return
+    scored_list = result["vacancies"]
+    if not scored_list:
         await send_telegram(chat_id, "⚠️ Не удалось найти вакансии.", get_job_seeker_keyboard(is_admin))
         return
-    stop_words = ["сборщик", "упаковщик", "кассир", "повар", "официант", "курьер", "продавец-консультант", "сотрудник ресторана", "дворник", "грузчик"]
-    top_companies = ["сбер", "мтс", "яндекс", "т-банк", "тинькофф", "втб", "альфа", "билайн", "мегафон", "ростелеком", "первый бит", "газпром", "росатом"]
-    unique_items = {}
-    for v in all_items:
-        vid = str(v["id"])
-        if vid in unique_items:
-            continue
-        name_lower = (v.get("name") or "").lower()
-        if any(sw in name_lower for sw in stop_words):
-            continue
-        if is_vacancy_hidden(user_id, vid):
-            continue
-        unique_items[vid] = v
-    filtered_list = list(unique_items.values())
-    filtered_list.sort(key=lambda x: 0 if any(tc in (x.get("company") or "").lower() for tc in top_companies) else 1)
-    filtered_list = filtered_list[:45]
-    scored_list = []
-    for i in range(0, len(filtered_list), 15):
-        batch = filtered_list[i:i + 15]
-        vacancies_text = "\n".join([f"ID {v['id']}: {v.get('name')} в {v.get('company')}" for v in batch])
-        quick_prompt = (
-            "Оцени соответствие резюме для вакансий (0-100%).\n"
-            f"Резюме:\n{active_resume[:2500]}\n\nВакансии:\n{vacancies_text}\n\n"
-            "JSON: {\"ID\": {\"score\": 85, \"reason\": \"причина\"}}"
-        )
-        eval_res = await asyncio.to_thread(ai_generate, quick_prompt)
-        parsed_batch = {}
-        if eval_res:
-            try:
-                clean = eval_res.replace("```json", "").replace("```", "").strip()
-                parsed_batch = json.loads(clean)
-            except Exception as e:
-                log.warning(f"Batch JSON error: {e}")
-                track_error()
-        for v in batch:
-            vid = str(v["id"])
-            v_data = parsed_batch.get(vid) or parsed_batch.get(int(vid)) or {}
-            v["match_score"] = int(v_data.get("score", 60))
-            v["match_reason"] = str(v_data.get("reason", "релевантный профиль"))
-            scored_list.append(v)
-        await asyncio.sleep(1)
-    scored_list.sort(key=lambda x: (-x["match_score"],
-                                     0 if any(tc in (x.get("company") or "").lower() for tc in top_companies) else 1))
-    if not scored_list:
-        await send_telegram(chat_id, "⚠️ Все вакансии отфильтрованы.", get_job_seeker_keyboard(is_admin))
-        return
     user_search_cache[user_id] = {"items": scored_list}
-    await send_telegram(chat_id, f"🔥 Нашел {len(scored_list)} вакансий:", get_job_seeker_keyboard(is_admin))
+    await send_telegram(chat_id,
+        f"🔥 Нашел {len(scored_list)} вакансий.\n🎯 Запросы: {', '.join(result['queries'][:3])}",
+        get_job_seeker_keyboard(is_admin))
     await send_vacancies_page(chat_id, user_id, page=0)
 
 
@@ -2457,7 +2412,7 @@ async def process_message(msg: dict):
         else:
             tracker_msg = "📌 *Ваш трекер откликов:*\n\n"
             for r in rows:
-                v_url = f"https://hh.ru/vacancy/{r[0]}" if not (str(r[0]).startswith("setka_") or str(r[0]).startswith("text_") or str(r[0]).startswith("manual_") or str(r[0]).startswith("hr_")) else "#"
+                v_url = f"https://hh.ru/vacancy/{r[0]}" if not (str(r[0]).startswith("setka_") or str(r[0]).startswith("text_") or str(r[0]).startswith("manual_") or str(r[0]).startswith("hr_") or str(r[0]).startswith("mini_")) else "#"
                 tracker_msg += f"• [{r[1]}]({v_url})\nСтатус: `{r[2]}`\n\n"
             await send_telegram(chat_id, tracker_msg)
 
@@ -2632,7 +2587,8 @@ async def process_message(msg: dict):
             "🏢 *Я нанимаю* — для рекрутеров.\n"
             "📎 *Форматы:* PDF, DOCX, DOC, ODT, RTF, TXT и фото.\n"
             "📏 *Максимальный размер:* 5 МБ.\n"
-            "🛡️ *Защита:* 15 запросов в минуту."
+            "🛡️ *Защита:* 15 запросов в минуту.\n"
+            "📧 *Поддержка:* a.lemus@ya.ru"
         )
         await send_telegram(chat_id, help_text, get_main_keyboard(is_admin))
 
@@ -2650,11 +2606,207 @@ async def process_message(msg: dict):
 
 
 # ============================================================
+# 🔍 ЯДРО ПОИСКА ВАКАНСИЙ (ОБЩЕЕ ДЛЯ ЧАТА, МИНИ-АПА И ДАЙДЖЕСТА)
+# ============================================================
+
+STOP_WORDS_VAC = [
+    "стажер", "стажёр", "trainee", "junior", "джуниор", "студент", "практикант",
+    "ассистент", "без опыта", "стажировка", "курьер", "упаковщик", "сборщик",
+    "кассир", "повар", "официант", "грузчик", "дворник", "продавец-консультант",
+]
+
+INDUSTRY_COMPANY_HINTS = {
+    "телеком": ["мегафон", "мтс", "билайн", "билайн", "ростелеком", "tele2", "т2", "вымпелком", "дом.ru", "эртелеком"],
+    "телекоммуникации": ["мегафон", "мтс", "билайн", "билайн", "ростелеком", "tele2", "т2", "вымпелком"],
+    "банки": ["сбер", "втб", "альфа", "газпромбанк", "т-банк", "тинькофф", "райффайзен", "совкомбанк", "мкб", "псб", "отп", "росбанк", "дом.рф", "банк"],
+    "банковский": ["сбер", "втб", "альфа", "газпромбанк", "т-банк", "тинькофф", "райффайзен", "совкомбанк", "банк"],
+    "финтех": ["тинькофф", "т-банк", "юмани", "cloudpayments", "сбп", "fintech"],
+    "it": ["яндекс", "vk", "озон", "avito", "kaspersky", "1с", "sber tech", "сбертех", "mts web", "икт"],
+    "ит": ["яндекс", "vk", "озон", "avito", "kaspersky", "1с"],
+}
+
+SENIORITY_WORDS = ["руководитель", "директор", "head", "chief", "lead", "начальник", "управляющий", "commercial", "коммерческий"]
+
+
+def company_industry_boost(company: str, industries: list) -> int:
+    cl = (company or "").lower()
+    if not cl:
+        return 0
+    targeted = set()
+    for ind in (industries or []):
+        tokens = INDUSTRY_COMPANY_HINTS.get(ind.strip().lower())
+        if tokens:
+            targeted.update(tokens)
+    if targeted:
+        for t in targeted:
+            if t in cl:
+                return 15
+    for tokens in INDUSTRY_COMPANY_HINTS.values():
+        for t in tokens:
+            if t in cl:
+                return 8
+    return 0
+
+
+def keyword_fallback_score(title: str, company: str, keywords: list, industries: list) -> tuple:
+    t = (title or "").lower()
+    s = 45
+    hits = [k for k in (keywords or []) if k and len(k) > 2 and k.lower() in t]
+    s += min(30, 6 * len(hits))
+    s += company_industry_boost(company, industries)
+    for w in SENIORITY_WORDS:
+        if w in t:
+            s += 8
+            break
+    reason = ("ключевые слова: " + ", ".join(hits[:3])) if hits else "совпадение профиля"
+    return min(95, s), reason
+
+
+async def core_search_vacancies(user_id: int) -> dict:
+    """Полный цикл поиска: регион -> план (должности/отрасли/ключевые слова) -> hh -> скоринг."""
+    resume = get_active_resume(user_id)
+    if not resume:
+        return {"error": "Сначала загрузите резюме (в приложении или в боте)", "vacancies": [], "queries": [], "industries": []}
+    region_code = await extract_region_from_resume(resume)
+    plan_prompt = (
+        "Ты — карьерный аналитик. По резюме составь план поиска вакансий на hh.ru.\n"
+        f"Резюме:\n{resume[:4000]}\n\n"
+        "Верни ТОЛЬКО JSON вида:\n"
+        "{\"queries\": [\"должность 1\", \"должность 2\", \"должность 3\"], "
+        "\"industries\": [\"отрасль 1\", \"отрасль 2\"], "
+        "\"keywords\": [\"навык 1\", \"... до 10\"], "
+        "\"seniority\": \"руководитель|директор|ведущий\"\n"
+        "Правила: должности строго уровня кандидата (не ниже); отрасли — где кандидат работал и хочет работать; "
+        "keywords — ключевые навыки и домены из резюме."
+    )
+    plan_raw = await asyncio.to_thread(ai_generate, plan_prompt)
+    queries = []
+    industries = []
+    keywords = []
+    if plan_raw:
+        clean = plan_raw.replace("```json", "").replace("```", "").strip()
+        m = re.search(r'\{.*\}', clean, re.S)
+        if m:
+            try:
+                parsed = json.loads(m.group(0))
+                queries = [str(q).strip() for q in (parsed.get("queries") or []) if str(q).strip()][:3]
+                industries = [str(i).strip() for i in (parsed.get("industries") or []) if str(i).strip()][:4]
+                keywords = [str(k).strip() for k in (parsed.get("keywords") or []) if str(k).strip()][:10]
+            except Exception as e:
+                log.warning(f"Search plan parse error: {e}")
+    if not queries:
+        queries = ["Руководитель направления", "Коммерческий директор", "Руководитель проектов"]
+    all_items = []
+    for idx, q in enumerate(queries):
+        if idx > 0:
+            await asyncio.sleep(1)
+        res = await hh_scrape_search(q, region_code) or await hh_api_search(q, region_code)
+        if res:
+            all_items.extend(res)
+        if len(all_items) >= 90:
+            break
+    if not all_items:
+        return {"error": "", "vacancies": [], "queries": queries, "industries": industries}
+    unique = {}
+    for v in all_items:
+        vid = str(v.get("id"))
+        if not vid or vid in unique:
+            continue
+        name_lower = (v.get("name") or "").lower()
+        if any(sw in name_lower for sw in STOP_WORDS_VAC):
+            continue
+        if is_vacancy_hidden(user_id, vid):
+            continue
+        unique[vid] = v
+    filtered = list(unique.values())[:45]
+    scored = []
+    for i in range(0, len(filtered), 15):
+        batch = filtered[i:i + 15]
+        vacancies_text = "\n".join([f"ID {v['id']}: {v.get('name')} в {v.get('company')}" for v in batch])
+        quick_prompt = (
+            "Оцени соответствие резюме кандидата каждой вакансии (0-100). Учитывай уровень должности и отрасль.\n"
+            f"Резюме:\n{resume[:2500]}\n\nВакансии:\n{vacancies_text}\n\n"
+            "Верни ТОЛЬКО JSON: {\"ID\": {\"score\": 85, \"reason\": \"причина\"}}"
+        )
+        eval_res = await asyncio.to_thread(ai_generate, quick_prompt)
+        parsed_batch = {}
+        if eval_res:
+            try:
+                clean = eval_res.replace("```json", "").replace("```", "").strip()
+                m = re.search(r'\{.*\}', clean, re.S)
+                if m:
+                    parsed_batch = json.loads(m.group(0))
+            except Exception as e:
+                log.warning(f"Batch JSON error: {e}")
+        for v in batch:
+            vid = str(v["id"])
+            v_data = parsed_batch.get(vid) or {}
+            boost = company_industry_boost(v.get("company"), industries)
+            if v_data.get("score") is not None:
+                try:
+                    base = int(v_data["score"])
+                except Exception:
+                    base = 60
+                reason = str(v_data.get("reason", "релевантный профиль"))
+            else:
+                base, reason = keyword_fallback_score(v.get("name"), v.get("company"), keywords, industries)
+            final_score = min(98, base + boost)
+            if boost:
+                reason += " • целевая отрасль"
+            scored.append({
+                "id": vid,
+                "title": v.get("name"),
+                "company": v.get("company"),
+                "salary": v.get("salary"),
+                "url": v.get("url"),
+                "match_score": final_score,
+                "match_reason": reason,
+            })
+        await asyncio.sleep(1)
+    scored.sort(key=lambda x: -x["match_score"])
+    return {"error": "", "vacancies": scored[:30], "queries": queries, "industries": industries}
+
+
+# ============================================================
+# 🌙 ДАЙДЖЕСТ ВАКАНСИЙ (ФОНОВАЯ РАССЫЛКА)
+# ============================================================
+
+async def digest_loop():
+    await asyncio.sleep(300)
+    log.info("🌙 Digest loop started")
+    while True:
+        try:
+            cur.execute("SELECT user_id FROM users WHERE digest_active=1")
+            rows = cur.fetchall()
+            for (uid,) in rows[:30]:
+                try:
+                    if not get_active_resume(uid):
+                        continue
+                    res = await core_search_vacancies(uid)
+                    vacs = res.get("vacancies") or []
+                    if not vacs:
+                        continue
+                    msg = "🌅 *Дайджест вакансий для вас:*\n\n"
+                    for v in vacs[:5]:
+                        msg += f"• *{v['match_score']}%* — [{v['title']}]({v['url']})\n  {v['company']}\n\n"
+                    msg += "_Отключить дайджест: экран Баланс в приложении._"
+                    kb = None
+                    if MINI_APP_URL:
+                        kb = {"inline_keyboard": [[{"text": "📱 Открыть приложение", "url": MINI_APP_URL}]]}
+                    await send_telegram(uid, msg, kb)
+                except Exception as e:
+                    log.error(f"Digest user {uid} error: {e}")
+                await asyncio.sleep(5)
+        except Exception as e:
+            log.error(f"Digest loop error: {e}")
+        await asyncio.sleep(12 * 3600)
+
+
+# ============================================================
 # 🌐 МИНИ-АП ЭНДПОИНТЫ
 # ============================================================
 
 def extract_user_from_init_data(init_data: str):
-    """Извлекает user_id из initData Telegram."""
     try:
         pairs = {}
         for item in init_data.split("&"):
@@ -2677,7 +2829,6 @@ def extract_user_from_init_data(init_data: str):
 
 
 async def miniapp_verify(request):
-    """POST /miniapp/verify"""
     try:
         data = await parse_json_body(request)
         init_data = data.get("initData", "")
@@ -2695,7 +2846,6 @@ async def miniapp_verify(request):
 
 
 async def miniapp_data(request):
-    """GET /miniapp/data?user_id=X"""
     try:
         user_id = int(request.query.get("user_id", 0))
         if not user_id:
@@ -2709,23 +2859,197 @@ async def miniapp_data(request):
         tracker_rows = cur.fetchall()
         tracker = [{"vacancy_id": r[0], "title": r[1], "status": r[2]} for r in tracker_rows]
         active_resume_text = get_active_resume(user_id)
-        has_resume = len(active_resume_text) > 0
+        cur.execute("SELECT digest_active FROM users WHERE user_id=?", (user_id,))
+        drow = cur.fetchone()
+        digest_active = int(drow[0]) if drow and drow[0] else 0
         return web.json_response({
             "balance": data["balance"],
             "unlimited_until": data["unlimited_until"],
             "is_premium": is_premium_user(user_id),
             "resumes_count": len(resumes),
-            "has_active_resume": has_resume,
+            "has_active_resume": len(active_resume_text) > 0,
+            "digest_active": digest_active,
             "tracker": tracker,
-            "active_resume_preview": active_resume_text[:500] if has_resume else ""
+            "active_resume_preview": active_resume_text[:500] if active_resume_text else ""
         })
     except Exception as e:
         log.error(f"Miniapp data error: {e}")
         return web.json_response({"error": str(e)}, status=500)
 
 
+async def miniapp_upload_resume(request):
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        filename = (body.get("filename") or "resume.pdf").strip()
+        b64 = body.get("content_base64") or ""
+        if not user_id or not b64:
+            return web.json_response({"error": "Нет данных файла"}, status=400)
+        raw = base64.b64decode(b64)
+        if len(raw) > MAX_FILE_SIZE:
+            return web.json_response({"error": "Файл больше 5 МБ"}, status=400)
+        safe_name = re.sub(r'[^\w\.\-]', '_', filename)[:80]
+        path = f"tmp_up_{user_id}_{safe_name}"
+        with open(path, "wb") as f:
+            f.write(raw)
+        fnl = safe_name.lower()
+        if fnl.endswith(('.jpg', '.jpeg', '.png', '.webp', '.gif')):
+            text = await extract_text_from_image(path)
+        else:
+            text = await asyncio.to_thread(extract_text, path, safe_name)
+        if os.path.exists(path):
+            os.remove(path)
+        if not text or not text.strip():
+            return web.json_response({"error": "Не удалось извлечь текст из файла"}, status=422)
+        add_resume(user_id, safe_name, text)
+        log.info(f"Miniapp upload resume OK: user_id={user_id}, file={safe_name}")
+        return web.json_response({"ok": True, "resumes_count": len(list_resumes(user_id))})
+    except Exception as e:
+        log.error(f"Upload resume error: {e}")
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_invoice(request):
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        tariff = body.get("tariff", "pack50")
+        if not user_id:
+            return web.json_response({"error": "Нет user_id"}, status=400)
+        if tariff == "unl10":
+            amount, title = 500, "Безлимит 10 дней"
+        else:
+            amount, title = 100, "Пакет 50 запросов"
+        payload = f"mini_{tariff}_{user_id}"
+        async with HTTP.post(f"{TELEGRAM_API}/createInvoiceLink", json={
+            "title": title,
+            "description": "Пополнение баланса Lemus Career Agent",
+            "payload": payload,
+            "currency": "XTR",
+            "prices": [{"label": "Stars", "amount": amount}],
+        }) as resp:
+            r = await resp.json()
+        link = r.get("result")
+        if not link:
+            return web.json_response({"error": "Не удалось создать счет"}, status=500)
+        return web.json_response({"invoice_link": link, "tariff": tariff})
+    except Exception as e:
+        log.error(f"Invoice error: {e}")
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_payments(request):
+    try:
+        user_id = int(request.query.get("user_id", 0))
+        if not user_id:
+            return web.json_response({"error": "No user_id"}, status=400)
+        cur.execute("SELECT amount, status, created_at FROM payments WHERE user_id=? ORDER BY id DESC LIMIT 20", (user_id,))
+        rows = cur.fetchall()
+        return web.json_response({"payments": [{"amount": r[0], "status": r[1], "created_at": r[2]} for r in rows]})
+    except Exception as e:
+        log.error(f"Payments error: {e}")
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_digest(request):
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        active = 1 if body.get("active") else 0
+        if not user_id:
+            return web.json_response({"error": "Нет user_id"}, status=400)
+        register_user(user_id, "", None)
+        cur.execute("UPDATE users SET digest_active=? WHERE user_id=?", (active, user_id))
+        conn.commit()
+        return web.json_response({"ok": True, "digest_active": active})
+    except Exception as e:
+        log.error(f"Digest toggle error: {e}")
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_referral(request):
+    try:
+        user_id = int(request.query.get("user_id", 0))
+        if not user_id:
+            return web.json_response({"error": "No user_id"}, status=400)
+        cur.execute("SELECT COUNT(*) FROM users WHERE referred_by=?", (user_id,))
+        referred = cur.fetchone()[0]
+        return web.json_response({
+            "link": f"https://t.me/{BOT_USERNAME}?start={user_id}",
+            "referred_count": referred,
+            "bonus_per_friend": 7,
+        })
+    except Exception as e:
+        log.error(f"Referral error: {e}")
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_courses(request):
+    try:
+        user_id = int(request.query.get("user_id", 0))
+        if not user_id:
+            return web.json_response({"error": "No user_id"}, status=400)
+        if not is_premium_user(user_id):
+            return web.json_response({"error": "Доступно только премиум-пользователям"}, status=403)
+        out = []
+        for cid, c in COURSES.items():
+            out.append({"id": cid, "title": c["title"], "description": c["description"],
+                        "lessons": [l["title"] for l in c["lessons"]]})
+        return web.json_response({"courses": out})
+    except Exception as e:
+        log.error(f"Courses error: {e}")
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_lesson(request):
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        course_id = body.get("course", "")
+        num = int(body.get("num", 0))
+        if not is_premium_user(user_id):
+            return web.json_response({"error": "Доступно только премиум-пользователям"}, status=403)
+        course = COURSES.get(course_id)
+        if not course or num < 1 or num > len(course["lessons"]):
+            return web.json_response({"error": "Урок не найден"}, status=404)
+        lesson = course["lessons"][num - 1]
+        return web.json_response({"title": lesson["title"], "content": lesson["content"],
+                                  "total": len(course["lessons"])})
+    except Exception as e:
+        log.error(f"Lesson error: {e}")
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_templates(request):
+    try:
+        user_id = int(request.query.get("user_id", 0))
+        if not user_id:
+            return web.json_response({"error": "No user_id"}, status=400)
+        if not is_premium_user(user_id):
+            return web.json_response({"error": "Доступно только премиум-пользователям"}, status=403)
+        return web.json_response({"templates": [{"num": i, "name": t["name"]} for i, t in enumerate(COVER_LETTER_TEMPLATES, 1)]})
+    except Exception as e:
+        log.error(f"Templates error: {e}")
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_template(request):
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        num = int(body.get("num", 0))
+        if not is_premium_user(user_id):
+            return web.json_response({"error": "Доступно только премиум-пользователям"}, status=403)
+        if num < 1 or num > len(COVER_LETTER_TEMPLATES):
+            return web.json_response({"error": "Шаблон не найден"}, status=404)
+        t = COVER_LETTER_TEMPLATES[num - 1]
+        return web.json_response({"name": t["name"], "content": t["content"]})
+    except Exception as e:
+        log.error(f"Template error: {e}")
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
 async def miniapp_analyze_vacancy(request):
-    """POST /miniapp/analyze"""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -2765,9 +3089,7 @@ async def miniapp_analyze_vacancy(request):
                     if not title:
                         title = match.group(2).strip()[:60]
         if not company or not title:
-            return web.json_response({
-                "error": "Не удалось определить компанию или должность."
-            }, status=422)
+            return web.json_response({"error": "Не удалось определить компанию или должность."}, status=422)
         aggressive_results = await aggressive_recruiter_search(0, company, title, contact_name)
         pitch_prompt = (
             f"Напиши короткий питч (4-5 строк) для рекрутера компании '{company}' на позицию '{title}'.\n"
@@ -2810,7 +3132,6 @@ async def miniapp_analyze_vacancy(request):
 
 
 async def miniapp_search_vacancies(request):
-    """POST /miniapp/search — ПОЛНЫЙ поиск с ИИ-скорингом релевантности"""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -2818,82 +3139,14 @@ async def miniapp_search_vacancies(request):
             return web.json_response({"error": "Нет user_id"}, status=400)
         if not spend_balance(user_id, cost=1):
             return web.json_response({"error": "Недостаточно запросов!"}, status=402)
-        resume = get_active_resume(user_id)
-        if not resume:
-            return web.json_response({"error": "Сначала загрузите резюме через бота"}, status=400)
-        region_code = await extract_region_from_resume(resume)
-        extract_prompt = (
-            "Проанализируй резюме и напиши 3 подходящие должности для поиска. "
-            "ТОЛЬКО названия через запятую.\n\n" + resume[:3000]
-        )
-        extracted = await asyncio.to_thread(ai_generate, extract_prompt)
-        queries = [q.strip() for q in extracted.split(",") if q.strip()][:3] if extracted else ["Специалист"]
-        all_items = []
-        for idx, q in enumerate(queries):
-            if idx > 0:
-                await asyncio.sleep(1)
-            res = await hh_scrape_search(q, region_code) or await hh_api_search(q, region_code)
-            if res:
-                all_items.extend(res)
-            if len(all_items) >= 60:
-                break
-        if not all_items:
-            return web.json_response({"vacancies": [], "message": "Не удалось найти вакансии"})
-        stop_words = ["сборщик", "упаковщик", "кассир", "повар", "официант", "курьер", "продавец", "дворник", "грузчик"]
-        top_companies = ["сбер", "мтс", "яндекс", "т-банк", "тинькофф", "втб", "альфа", "билайн", "ростелеком", "газпром", "росатом"]
-        filtered = []
-        seen_ids = set()
-        for v in all_items:
-            vid = str(v["id"])
-            if vid in seen_ids:
-                continue
-            name_lower = (v.get("name") or "").lower()
-            if any(sw in name_lower for sw in stop_words):
-                continue
-            if is_vacancy_hidden(user_id, vid):
-                continue
-            seen_ids.add(vid)
-            filtered.append(v)
-        filtered.sort(key=lambda x: 0 if any(tc in (x.get("company") or "").lower() for tc in top_companies) else 1)
-        filtered = filtered[:45]
-        # ИИ-скоринг релевантности пакетами по 15 (как в чат-версии)
-        scored = []
-        for i in range(0, len(filtered), 15):
-            batch = filtered[i:i + 15]
-            vacancies_text = "\n".join([f"ID {v['id']}: {v.get('name')} в {v.get('company')}" for v in batch])
-            quick_prompt = (
-                "Оцени соответствие резюме для вакансий (0-100%).\n"
-                f"Резюме:\n{resume[:2500]}\n\nВакансии:\n{vacancies_text}\n\n"
-                "JSON: {\"ID\": {\"score\": 85, \"reason\": \"причина\"}}"
-            )
-            eval_res = await asyncio.to_thread(ai_generate, quick_prompt)
-            parsed_batch = {}
-            if eval_res:
-                try:
-                    clean = eval_res.replace("```json", "").replace("```", "").strip()
-                    parsed_batch = json.loads(clean)
-                except Exception:
-                    parsed_batch = {}
-            for v in batch:
-                vid = str(v["id"])
-                v_data = parsed_batch.get(vid) or {}
-                try:
-                    score = int(v_data.get("score", 60))
-                except Exception:
-                    score = 60
-                scored.append({
-                    "id": vid,
-                    "title": v.get("name"),
-                    "company": v.get("company"),
-                    "salary": v.get("salary"),
-                    "url": v.get("url"),
-                    "match_score": score,
-                    "match_reason": str(v_data.get("reason", "релевантный профиль"))
-                })
-            await asyncio.sleep(1)
-        scored.sort(key=lambda x: (-x["match_score"],
-                                   0 if any(tc in (x.get("company") or "").lower() for tc in top_companies) else 1))
-        return web.json_response({"vacancies": scored[:30]})
+        result = await core_search_vacancies(user_id)
+        if result.get("error"):
+            return web.json_response({"error": result["error"]}, status=400)
+        return web.json_response({
+            "vacancies": result["vacancies"],
+            "queries": result["queries"],
+            "industries": result["industries"],
+        })
     except Exception as e:
         log.error(f"Miniapp search error: {e}")
         track_error()
@@ -2901,7 +3154,6 @@ async def miniapp_search_vacancies(request):
 
 
 async def miniapp_find_lpr(request):
-    """POST /miniapp/find-lpr"""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -2942,7 +3194,6 @@ async def miniapp_find_lpr(request):
 
 
 async def miniapp_generate_pitch(request):
-    """POST /miniapp/pitch"""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -2970,7 +3221,6 @@ async def miniapp_generate_pitch(request):
 
 
 async def miniapp_skill_gap(request):
-    """POST /miniapp/skill-gap"""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -2980,7 +3230,7 @@ async def miniapp_skill_gap(request):
             return web.json_response({"error": "Недостаточно запросов!"}, status=402)
         resume = get_active_resume(user_id)
         if not resume:
-            return web.json_response({"error": "Сначала загрузите резюме через бота"}, status=400)
+            return web.json_response({"error": "Сначала загрузите резюме"}, status=400)
         current_date = datetime.date.today().strftime("%d.%m.%Y")
         prompt = (
             f"Дата: {current_date}. Проведи анализ навыков (Skill Gap) кандидата.\n"
@@ -3001,7 +3251,6 @@ async def miniapp_skill_gap(request):
 
 
 async def miniapp_hr_match(request):
-    """POST /miniapp/hr-match"""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -3042,7 +3291,6 @@ async def miniapp_hr_match(request):
 
 
 async def miniapp_hr_scoring(request):
-    """POST /miniapp/hr-scoring"""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -3088,9 +3336,26 @@ async def telegram_webhook(request):
     if "message" in data:
         msg = data["message"]
         if msg.get("successful_payment"):
+            sp = msg["successful_payment"]
             uid = msg.get("from", {}).get("id") or msg["chat"]["id"]
-            payload = msg["successful_payment"].get("invoice_payload", "")
-            if "unl" in payload:
+            payload = sp.get("invoice_payload", "")
+            amount = sp.get("total_amount", 0)
+            try:
+                cur.execute("INSERT INTO payments (user_id, amount, status) VALUES (?, ?, 'paid')", (uid, amount))
+                conn.commit()
+            except Exception as pe:
+                log.error(f"Payment log error: {pe}")
+            if payload.startswith("mini_"):
+                parts = payload.split("_")
+                tariff = parts[1] if len(parts) > 1 else "pack50"
+                puid = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else uid
+                if tariff == "unl10":
+                    admin_set_unlimited(puid, 10)
+                    await send_telegram(puid, "🎉 *Безлимит на 10 дней активирован!*")
+                else:
+                    admin_add_balance(puid, 50)
+                    await send_telegram(puid, "🎉 *Начислено 50 запросов!*")
+            elif "unl" in payload:
                 admin_set_unlimited(uid, 10)
                 await send_telegram(uid, "🎉 Безлимит активирован!")
             else:
@@ -3130,12 +3395,9 @@ async def telegram_webhook(request):
             elif data_str.startswith("lesson_"):
                 parts = data_str.split("_")
                 if len(parts) == 3:
-                    course_id = parts[1]
-                    lesson_num = int(parts[2])
-                    bg(show_lesson(chat_id, user_id, course_id, lesson_num))
+                    bg(show_lesson(chat_id, user_id, parts[1], int(parts[2])))
             elif data_str.startswith("template_"):
-                template_num = int(data_str.split("_")[1])
-                bg(show_template(chat_id, user_id, template_num))
+                bg(show_template(chat_id, user_id, int(data_str.split("_")[1])))
             elif data_str.startswith("paycred_"):
                 parts = data_str.split("_")
                 admin_add_balance(int(parts[1]), int(parts[2]))
@@ -3193,8 +3455,14 @@ async def cleanup_old_data():
 
 # ---------------- Запуск ----------------
 async def main():
-    global HTTP
+    global HTTP, BOT_USERNAME
     HTTP = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60))
+    try:
+        async with HTTP.get(f"{TELEGRAM_API}/getMe") as resp:
+            me = await resp.json()
+            BOT_USERNAME = me.get("result", {}).get("username", BOT_USERNAME)
+    except Exception as e:
+        log.warning(f"getMe failed: {e}")
     app = web.Application(middlewares=[cors_middleware])
     app.router.add_get("/", lambda r: web.Response(text="Bot is running"))
     app.router.add_post(f"/{BOT_TOKEN}", telegram_webhook)
@@ -3202,6 +3470,15 @@ async def main():
     routes = [
         ("POST", "/miniapp/verify", miniapp_verify),
         ("GET", "/miniapp/data", miniapp_data),
+        ("POST", "/miniapp/upload-resume", miniapp_upload_resume),
+        ("POST", "/miniapp/invoice", miniapp_invoice),
+        ("GET", "/miniapp/payments", miniapp_payments),
+        ("POST", "/miniapp/digest", miniapp_digest),
+        ("GET", "/miniapp/referral", miniapp_referral),
+        ("GET", "/miniapp/courses", miniapp_courses),
+        ("POST", "/miniapp/lesson", miniapp_lesson),
+        ("GET", "/miniapp/templates", miniapp_templates),
+        ("POST", "/miniapp/template", miniapp_template),
         ("POST", "/miniapp/analyze", miniapp_analyze_vacancy),
         ("POST", "/miniapp/search", miniapp_search_vacancies),
         ("POST", "/miniapp/find-lpr", miniapp_find_lpr),
@@ -3226,6 +3503,7 @@ async def main():
     log.info("🚀 Bot v4.3 started successfully.")
     bg(cleanup_old_data())
     bg(monitor_load())
+    bg(digest_loop())
     try:
         await asyncio.Event().wait()
     finally:
