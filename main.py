@@ -36,7 +36,7 @@ log = logging.getLogger("career_bot_v43")
 
 # ---------------- Конфиг ----------------
 RAW_BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-BOT_TOKEN = RAW_BOT_TOKEN.strip().strip('"').strip("'") 
+BOT_TOKEN = RAW_BOT_TOKEN.strip().strip('"').strip("'")
 
 if not BOT_TOKEN or ":" not in BOT_TOKEN:
     raise SystemExit(f"🔴 BOT_TOKEN invalid! Got: '{RAW_BOT_TOKEN[:20]}...'")
@@ -70,6 +70,51 @@ user_adapt_target = {}
 user_search_cache = {}
 interview_sessions = {}
 user_skillgap_cache = {}
+
+# ============================================================
+# 🌐 CORS (ГЛОБАЛЬНЫЙ MIDDLEWARE) — КЛЮЧЕВОЙ ФИКС
+# ============================================================
+
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With",
+    "Access-Control-Max-Age": "86400",
+}
+
+
+@web.middleware
+async def cors_middleware(request, handler):
+    """Добавляет CORS-заголовки КАЖДОМУ ответу. Без этого браузер
+    получает 200 от сервера, но блокирует чтение ответа -> 'Failed to fetch'."""
+    if request.method == "OPTIONS":
+        return web.Response(status=204, headers=dict(CORS_HEADERS))
+    try:
+        response = await handler(request)
+    except web.HTTPException as exc:
+        response = exc
+    except Exception as e:
+        log.error(f"Unhandled error on {request.path}: {e}", exc_info=True)
+        response = web.json_response({"error": f"Server error: {str(e)[:200]}"}, status=500)
+    for k, v in CORS_HEADERS.items():
+        response.headers[k] = v
+    return response
+
+
+async def parse_json_body(request):
+    """Универсальный разбор тела: работает и с application/json, и с text/plain."""
+    try:
+        raw = await request.text()
+    except Exception:
+        return {}
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
 
 # ============================================================
 # 🛡️ ЗАЩИТА И ОГРАНИЧЕНИЯ
@@ -726,7 +771,7 @@ async def show_typing(chat_id):
 
 
 # ============================================================
-# 🎨 КЛАВИАТУРЫ (БЕЗ КНОПКИ ПРИЛОЖЕНИЯ)
+# 🎨 КЛАВИАТУРЫ
 # ============================================================
 
 def get_main_keyboard(is_admin=False):
@@ -1916,7 +1961,7 @@ async def handle_document(chat_id: int, user_id: int, document: dict, is_admin: 
         success_text = (
             f"✅ *Резюме «{file_name}» загружено!*\n"
             "💡 *Что можно сделать:*\n"
-            "1️⃣ * Разобрать вакансию* — скопируй текст вакансии.\n"
+            "1️⃣ *🔗 Разобрать вакансию* — скопируй текст вакансии.\n"
             "2️⃣ *️ Найти ЛПР* — прямой выход на менеджера.\n"
             "3️⃣ * Анализ навыков* — выявит пробелы.\n"
             "📎 *Форматы:* PDF, DOCX, DOC, ODT, RTF, TXT и фото резюме."
@@ -2265,8 +2310,6 @@ async def process_message(msg: dict):
         bg(analyze_vacancy_text(chat_id, user_id, text))
         return
 
-    # 🆕 ОБРАБОТЧИК КНОПКИ ПРИЛОЖЕНИЯ УДАЛЁН
-    
     if text.startswith("/start") or text == "🚀 Запустить бота":
         if is_admin:
             welcome_text = "👋 Привет, Антон! Админ-режим активирован."
@@ -2607,13 +2650,12 @@ async def process_message(msg: dict):
 
 
 # ============================================================
-# 🌐 МИНИ-АП ЭНДПОИНТЫ (УПРОЩЕННАЯ АВТОРИЗАЦИЯ)
+# 🌐 МИНИ-АП ЭНДПОИНТЫ
 # ============================================================
 
-def extract_user_from_init_data(init_data: str) -> int | None:
-    """Просто извлекает user_id из initData без криптографической проверки."""
+def extract_user_from_init_data(init_data: str):
+    """Извлекает user_id из initData Telegram."""
     try:
-        # Разбиваем строку по &
         pairs = {}
         for item in init_data.split("&"):
             if "=" not in item:
@@ -2623,64 +2665,41 @@ def extract_user_from_init_data(init_data: str) -> int | None:
                 pairs[urllib.parse.unquote(k)] = urllib.parse.unquote(v)
             except Exception:
                 pairs[k] = v
-        
         user_json_str = pairs.get("user")
         if not user_json_str:
             return None
-            
         user_obj = json.loads(user_json_str)
-        return int(user_obj.get("id"))
+        uid = user_obj.get("id")
+        return int(uid) if uid else None
     except Exception as e:
         log.error(f"Extract user error: {e}")
         return None
 
 
-async def handle_options(request):
-    """Обрабатывает OPTIONS запросы для CORS Preflight"""
-    return web.Response(
-        status=204, 
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With",
-            "Access-Control-Max-Age": "86400",
-            "Content-Type": "text/plain; charset=utf-8"
-        }
-    )
-
-
 async def miniapp_verify(request):
-    """POST /miniapp/verify - возвращает user_id из initData (без строгой проверки)"""
+    """POST /miniapp/verify"""
     try:
-        data = await request.json()
+        data = await parse_json_body(request)
         init_data = data.get("initData", "")
-        
         if not init_data:
             return web.json_response({"error": "No initData"}, status=400)
-        
-        # Просто достаем ID пользователя
         user_id = extract_user_from_init_data(init_data)
-        
         if not user_id:
             return web.json_response({"error": "Invalid initData format"}, status=400)
-        
-        # Регистрируем если нужно
         register_user(int(user_id), "", None)
-        log.info(f"Miniapp verify OK (simple): user_id={user_id}")
+        log.info(f"Miniapp verify OK: user_id={user_id}")
         return web.json_response({"ok": True, "user_id": int(user_id)})
-    
     except Exception as e:
         log.error(f"Miniapp verify error: {type(e).__name__}: {e}", exc_info=True)
         return web.json_response({"error": f"Server error: {str(e)[:200]}"}, status=500)
 
 
 async def miniapp_data(request):
-    """GET /miniapp/data?user_id=X - возвращает баланс, резюме, трекер"""
+    """GET /miniapp/data?user_id=X"""
     try:
         user_id = int(request.query.get("user_id", 0))
         if not user_id:
             return web.json_response({"error": "No user_id"}, status=400)
-        
         data = get_user_data(user_id)
         resumes = list_resumes(user_id)
         cur.execute(
@@ -2691,12 +2710,10 @@ async def miniapp_data(request):
         tracker = [{"vacancy_id": r[0], "title": r[1], "status": r[2]} for r in tracker_rows]
         active_resume_text = get_active_resume(user_id)
         has_resume = len(active_resume_text) > 0
-        is_premium = is_premium_user(user_id)
-        
         return web.json_response({
             "balance": data["balance"],
             "unlimited_until": data["unlimited_until"],
-            "is_premium": is_premium,
+            "is_premium": is_premium_user(user_id),
             "resumes_count": len(resumes),
             "has_active_resume": has_resume,
             "tracker": tracker,
@@ -2708,17 +2725,15 @@ async def miniapp_data(request):
 
 
 async def miniapp_analyze_vacancy(request):
-    """POST /miniapp/analyze - разбирает текст вакансии"""
+    """POST /miniapp/analyze"""
     try:
-        body = await request.json()
+        body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
-        vacancy_text = body.get("vacancy_text", "").strip()
-        
+        vacancy_text = (body.get("vacancy_text") or "").strip()
         if not user_id or not vacancy_text or len(vacancy_text) < 100:
             return web.json_response({"error": "Недостаточно данных"}, status=400)
         if not spend_balance(user_id, cost=2):
             return web.json_response({"error": "Недостаточно запросов! Нужно 2."}, status=402)
-        
         resume = get_active_resume(user_id)
         extract_prompt = (
             "Ты — эксперт по анализу вакансий. Проанализируй текст и вытащи:\n"
@@ -2727,7 +2742,6 @@ async def miniapp_analyze_vacancy(request):
             "Выдай ТОЛЬКО JSON: {\"company\": \"...\", \"title\": \"...\", \"contact_name\": \"...\"}"
         )
         ai_response = await asyncio.to_thread(ai_generate, extract_prompt)
-        
         company = ""
         title = ""
         contact_name = ""
@@ -2742,7 +2756,6 @@ async def miniapp_analyze_vacancy(request):
                     contact_name = parsed.get("contact_name", "").strip()
                 except json.JSONDecodeError:
                     pass
-        
         if not company or not title:
             lines = [l.strip() for l in vacancy_text.split("\n") if l.strip()][:5]
             for line in lines:
@@ -2751,14 +2764,11 @@ async def miniapp_analyze_vacancy(request):
                     company = match.group(1).strip()
                     if not title:
                         title = match.group(2).strip()[:60]
-        
         if not company or not title:
             return web.json_response({
-                "error": "Не удалось определить компанию или должность. Пришли в формате: Компания, Должность"
+                "error": "Не удалось определить компанию или должность."
             }, status=422)
-        
         aggressive_results = await aggressive_recruiter_search(0, company, title, contact_name)
-        
         pitch_prompt = (
             f"Напиши короткий питч (4-5 строк) для рекрутера компании '{company}' на позицию '{title}'.\n"
             f"Имя рекрутера: {contact_name or 'неизвестно'}\n"
@@ -2770,13 +2780,11 @@ async def miniapp_analyze_vacancy(request):
             pitch = clean_pitch_text(pitch, title)
         else:
             pitch = "⚠️ Не удалось сгенерировать питч."
-        
         cur.execute(
             "INSERT INTO liked_vacancies (user_id, vacancy_id, title, status) VALUES (?, ?, ?, 'Разобрана: Мини-ап')",
             (user_id, f"mini_{int(datetime.datetime.now().timestamp())}", f"{title} ({company})")
         )
         conn.commit()
-        
         contacts_list = []
         if aggressive_results["found"]:
             for c in aggressive_results["contacts"][:3]:
@@ -2786,7 +2794,6 @@ async def miniapp_analyze_vacancy(request):
                     "phone": c.get("phone", ""),
                     "url": c.get("url", "")
                 })
-        
         return web.json_response({
             "company": company,
             "title": title,
@@ -2803,19 +2810,17 @@ async def miniapp_analyze_vacancy(request):
 
 
 async def miniapp_search_vacancies(request):
-    """POST /miniapp/search - поиск вакансий по резюме"""
+    """POST /miniapp/search — ПОЛНЫЙ поиск с ИИ-скорингом релевантности"""
     try:
-        body = await request.json()
+        body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
         if not user_id:
             return web.json_response({"error": "Нет user_id"}, status=400)
         if not spend_balance(user_id, cost=1):
             return web.json_response({"error": "Недостаточно запросов!"}, status=402)
-        
         resume = get_active_resume(user_id)
         if not resume:
             return web.json_response({"error": "Сначала загрузите резюме через бота"}, status=400)
-        
         region_code = await extract_region_from_resume(resume)
         extract_prompt = (
             "Проанализируй резюме и напиши 3 подходящие должности для поиска. "
@@ -2823,7 +2828,6 @@ async def miniapp_search_vacancies(request):
         )
         extracted = await asyncio.to_thread(ai_generate, extract_prompt)
         queries = [q.strip() for q in extracted.split(",") if q.strip()][:3] if extracted else ["Специалист"]
-        
         all_items = []
         for idx, q in enumerate(queries):
             if idx > 0:
@@ -2831,13 +2835,12 @@ async def miniapp_search_vacancies(request):
             res = await hh_scrape_search(q, region_code) or await hh_api_search(q, region_code)
             if res:
                 all_items.extend(res)
-            if len(all_items) >= 50:
+            if len(all_items) >= 60:
                 break
-        
         if not all_items:
             return web.json_response({"vacancies": [], "message": "Не удалось найти вакансии"})
-        
         stop_words = ["сборщик", "упаковщик", "кассир", "повар", "официант", "курьер", "продавец", "дворник", "грузчик"]
+        top_companies = ["сбер", "мтс", "яндекс", "т-банк", "тинькофф", "втб", "альфа", "билайн", "ростелеком", "газпром", "росатом"]
         filtered = []
         seen_ids = set()
         for v in all_items:
@@ -2851,25 +2854,46 @@ async def miniapp_search_vacancies(request):
                 continue
             seen_ids.add(vid)
             filtered.append(v)
-        
-        top_companies = ["сбер", "мтс", "яндекс", "т-банк", "тинькофф", "втб", "альфа", "билайн", "ростелеком"]
+        filtered.sort(key=lambda x: 0 if any(tc in (x.get("company") or "").lower() for tc in top_companies) else 1)
+        filtered = filtered[:45]
+        # ИИ-скоринг релевантности пакетами по 15 (как в чат-версии)
         scored = []
-        for v in filtered[:30]:
-            comp_lower = (v.get("company") or "").lower()
-            is_top = any(tc in comp_lower for tc in top_companies)
-            score = 85 if is_top else 65
-            reason = "Топ-компания" if is_top else "Релевантный профиль"
-            scored.append({
-                "id": str(v["id"]),
-                "title": v.get("name"),
-                "company": v.get("company"),
-                "salary": v.get("salary"),
-                "url": v.get("url"),
-                "match_score": score,
-                "match_reason": reason
-            })
-        scored.sort(key=lambda x: (-x["match_score"],))
-        return web.json_response({"vacancies": scored})
+        for i in range(0, len(filtered), 15):
+            batch = filtered[i:i + 15]
+            vacancies_text = "\n".join([f"ID {v['id']}: {v.get('name')} в {v.get('company')}" for v in batch])
+            quick_prompt = (
+                "Оцени соответствие резюме для вакансий (0-100%).\n"
+                f"Резюме:\n{resume[:2500]}\n\nВакансии:\n{vacancies_text}\n\n"
+                "JSON: {\"ID\": {\"score\": 85, \"reason\": \"причина\"}}"
+            )
+            eval_res = await asyncio.to_thread(ai_generate, quick_prompt)
+            parsed_batch = {}
+            if eval_res:
+                try:
+                    clean = eval_res.replace("```json", "").replace("```", "").strip()
+                    parsed_batch = json.loads(clean)
+                except Exception:
+                    parsed_batch = {}
+            for v in batch:
+                vid = str(v["id"])
+                v_data = parsed_batch.get(vid) or {}
+                try:
+                    score = int(v_data.get("score", 60))
+                except Exception:
+                    score = 60
+                scored.append({
+                    "id": vid,
+                    "title": v.get("name"),
+                    "company": v.get("company"),
+                    "salary": v.get("salary"),
+                    "url": v.get("url"),
+                    "match_score": score,
+                    "match_reason": str(v_data.get("reason", "релевантный профиль"))
+                })
+            await asyncio.sleep(1)
+        scored.sort(key=lambda x: (-x["match_score"],
+                                   0 if any(tc in (x.get("company") or "").lower() for tc in top_companies) else 1))
+        return web.json_response({"vacancies": scored[:30]})
     except Exception as e:
         log.error(f"Miniapp search error: {e}")
         track_error()
@@ -2877,17 +2901,16 @@ async def miniapp_search_vacancies(request):
 
 
 async def miniapp_find_lpr(request):
-    """POST /miniapp/find-lpr - поиск контактов ЛПР"""
+    """POST /miniapp/find-lpr"""
     try:
-        body = await request.json()
+        body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
-        company = body.get("company", "").strip()
-        position = body.get("position", "").strip()
+        company = (body.get("company") or "").strip()
+        position = (body.get("position") or "").strip()
         if not user_id or not company:
             return web.json_response({"error": "Укажите компанию"}, status=400)
         if not spend_balance(user_id, cost=1):
             return web.json_response({"error": "Недостаточно запросов!"}, status=402)
-        
         aggressive_results = await aggressive_recruiter_search(0, company, position, "")
         contacts_list = []
         if aggressive_results["found"]:
@@ -2898,7 +2921,6 @@ async def miniapp_find_lpr(request):
                     "phone": c.get("phone", ""),
                     "url": c.get("url", "")
                 })
-        
         encoded_company = urllib.parse.quote(company)
         links = [
             {"text": "🔍 HR в LinkedIn", "url": f"https://www.google.com/search?q=site:linkedin.com+%22{encoded_company}%22+HR"},
@@ -2920,17 +2942,16 @@ async def miniapp_find_lpr(request):
 
 
 async def miniapp_generate_pitch(request):
-    """POST /miniapp/pitch - генерация питча"""
+    """POST /miniapp/pitch"""
     try:
-        body = await request.json()
+        body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
-        company = body.get("company", "").strip()
-        title = body.get("title", "").strip()
+        company = (body.get("company") or "").strip()
+        title = (body.get("title") or "").strip()
         if not user_id or not company:
             return web.json_response({"error": "Укажите компанию"}, status=400)
         if not spend_balance(user_id, cost=1):
             return web.json_response({"error": "Недостаточно запросов!"}, status=402)
-        
         resume = get_active_resume(user_id)
         prompt = (
             f"Напиши короткий питч (4-5 строк) для рекрутера компании '{company}' на позицию '{title}'.\n"
@@ -2949,19 +2970,17 @@ async def miniapp_generate_pitch(request):
 
 
 async def miniapp_skill_gap(request):
-    """POST /miniapp/skill-gap - анализ навыков"""
+    """POST /miniapp/skill-gap"""
     try:
-        body = await request.json()
+        body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
         if not user_id:
             return web.json_response({"error": "Нет user_id"}, status=400)
         if not spend_balance(user_id, cost=1):
             return web.json_response({"error": "Недостаточно запросов!"}, status=402)
-        
         resume = get_active_resume(user_id)
         if not resume:
             return web.json_response({"error": "Сначала загрузите резюме через бота"}, status=400)
-        
         current_date = datetime.date.today().strftime("%d.%m.%Y")
         prompt = (
             f"Дата: {current_date}. Проведи анализ навыков (Skill Gap) кандидата.\n"
@@ -2982,19 +3001,18 @@ async def miniapp_skill_gap(request):
 
 
 async def miniapp_hr_match(request):
-    """POST /miniapp/hr-match - соответствие резюме вакансии"""
+    """POST /miniapp/hr-match"""
     try:
-        body = await request.json()
+        body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
-        resume_text = body.get("resume_text", "").strip()
-        vacancy_text = body.get("vacancy_text", "").strip()
+        resume_text = (body.get("resume_text") or "").strip()
+        vacancy_text = (body.get("vacancy_text") or "").strip()
         if not user_id or not resume_text or not vacancy_text:
             return web.json_response({"error": "Заполните все поля"}, status=400)
         if len(resume_text) < 100 or len(vacancy_text) < 100:
             return web.json_response({"error": "Тексты слишком короткие"}, status=400)
         if not spend_balance(user_id, cost=2):
             return web.json_response({"error": "Недостаточно запросов! Нужно 2."}, status=402)
-        
         prompt = (
             "Ты — опытный рекрутер. Проанализируй соответствие резюме кандидата требованиям вакансии.\n"
             f"--- РЕЗЮМЕ КАНДИДАТА ---\n{resume_text[:4000]}\n\n"
@@ -3016,10 +3034,7 @@ async def miniapp_hr_match(request):
             return web.json_response({"error": "Не удалось проанализировать"}, status=500)
         percent_match = re.search(r'(\d+)\s*%', analysis)
         overall_percent = int(percent_match.group(1)) if percent_match else 0
-        return web.json_response({
-            "analysis": analysis,
-            "overall_percent": overall_percent
-        })
+        return web.json_response({"analysis": analysis, "overall_percent": overall_percent})
     except Exception as e:
         log.error(f"Miniapp HR match error: {e}")
         track_error()
@@ -3027,16 +3042,15 @@ async def miniapp_hr_match(request):
 
 
 async def miniapp_hr_scoring(request):
-    """POST /miniapp/hr-scoring - скоринг кандидата"""
+    """POST /miniapp/hr-scoring"""
     try:
-        body = await request.json()
+        body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
-        resume_text = body.get("resume_text", "").strip()
+        resume_text = (body.get("resume_text") or "").strip()
         if not user_id or not resume_text or len(resume_text) < 100:
             return web.json_response({"error": "Пришлите полный текст резюме"}, status=400)
         if not spend_balance(user_id, cost=1):
             return web.json_response({"error": "Недостаточно запросов!"}, status=402)
-        
         prompt = (
             "Ты — опытный рекрутер. Проведи скоринг кандидата по резюме.\n"
             f"--- РЕЗЮМЕ ---\n{resume_text[:4000]}\n\n"
@@ -3181,33 +3195,26 @@ async def cleanup_old_data():
 async def main():
     global HTTP
     HTTP = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60))
-    app = web.Application()
+    app = web.Application(middlewares=[cors_middleware])
     app.router.add_get("/", lambda r: web.Response(text="Bot is running"))
     app.router.add_post(f"/{BOT_TOKEN}", telegram_webhook)
-    
-    # ============================================================
-    # 🌐 МИНИ-АП ЭНДПОИНТЫ + CORS SUPPORT
-    # ============================================================
-    
-    routes = [
-        ("/miniapp/verify", miniapp_verify),
-        ("/miniapp/data", miniapp_data),
-        ("/miniapp/analyze", miniapp_analyze_vacancy),
-        ("/miniapp/search", miniapp_search_vacancies),
-        ("/miniapp/find-lpr", miniapp_find_lpr),
-        ("/miniapp/pitch", miniapp_generate_pitch),
-        ("/miniapp/skill-gap", miniapp_skill_gap),
-        ("/miniapp/hr-match", miniapp_hr_match),
-        ("/miniapp/hr-scoring", miniapp_hr_scoring),
-    ]
 
-    for path, handler in routes:
-        method = "post" if "data" not in path else "get"
+    routes = [
+        ("POST", "/miniapp/verify", miniapp_verify),
+        ("GET", "/miniapp/data", miniapp_data),
+        ("POST", "/miniapp/analyze", miniapp_analyze_vacancy),
+        ("POST", "/miniapp/search", miniapp_search_vacancies),
+        ("POST", "/miniapp/find-lpr", miniapp_find_lpr),
+        ("POST", "/miniapp/pitch", miniapp_generate_pitch),
+        ("POST", "/miniapp/skill-gap", miniapp_skill_gap),
+        ("POST", "/miniapp/hr-match", miniapp_hr_match),
+        ("POST", "/miniapp/hr-scoring", miniapp_hr_scoring),
+    ]
+    for method, path, handler in routes:
         app.router.add_route(method, path, handler)
-        app.router.add_route("OPTIONS", path, handle_options)
-        
-    log.info("✅ MiniApp endpoints registered with CORS support")
-    
+
+    log.info("✅ MiniApp endpoints registered with CORS middleware")
+
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
