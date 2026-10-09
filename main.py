@@ -3389,7 +3389,7 @@ async def miniapp_crisis_tool(request):
 
 
 # ============================================================
-# 🆕 НОВЫЙ ЭНДПОИНТ ДЛЯ ПРОБУЖДЕНИЯ БОТА (ДЛЯ IPHONE)
+# 🆕 НОВЫЙ ЭНДПОИНТ: ПРОБУЖДЕНИЕ БОТА (ДЛЯ IPHONE)
 # ============================================================
 async def miniapp_wake_bot(request):
     """Прогревает бота и шлёт приветствие прямо в чат пользователя — работает на iOS, Android, Desktop."""
@@ -4076,7 +4076,6 @@ async def main():
     app.router.add_get("/", lambda r: web.Response(text="Bot is running"))
     app.router.add_post(f"/{BOT_TOKEN}", telegram_webhook)
 
-    # 🆕 Добавлен miniapp/wake-bot в список (31 эндпоинт)
     routes = [
         ("POST", "/miniapp/verify", miniapp_verify),
         ("GET", "/miniapp/data", miniapp_data),
@@ -4092,7 +4091,7 @@ async def main():
         ("GET", "/miniapp/templates", miniapp_templates),
         ("POST", "/miniapp/template", miniapp_template),
         ("POST", "/miniapp/crisis-tool", miniapp_crisis_tool),
-        ("POST", "/miniapp/wake-bot", miniapp_wake_bot),  # 🆕 НОВЫЙ
+        ("POST", "/miniapp/wake-bot", miniapp_wake_bot),  # 🆕 НОВЫЙ — пробуждение бота для iPhone
         ("POST", "/miniapp/analyze", miniapp_analyze_vacancy),
         ("POST", "/miniapp/search", miniapp_search_vacancies),
         ("POST", "/miniapp/find-lpr", miniapp_find_lpr),
