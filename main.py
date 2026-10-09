@@ -63,8 +63,8 @@ GROQ_MODEL = "llama-3.1-8b-instant"
 
 _working_model = {"name": None}
 HTTP = None
-TASKS = set()
 BOT_USERNAME = "LemusCareer_Bot"
+TASKS = set()
 temp_vacancies = {}
 user_states = {}
 user_adapt_target = {}
@@ -308,7 +308,7 @@ COURSES = {
             {"title": "Урок 2: Когда и как говорить о зарплате", "content": "📚 УРОК 2: Когда говорить о зарплате.\n📝 ЗАДАНИЕ: Подготовьте скрипт ответа.\n⏱ Время: 20 минут"},
             {"title": "Урок 3: Техники переговоров", "content": "📚 УРОК 3: Техники переговоров.\n📝 ЗАДАНИЕ: Потренируйтесь отвечать.\n⏱ Время: 25 минут"},
             {"title": "Урок 4: Торг за бонусы и условия", "content": "📚 УРОК 4: Торг за бонусы.\n📝 ЗАДАНИЕ: Составьте список из 5 пунктов.\n⏱ Время: 15 минут"},
-            {"title": "Урок 5: Контр-оффер и финальное решение", "content": "🎉 ПОЗДРАВЛЯЮ! Вы прошли курс. Удачи! 💪\n Время: 15 минут"}
+            {"title": "Урок 5: Контр-оффер и финальное решение", "content": "🎉 ПОЗДРАВЛЯЮ! Вы прошли курс. Удачи! 💪\n⏱ Время: 15 минут"}
         ]
     }
 }
@@ -862,11 +862,16 @@ def get_keyboard(is_admin=False):
     return get_main_keyboard(is_admin)
 
 
-# ---------------- hh.ru парсинг ----------------
-async def hh_api_search(query: str, region_code: int = 1):
+# ---------------- hh.ru парсинг (С ФИЛЬТРАМИ) ----------------
+async def hh_api_search(query: str, region_code: int = 1, only_with_salary: bool = False, experience: str = None):
     try:
+        params = {"text": query, "area": region_code, "per_page": "50"}
+        if only_with_salary:
+            params["only_with_salary"] = "true"
+        if experience:
+            params["experience"] = experience
         async with HTTP.get("https://api.hh.ru/vacancies",
-                            params={"text": query, "area": region_code, "per_page": "50"},
+                            params=params,
                             headers={"User-Agent": "Mozilla/5.0"}) as resp:
             if resp.status == 429:
                 await asyncio.sleep(5)
@@ -889,6 +894,8 @@ async def hh_api_search(query: str, region_code: int = 1):
                 "id": i.get("id"), "name": i.get("name"),
                 "company": (i.get("employer") or {}).get("name"),
                 "salary": sal_str,
+                "salary_from": (salary or {}).get("from"),
+                "salary_to": (salary or {}).get("to"),
                 "url": i.get("alternate_url") or f"https://hh.ru/vacancy/{i.get('id')}"
             })
         return items or None
@@ -1465,7 +1472,7 @@ async def send_vacancies_page(chat_id: int, user_id: int, page: int = 0):
 
 async def handle_search(chat_id: int, user_id: int, is_admin: bool):
     if not spend_balance(user_id, cost=1):
-        await send_telegram(chat_id, "⚠️ У вас закончились запросы!", get_job_seeker_keyboard(is_admin))
+        await send_telegram(chat_id, "⚠️ У вас закончились запросов!", get_job_seeker_keyboard(is_admin))
         return
     active_resume = get_active_resume(user_id)
     if not active_resume:
@@ -2606,32 +2613,56 @@ async def process_message(msg: dict):
 
 
 # ============================================================
-# 🔍 ЯДРО ПОИСКА ВАКАНСИЙ (ОБЩЕЕ ДЛЯ ЧАТА, МИНИ-АПА И ДАЙДЖЕСТА)
+# 🔍 ЯДРО ПОИСКА ВАКАНСИЙ (УЛУЧШЕННАЯ ВЕРСИЯ)
 # ============================================================
 
+# Стоп-слова: вырезаем джунов/стажёров/непрофильные должности
 STOP_WORDS_VAC = [
     "стажер", "стажёр", "trainee", "junior", "джуниор", "студент", "практикант",
     "ассистент", "без опыта", "стажировка", "курьер", "упаковщик", "сборщик",
     "кассир", "повар", "официант", "грузчик", "дворник", "продавец-консультант",
+    "начинающий специалист", "помощник", "подработка", "сменный график без опыта",
 ]
 
+# Негативные фразы в описании вакансии (снижают скор)
+NEGATIVE_DESCRIPTION_PATTERNS = [
+    "1-3 года", "1–3 года", "от 1 года", "опыт от 1", "опыт не требуется",
+    "рассмотрим студентов", "можно без опыта", "для начинающих",
+]
+
+# Расширенный словарь: компании-конкуренты (буст +20) и целевые отрасли
 INDUSTRY_COMPANY_HINTS = {
-    "телеком": ["мегафон", "мтс", "билайн", "билайн", "ростелеком", "tele2", "т2", "вымпелком", "дом.ru", "эртелеком"],
-    "телекоммуникации": ["мегафон", "мтс", "билайн", "билайн", "ростелеком", "tele2", "т2", "вымпелком"],
-    "банки": ["сбер", "втб", "альфа", "газпромбанк", "т-банк", "тинькофф", "райффайзен", "совкомбанк", "мкб", "псб", "отп", "росбанк", "дом.рф", "банк"],
+    "телеком": ["мегафон", "мтс", "билайн", "ростелеком", "tele2", "т2", "вымпелком", "дом.ru", "эртелеком",
+                "мтс digital", "мтс экосистема", "т2 mobile", "мтс банк", "мегафон ритейл"],
+    "телекоммуникации": ["мегафон", "мтс", "билайн", "ростелеком", "tele2", "т2", "вымпелком"],
+    "банки": ["сбер", "втб", "альфа", "газпромбанк", "т-банк", "тинькофф", "райффайзен", "совкомбанк", "мкб", "псб",
+              "отп", "росбанк", "дом.рф", "банк", "сбертех", "тинькофф бизнес", "втб цифровые", "альфа-лаборатория",
+              "газпромбанк технологии"],
     "банковский": ["сбер", "втб", "альфа", "газпромбанк", "т-банк", "тинькофф", "райффайзен", "совкомбанк", "банк"],
     "финтех": ["тинькофф", "т-банк", "юмани", "cloudpayments", "сбп", "fintech"],
     "it": ["яндекс", "vk", "озон", "avito", "kaspersky", "1с", "sber tech", "сбертех", "mts web", "икт"],
     "ит": ["яндекс", "vk", "озон", "avito", "kaspersky", "1с"],
 }
 
-SENIORITY_WORDS = ["руководитель", "директор", "head", "chief", "lead", "начальник", "управляющий", "commercial", "коммерческий"]
+# Seniority-слова (если есть в резюме → кандидат senior/lead)
+SENIORITY_WORDS = ["руководитель", "директор", "head", "chief", "lead", "начальник", "управляющий", "commercial", "коммерческий", "cco", "c-level"]
+
+# Доменные ключевые слова (boost +8 каждое)
+DOMAIN_KEYWORDS = ["p&l", "юнит-экономика", "unit-экономика", "b2b", "enterprise", "cloud", "saas", "iot",
+                   "трансформация", "цифровизация", "go-to-market", "gtm", "pipeline", " churn", "arpu", "ltv"]
 
 
 def company_industry_boost(company: str, industries: list) -> int:
+    """Буст по компании: если компания из целевых отраслей + бонус для прямых конкурентов."""
     cl = (company or "").lower()
     if not cl:
         return 0
+    # Прямые конкуренты кандидата (МегаФон, МТС, Ростелеком, билайн, Сбер, Т-Банк, ВТБ, Альфа)
+    direct_competitors = ["мегафон", "мтс", "ростелеком", "билайн", "сбер", "т-банк", "тинькофф", "втб", "альфа", "газпромбанк"]
+    for dc in direct_competitors:
+        if dc in cl:
+            return 20
+    # Целевые отрасли
     targeted = set()
     for ind in (industries or []):
         tokens = INDUSTRY_COMPANY_HINTS.get(ind.strip().lower())
@@ -2641,6 +2672,7 @@ def company_industry_boost(company: str, industries: list) -> int:
         for t in targeted:
             if t in cl:
                 return 15
+    # Любая компания из словаря
     for tokens in INDUSTRY_COMPANY_HINTS.values():
         for t in tokens:
             if t in cl:
@@ -2648,36 +2680,79 @@ def company_industry_boost(company: str, industries: list) -> int:
     return 0
 
 
-def keyword_fallback_score(title: str, company: str, keywords: list, industries: list) -> tuple:
+def detect_seniority(resume_text: str) -> str:
+    """Определяем seniority кандидата: senior / middle / junior."""
+    if not resume_text:
+        return "middle"
+    text_lower = resume_text.lower()
+    years_match = re.search(r'опыт работы[^\d]*(\d+)', text_lower)
+    years = int(years_match.group(1)) if years_match else 0
+    senior_markers = sum(1 for w in SENIORITY_WORDS if w in text_lower)
+    if years >= 7 or senior_markers >= 2:
+        return "senior"
+    if years >= 3:
+        return "middle"
+    return "junior"
+
+
+def detect_min_salary(resume_text: str, seniority: str) -> int:
+    """Минимальная зарплата (net, в рублях) для hh.ru фильтра."""
+    if not resume_text:
+        return 0
+    # Москва: senior от 250к, middle от 150к, junior от 80к
+    if "москва" in resume_text.lower() or "санкт-петербург" in resume_text.lower():
+        return {"senior": 250000, "middle": 150000, "junior": 80000}[seniority]
+    return {"senior": 180000, "middle": 100000, "junior": 60000}[seniority]
+
+
+def keyword_fallback_score(title: str, company: str, keywords: list, industries: list, description: str = "") -> tuple:
+    """Fallback-скоринг когда ИИ недоступен: по ключевым словам, домену, seniority."""
     t = (title or "").lower()
     s = 45
     hits = [k for k in (keywords or []) if k and len(k) > 2 and k.lower() in t]
     s += min(30, 6 * len(hits))
     s += company_industry_boost(company, industries)
+    # Seniority boost
     for w in SENIORITY_WORDS:
         if w in t:
-            s += 8
+            s += 12
+            break
+    # Доменные ключевые слова в описании
+    desc_lower = (description or "").lower()
+    for kw in DOMAIN_KEYWORDS:
+        if kw in desc_lower:
+            s += 4
+    # Штраф за признаки junior/middle
+    for neg in NEGATIVE_DESCRIPTION_PATTERNS:
+        if neg in desc_lower:
+            s -= 25
             break
     reason = ("ключевые слова: " + ", ".join(hits[:3])) if hits else "совпадение профиля"
-    return min(95, s), reason
+    return min(98, max(10, s)), reason
 
 
 async def core_search_vacancies(user_id: int) -> dict:
-    """Полный цикл поиска: регион -> план (должности/отрасли/ключевые слова) -> hh -> скоринг."""
+    """Полный цикл поиска: регион -> seniority -> план -> hh -> скоринг."""
     resume = get_active_resume(user_id)
     if not resume:
         return {"error": "Сначала загрузите резюме (в приложении или в боте)", "vacancies": [], "queries": [], "industries": []}
     region_code = await extract_region_from_resume(resume)
+    seniority = detect_seniority(resume)
+    min_salary = detect_min_salary(resume, seniority)
+    log.info(f"🎯 Search params: seniority={seniority}, min_salary={min_salary}, region={region_code}")
+
+    # План поиска: ИИ генерирует должности, отрасли, ключевые слова
     plan_prompt = (
         "Ты — карьерный аналитик. По резюме составь план поиска вакансий на hh.ru.\n"
         f"Резюме:\n{resume[:4000]}\n\n"
+        "ВАЖНО: кандидат senior уровня с опытом " + str(seniority) + ". НЕ предлагай junior/middle позиции.\n"
         "Верни ТОЛЬКО JSON вида:\n"
         "{\"queries\": [\"должность 1\", \"должность 2\", \"должность 3\"], "
         "\"industries\": [\"отрасль 1\", \"отрасль 2\"], "
         "\"keywords\": [\"навык 1\", \"... до 10\"], "
-        "\"seniority\": \"руководитель|директор|ведущий\"\n"
-        "Правила: должности строго уровня кандидата (не ниже); отрасли — где кандидат работал и хочет работать; "
-        "keywords — ключевые навыки и домены из резюме."
+        "\"seniority\": \"senior|middle|junior\"}\n"
+        "Правила: должности строго уровня кандидата (добавь 'руководитель/директор/head' где уместно); "
+        "отрасли — где кандидат работал и хочет работать; keywords — ключевые навыки и домены из резюме."
     )
     plan_raw = await asyncio.to_thread(ai_generate, plan_prompt)
     queries = []
@@ -2695,36 +2770,66 @@ async def core_search_vacancies(user_id: int) -> dict:
             except Exception as e:
                 log.warning(f"Search plan parse error: {e}")
     if not queries:
-        queries = ["Руководитель направления", "Коммерческий директор", "Руководитель проектов"]
+        # Fallback для senior кандидатов с твоим профилем
+        queries = ["Руководитель направления", "Коммерческий директор", "Head of Business Development"]
+    
+    # Если seniority=senior, добавляем seniority-фильтр в запросы
+    if seniority == "senior":
+        enhanced_queries = []
+        for q in queries:
+            if not any(w in q.lower() for w in ["руководитель", "директор", "head", "chief", "lead"]):
+                enhanced_queries.append(f"Руководитель {q}")
+            else:
+                enhanced_queries.append(q)
+        queries = enhanced_queries[:3]
+
     all_items = []
     for idx, q in enumerate(queries):
         if idx > 0:
             await asyncio.sleep(1)
-        res = await hh_scrape_search(q, region_code) or await hh_api_search(q, region_code)
+        # Приоритет: hh API с фильтром по зарплате, затем scrape
+        res = await hh_api_search(q, region_code, only_with_salary=(min_salary > 0)) or await hh_scrape_search(q, region_code)
         if res:
             all_items.extend(res)
         if len(all_items) >= 90:
             break
     if not all_items:
         return {"error": "", "vacancies": [], "queries": queries, "industries": industries}
+
+    # Фильтрация
     unique = {}
     for v in all_items:
         vid = str(v.get("id"))
         if not vid or vid in unique:
             continue
         name_lower = (v.get("name") or "").lower()
+        # Стоп-слова
         if any(sw in name_lower for sw in STOP_WORDS_VAC):
             continue
+        # Скрытые вакансии
         if is_vacancy_hidden(user_id, vid):
             continue
+        # Фильтр по минимальной зарплате (если указана)
+        if min_salary > 0:
+            sal_from = v.get("salary_from")
+            sal_to = v.get("salary_to")
+            # Пропускаем вакансии с з/п ниже минимума
+            if sal_to and sal_to < min_salary:
+                continue
+            # Если з/п не указана — оставляем (может быть выше)
         unique[vid] = v
     filtered = list(unique.values())[:45]
+    log.info(f"📊 Filtered: {len(filtered)} / {len(all_items)}")
+
+    # ИИ-скоринг пакетами по 15
     scored = []
     for i in range(0, len(filtered), 15):
         batch = filtered[i:i + 15]
         vacancies_text = "\n".join([f"ID {v['id']}: {v.get('name')} в {v.get('company')}" for v in batch])
         quick_prompt = (
-            "Оцени соответствие резюме кандидата каждой вакансии (0-100). Учитывай уровень должности и отрасль.\n"
+            f"Оцени соответствие резюме кандидата (senior уровень, опыт {seniority}) каждой вакансии (0-100).\n"
+            "Учитывай: уровень должности, отрасль, доменные навыки (B2B, Enterprise, Cloud, SaaS, P&L, юнит-экономика).\n"
+            "Штраф за junior/middle позиции.\n"
             f"Резюме:\n{resume[:2500]}\n\nВакансии:\n{vacancies_text}\n\n"
             "Верни ТОЛЬКО JSON: {\"ID\": {\"score\": 85, \"reason\": \"причина\"}}"
         )
@@ -2749,10 +2854,10 @@ async def core_search_vacancies(user_id: int) -> dict:
                     base = 60
                 reason = str(v_data.get("reason", "релевантный профиль"))
             else:
-                base, reason = keyword_fallback_score(v.get("name"), v.get("company"), keywords, industries)
+                base, reason = keyword_fallback_score(v.get("name"), v.get("company"), keywords, industries, "")
             final_score = min(98, base + boost)
-            if boost:
-                reason += " • целевая отрасль"
+            if boost >= 15:
+                reason += " • целевая отрасль/конкурент"
             scored.append({
                 "id": vid,
                 "title": v.get("name"),
@@ -2906,6 +3011,36 @@ async def miniapp_upload_resume(request):
         return web.json_response({"ok": True, "resumes_count": len(list_resumes(user_id))})
     except Exception as e:
         log.error(f"Upload resume error: {e}")
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_resumes_list(request):
+    """GET /miniapp/resumes?user_id=X — список всех резюме пользователя."""
+    try:
+        user_id = int(request.query.get("user_id", 0))
+        if not user_id:
+            return web.json_response({"error": "No user_id"}, status=400)
+        rows = list_resumes(user_id)
+        return web.json_response({"resumes": rows})
+    except Exception as e:
+        log.error(f"Resumes list error: {e}")
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_activate_resume(request):
+    """POST /miniapp/activate-resume — активировать резюме по ID."""
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        resume_id = int(body.get("resume_id", 0))
+        if not user_id or not resume_id:
+            return web.json_response({"error": "Нет данных"}, status=400)
+        cur.execute("UPDATE resumes SET active=0 WHERE user_id=?", (user_id,))
+        cur.execute("UPDATE resumes SET active=1 WHERE id=? AND user_id=?", (resume_id, user_id))
+        conn.commit()
+        return web.json_response({"ok": True})
+    except Exception as e:
+        log.error(f"Activate resume error: {e}")
         return web.json_response({"error": str(e)[:200]}, status=500)
 
 
@@ -3321,6 +3456,236 @@ async def miniapp_hr_scoring(request):
         return web.json_response({"error": str(e)[:200]}, status=500)
 
 
+# ============================================================
+# 🆕 HR-ФУНКЦИИ ДЛЯ МИНИ-АПА (новые эндпоинты)
+# ============================================================
+
+async def miniapp_hr_questions(request):
+    """POST /miniapp/hr-questions — вопросы для интервью."""
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        resume_text = (body.get("resume_text") or "").strip()
+        if not user_id or len(resume_text) < 100:
+            return web.json_response({"error": "Пришлите полный текст резюме"}, status=400)
+        if not spend_balance(user_id, cost=1):
+            return web.json_response({"error": "Недостаточно запросов!"}, status=402)
+        prompt = (
+            "Ты — опытный интервьюер. Составь список вопросов для собеседования.\n"
+            f"--- РЕЗЮМЕ КАНДИДАТА ---\n{resume_text[:4000]}\n\n"
+            "Составь вопросы по категориям:\n"
+            "1. 🎯 Вопросы по опыту (3-4).\n"
+            "2. 🔍 Уточняющие по пробелам (2-3).\n"
+            "3. 🚩 Проверка красных флагов (2-3).\n"
+            "4. 💡 Поведенческие (2-3).\n"
+            "5. 🎪 Каверзные (1-2).\n"
+            "6. 🤝 О мотивации (2)."
+        )
+        questions = await asyncio.to_thread(ai_generate, prompt)
+        if not questions or not validate_ai_response(questions, min_length=100):
+            return web.json_response({"error": "Не удалось сгенерировать"}, status=500)
+        return web.json_response({"questions": questions})
+    except Exception as e:
+        log.error(f"HR questions error: {e}")
+        track_error()
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_hr_test(request):
+    """POST /miniapp/hr-test — тестовое задание."""
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        resume_text = (body.get("resume_text") or "").strip()
+        if not user_id or len(resume_text) < 100:
+            return web.json_response({"error": "Пришлите полный текст резюме"}, status=400)
+        if not spend_balance(user_id, cost=2):
+            return web.json_response({"error": "Недостаточно запросов! Нужно 2."}, status=402)
+        prompt = (
+            "Ты — опытный нанимающий менеджер. Составь тестовое задание на основе резюме.\n"
+            f"--- РЕЗЮМЕ КАНДИДАТА ---\n{resume_text[:4000]}\n\n"
+            "ПРАВИЛА:\n"
+            "1. Основано на том, что кандидат указал в резюме.\n"
+            "2. Если управлял P&L — попроси рассчитать юнит-экономику.\n"
+            "3. Если запускал продукт — попроси описать метрики, риски, план Б.\n"
+            "4. Если оптимизировал процессы — попроси расчёт эффекта.\n"
+            "5. Если руководил командой — попроси кейс управления конфликтом.\n"
+            "6. Задание выполнимо за 1-2 часа.\n"
+            "Выдай:\n"
+            "📋 НАЗВАНИЕ\n⏱ ВРЕМЯ\n📝 ОПИСАНИЕ\n🎯 ЧТО ПРОВЕРЯЕМ\n✅ КРИТЕРИИ\n❓ ВОПРОСЫ ПОСЛЕ"
+        )
+        test_task = await asyncio.to_thread(ai_generate, prompt)
+        if not test_task or not validate_ai_response(test_task, min_length=100):
+            return web.json_response({"error": "Не удалось сгенерировать"}, status=500)
+        return web.json_response({"test_task": test_task})
+    except Exception as e:
+        log.error(f"HR test error: {e}")
+        track_error()
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_hr_description(request):
+    """POST /miniapp/hr-description — описание вакансии."""
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        params = (body.get("params") or "").strip()
+        if not user_id or len(params) < 50:
+            return web.json_response({"error": "Опишите вакансию подробнее"}, status=400)
+        if not spend_balance(user_id, cost=2):
+            return web.json_response({"error": "Недостаточно запросов! Нужно 2."}, status=402)
+        prompt = (
+            f"Ты — опытный рекрутер. Составь описание вакансии по структуре hh.ru.\n"
+            f"Вводные: {params}\n\n"
+            "Структура:\n"
+            "📌 НАЗВАНИЕ ДОЛЖНОСТИ\n"
+            "🏢 О КОМПАНИИ\n"
+            "🎯 ОБЯЗАННОСТИ (5-8 пунктов)\n"
+            "✅ ТРЕБОВАНИЯ (must have + nice to have)\n"
+            "💎 УСЛОВИЯ\n"
+            "🚀 ПРЕИМУЩЕСТВА\n"
+            "📩 ПРИЗЫВ К ДЕЙСТВИЮ"
+        )
+        description = await asyncio.to_thread(ai_generate, prompt)
+        if not description or not validate_ai_response(description, min_length=100):
+            return web.json_response({"error": "Не удалось сгенерировать"}, status=500)
+        return web.json_response({"description": description})
+    except Exception as e:
+        log.error(f"HR description error: {e}")
+        track_error()
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_hr_rejection(request):
+    """POST /miniapp/hr-rejection — вежливый отказ."""
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        params = (body.get("params") or "").strip()
+        if not user_id or len(params) < 20:
+            return web.json_response({"error": "Опишите ситуацию"}, status=400)
+        if not spend_balance(user_id, cost=1):
+            return web.json_response({"error": "Недостаточно запросов!"}, status=402)
+        prompt = (
+            f"Напиши вежливое письмо с отказом кандидату.\n"
+            f"Параметры: {params}\n\n"
+            "Письмо должно быть уважительным, кратким (до 150 слов)."
+        )
+        letter = await asyncio.to_thread(ai_generate, prompt)
+        if not letter or not validate_ai_response(letter, min_length=50):
+            return web.json_response({"error": "Не удалось сгенерировать"}, status=500)
+        return web.json_response({"letter": letter})
+    except Exception as e:
+        log.error(f"HR rejection error: {e}")
+        track_error()
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_hr_offer(request):
+    """POST /miniapp/hr-offer — шаблон оффера."""
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        params = (body.get("params") or "").strip()
+        if not user_id or len(params) < 20:
+            return web.json_response({"error": "Опишите параметры"}, status=400)
+        if not spend_balance(user_id, cost=1):
+            return web.json_response({"error": "Недостаточно запросов!"}, status=402)
+        prompt = (
+            f"Составь профессиональный шаблон оффера.\n"
+            f"Параметры: {params}\n\n"
+            "Оффер должен включать: поздравление, должность, условия, дату выхода, испытательный срок, следующие шаги."
+        )
+        offer = await asyncio.to_thread(ai_generate, prompt)
+        if not offer or not validate_ai_response(offer, min_length=50):
+            return web.json_response({"error": "Не удалось сгенерировать"}, status=500)
+        return web.json_response({"offer": offer})
+    except Exception as e:
+        log.error(f"HR offer error: {e}")
+        track_error()
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_hr_salary(request):
+    """POST /miniapp/hr-salary — оценка зарплаты."""
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        params = (body.get("params") or "").strip()
+        if not user_id or len(params) < 20:
+            return web.json_response({"error": "Опишите параметры"}, status=400)
+        if not spend_balance(user_id, cost=1):
+            return web.json_response({"error": "Недостаточно запросов!"}, status=402)
+        prompt = (
+            f"Ты — эксперт по компенсациям. Оцени рыночную зарплату.\n"
+            f"Параметры: {params}\n\n"
+            "Выдай:\n"
+            "1. 💰 Вилка зарплаты (минимум - медиана - максимум).\n"
+            "2. 📊 Факторы влияния.\n"
+            "3. 🎁 Типичный пакет бонусов.\n"
+            "4. 📈 Тренды.\n"
+            "5. 💡 Рекомендации."
+        )
+        analysis = await asyncio.to_thread(ai_generate, prompt)
+        if not analysis or not validate_ai_response(analysis, min_length=50):
+            return web.json_response({"error": "Не удалось оценить"}, status=500)
+        return web.json_response({"analysis": analysis})
+    except Exception as e:
+        log.error(f"HR salary error: {e}")
+        track_error()
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_hr_candidate_pitch(request):
+    """POST /miniapp/hr-candidate-pitch — питч кандидату."""
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        params = (body.get("params") or "").strip()
+        if not user_id or len(params) < 20:
+            return web.json_response({"error": "Опишите вакансию"}, status=400)
+        if not spend_balance(user_id, cost=1):
+            return web.json_response({"error": "Недостаточно запросов!"}, status=402)
+        prompt = (
+            f"Ты — рекрутер. Напиши питч для кандидата.\n"
+            f"Параметры: {params}\n\n"
+            "Цепляет с первого предложения, показывает ценность, подчёркивает рост. Стиль от равного к равному."
+        )
+        pitch = await asyncio.to_thread(ai_generate, prompt)
+        if not pitch or not validate_ai_response(pitch, min_length=50):
+            return web.json_response({"error": "Не удалось сгенерировать"}, status=500)
+        return web.json_response({"pitch": pitch})
+    except Exception as e:
+        log.error(f"HR candidate pitch error: {e}")
+        track_error()
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_hr_followup(request):
+    """POST /miniapp/hr-followup — фоллоу-ап после интервью."""
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        params = (body.get("params") or "").strip()
+        if not user_id or len(params) < 20:
+            return web.json_response({"error": "Опишите ситуацию"}, status=400)
+        if not spend_balance(user_id, cost=1):
+            return web.json_response({"error": "Недостаточно запросов!"}, status=402)
+        prompt = (
+            f"Напиши фоллоу-ап письмо кандидату после собеседования.\n"
+            f"Параметры: {params}\n\n"
+            "Поблагодари, подчеркни что впечатлило, опиши следующие шаги."
+        )
+        followup = await asyncio.to_thread(ai_generate, prompt)
+        if not followup or not validate_ai_response(followup, min_length=50):
+            return web.json_response({"error": "Не удалось сгенерировать"}, status=500)
+        return web.json_response({"followup": followup})
+    except Exception as e:
+        log.error(f"HR followup error: {e}")
+        track_error()
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
 # ---------------- Вебхук ----------------
 async def telegram_webhook(request):
     try:
@@ -3471,6 +3836,8 @@ async def main():
         ("POST", "/miniapp/verify", miniapp_verify),
         ("GET", "/miniapp/data", miniapp_data),
         ("POST", "/miniapp/upload-resume", miniapp_upload_resume),
+        ("GET", "/miniapp/resumes", miniapp_resumes_list),
+        ("POST", "/miniapp/activate-resume", miniapp_activate_resume),
         ("POST", "/miniapp/invoice", miniapp_invoice),
         ("GET", "/miniapp/payments", miniapp_payments),
         ("POST", "/miniapp/digest", miniapp_digest),
@@ -3486,11 +3853,20 @@ async def main():
         ("POST", "/miniapp/skill-gap", miniapp_skill_gap),
         ("POST", "/miniapp/hr-match", miniapp_hr_match),
         ("POST", "/miniapp/hr-scoring", miniapp_hr_scoring),
+        # 🆕 Новые HR-эндпоинты
+        ("POST", "/miniapp/hr-questions", miniapp_hr_questions),
+        ("POST", "/miniapp/hr-test", miniapp_hr_test),
+        ("POST", "/miniapp/hr-description", miniapp_hr_description),
+        ("POST", "/miniapp/hr-rejection", miniapp_hr_rejection),
+        ("POST", "/miniapp/hr-offer", miniapp_hr_offer),
+        ("POST", "/miniapp/hr-salary", miniapp_hr_salary),
+        ("POST", "/miniapp/hr-candidate-pitch", miniapp_hr_candidate_pitch),
+        ("POST", "/miniapp/hr-followup", miniapp_hr_followup),
     ]
     for method, path, handler in routes:
         app.router.add_route(method, path, handler)
 
-    log.info("✅ MiniApp endpoints registered with CORS middleware")
+    log.info("✅ MiniApp endpoints registered with CORS middleware (28 endpoints)")
 
     runner = web.AppRunner(app)
     await runner.setup()
