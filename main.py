@@ -869,9 +869,9 @@ def get_main_keyboard(is_admin=False):
 
 def get_job_seeker_keyboard(is_admin=False):
     kb = [
-        [{"text": "🔍 Поиск вакансий"}, {"text": "🔗 Разобрать вакансию"}],
-        [{"text": "🕵️ Найти ЛПР"}, {"text": "📝 Короткие Питчи"}],
-        [{"text": "📄 Моё резюме"}, {"text": "🎤 Собеседование"}],
+        [{"text": "🔍 Поиск вакансий"}, {"text": "🎤 Тренажер собеседований"}],
+        [{"text": "🔗 Разобрать вакансию"}, {"text": "🕵️ Найти ЛПР"}],
+        [{"text": "📝 Короткие Питчи"}, {"text": "📄 Моё резюме"}],
         [{"text": "📊 Трекер и статистика"}, {"text": "🎓 Премиум"}],
         [{"text": "🏠 Главное меню"}, {"text": "🚀 Запустить бота"}],
     ]
@@ -1974,7 +1974,7 @@ def build_crisis_prompt(tool: str, params: str, resume: str) -> str:
             "Выдай:\n"
             "1) Расчёт минимального приемлемого оффера: сумма расходов + 20% буфер (покажи арифметику);\n"
             "2) Точную фразу для переговоров, удерживающую этот пол;\n"
-            "3) Две стратегии, если оффер ниже пола: временный мост с дедлайном и торг немедными условиями;\n"
+            "3) Две стратегии, если оффер ниже пола: временный мост с дедлайном и торг немедленными условиями;\n"
             "4) Одно поддерживающее предложение: почему согласие ниже пола из страха — это потерянные 2 года."
         )
     if tool == "warm":
@@ -2020,6 +2020,13 @@ async def crisis_generate(chat_id: int, user_id: int, tool: str, params: str):
         await send_telegram(chat_id, "⚠️ ИИ недоступен. Попробуй ещё раз через минуту.")
         return
     await send_telegram(chat_id, f"{CRISIS_TITLES.get(tool, '🆘 *Результат:*')}\n\n{res}")
+
+
+NO_RESUME_TRAINER_TEXT = (
+    "💡 *Для тренажёра нужно резюме.*\n"
+    "Пришли файл резюме (PDF, DOCX или фото) прямо сюда — или загрузи в приложении: «📥 Загрузить резюме».\n"
+    "Как только резюме появится, нажми «🎤 Тренажер собеседований» ещё раз — и начнём."
+)
 
 
 async def handle_document(chat_id: int, user_id: int, document: dict, is_admin: bool):
@@ -2095,9 +2102,9 @@ async def handle_document(chat_id: int, user_id: int, document: dict, is_admin: 
         success_text = (
             f"✅ *Резюме «{file_name}» загружено!*\n"
             "💡 *Что можно сделать:*\n"
-            "1️⃣ * Разобрать вакансию* — скопируй текст вакансии.\n"
-            "2️⃣ *️ Найти ЛПР* — прямой выход на менеджера.\n"
-            "3️⃣ * Анализ навыков* — выявит пробелы.\n"
+            "1️⃣ *🎤 Тренажер собеседований* — 3 каверзных вопроса с разбором.\n"
+            "2️⃣ *🔗 Разобрать вакансию* — скопируй текст вакансии.\n"
+            "3️⃣ * Поиск вакансий* — подбор по резюме.\n"
             "📎 *Форматы:* PDF, DOCX, DOC, ODT, RTF, TXT и фото резюме."
         )
     await send_telegram(chat_id, success_text, keyboard)
@@ -2120,7 +2127,7 @@ async def start_interview_simulator(chat_id: int, user_id: int):
         return
     resume = get_active_resume(user_id)
     if not resume:
-        await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
+        await send_telegram(chat_id, NO_RESUME_TRAINER_TEXT)
         return
     await show_typing(chat_id)
     prompt = f"Задай первый каверзный вопрос на собеседовании по резюме:\n{resume[:5000]}"
@@ -2130,7 +2137,7 @@ async def start_interview_simulator(chat_id: int, user_id: int):
         return
     interview_sessions[user_id] = {"question_count": 1, "history": []}
     user_states[user_id] = "interview_active"
-    await send_telegram(chat_id, f"🎙 *Вопрос 1 из 3:*\n\n{first_q}")
+    await send_telegram(chat_id, f"🎙 *Тренажёр запущен! Вопрос 1 из 3:*\n\n{first_q}")
 
 
 async def handle_interview_answer(chat_id: int, user_id: int, answer_text: str):
@@ -2469,8 +2476,8 @@ async def process_message(msg: dict):
             "💼 *Режим соискателя активирован!*\n"
             "🚀 *Как это работает:*\n"
             "1️⃣ Отправь файл резюме (до 5 МБ).\n"
-            "2️⃣ Скопируй текст вакансии из приложения hh.\n"
-            "3️⃣ Пришли текст сюда — я найду контакты и напишу питч!\n"
+            "2️⃣ Нажми «🎤 Тренажер собеседований» или «🔍 Поиск вакансий».\n"
+            "3️⃣ Скопируй текст вакансии из hh — я найду контакты и напишу питч!\n"
             "Используй меню ниже 👇"
         )
         await send_telegram(chat_id, seeker_text, get_job_seeker_keyboard(is_admin))
@@ -2569,9 +2576,6 @@ async def process_message(msg: dict):
         bg(run_resume_audit(chat_id, user_id))
 
     elif text == "🎤 Тренажер собеседований":
-        if not get_active_resume(user_id):
-            await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
-            return
         bg(start_interview_simulator(chat_id, user_id))
 
     elif text == "🎓 Курсы":
@@ -3455,7 +3459,7 @@ async def miniapp_crisis_tool(request):
 
 
 async def miniapp_wake_bot(request):
-    """Прогрев + приветствие в чат. action='interview' сразу запускает тренажёр собеседований."""
+    """Прогрев + действие в чат. action='interview' сразу запускает тренажёр."""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -3466,8 +3470,7 @@ async def miniapp_wake_bot(request):
         is_admin = (ADMIN_ID != 0 and user_id == ADMIN_ID)
         if action == "interview":
             if not get_active_resume(user_id):
-                await send_telegram(user_id,
-                    "💡 *Для тренажёра нужно резюме.*\nЗагрузи его в приложении: «📥 Загрузить резюме» — и возвращайся.")
+                await send_telegram(user_id, NO_RESUME_TRAINER_TEXT)
                 return web.json_response({"ok": True, "sent": True, "note": "no_resume"})
             await start_interview_simulator(user_id, user_id)
             log.info(f"Wake bot: interview started for {user_id}")
@@ -3532,6 +3535,103 @@ async def miniapp_cover_letter(request):
     except Exception as e:
         log.error(f"Cover letter error: {e}")
         track_error()
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+# ============================================================
+# 👑 АДМИН-ПАНЕЛЬ В МИНИ-АП (ТОЛЬКО ВЛАДЕЛЕЦ)
+# ============================================================
+
+async def miniapp_admin_overview(request):
+    try:
+        user_id = int(request.query.get("user_id", 0))
+        if ADMIN_ID == 0 or user_id != ADMIN_ID:
+            return web.json_response({"error": "Доступ запрещён"}, status=403)
+        cur.execute("SELECT COUNT(*) FROM users")
+        total_users = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM resumes")
+        total_resumes = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM payments WHERE status='paid'")
+        p = cur.fetchone()
+        total_payments, total_stars = p[0], p[1]
+        cur.execute("SELECT COUNT(*) FROM users WHERE unlimited_until IS NOT NULL AND datetime('now') < datetime(unlimited_until)")
+        premium_active = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM feedback")
+        feedback_count = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM liked_vacancies")
+        total_tracker = cur.fetchone()[0]
+        cur.execute("SELECT user_id FROM users ORDER BY created_at DESC LIMIT 200")
+        rows = cur.fetchall()
+        users = []
+        for r in rows:
+            uid = r[0]
+            cur.execute("SELECT username, balance, unlimited_until, daily_count, last_active_date, digest_active, created_at FROM users WHERE user_id=?", (uid,))
+            ur = cur.fetchone()
+            if not ur:
+                continue
+            cur.execute("SELECT COUNT(*) FROM resumes WHERE user_id=?", (uid,))
+            resumes = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM liked_vacancies WHERE user_id=?", (uid,))
+            tracker = cur.fetchone()[0]
+            cur.execute("SELECT COALESCE(SUM(amount),0) FROM payments WHERE user_id=? AND status='paid'", (uid,))
+            paid = cur.fetchone()[0]
+            users.append({
+                "user_id": uid, "username": ur[0] or "", "balance": ur[1],
+                "unlimited_until": ur[2] or "", "is_premium": is_premium_user(uid),
+                "daily_count": ur[3], "last_active_date": ur[4] or "",
+                "digest_active": ur[5] or 0, "created_at": ur[6] or "",
+                "resumes": resumes, "tracker": tracker, "paid_stars": paid,
+            })
+        cur.execute("SELECT user_id, amount, status, created_at FROM payments ORDER BY id DESC LIMIT 20")
+        payments = [{"user_id": r[0], "amount": r[1], "status": r[2], "created_at": r[3]} for r in cur.fetchall()]
+        return web.json_response({
+            "totals": {
+                "users": total_users, "resumes": total_resumes, "payments": total_payments,
+                "stars": total_stars, "premium_active": premium_active,
+                "feedback": feedback_count, "tracker": total_tracker,
+            },
+            "users": users,
+            "payments": payments,
+        })
+    except Exception as e:
+        log.error(f"Admin overview error: {e}")
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_admin_grant(request):
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        if ADMIN_ID == 0 or user_id != ADMIN_ID:
+            return web.json_response({"error": "Доступ запрещён"}, status=403)
+        target = int(body.get("target_user_id", 0))
+        action = (body.get("action") or "").strip()
+        try:
+            value = int(body.get("value", 0) or 0)
+        except Exception:
+            value = 0
+        if not target:
+            return web.json_response({"error": "Не указан TG ID пользователя"}, status=400)
+        register_user(target, "admin_target", None)
+        if action == "add_balance":
+            admin_add_balance(target, value if value > 0 else 50)
+        elif action == "set_balance":
+            cur.execute("UPDATE users SET balance=? WHERE user_id=?", (max(0, value), target))
+            conn.commit()
+        elif action == "unlimited_days":
+            admin_set_unlimited(target, value if value > 0 else 30)
+        elif action == "revoke":
+            cur.execute("UPDATE users SET unlimited_until=NULL WHERE user_id=?", (target,))
+            conn.commit()
+        else:
+            return web.json_response({"error": f"Неизвестное действие: {action}"}, status=400)
+        log.info(f"ADMIN grant: admin={user_id} target={target} action={action} value={value}")
+        cur.execute("SELECT balance, unlimited_until FROM users WHERE user_id=?", (target,))
+        row = cur.fetchone()
+        return web.json_response({"ok": True, "balance": row[0] if row else 0,
+                                  "unlimited_until": (row[1] if row else "") or ""})
+    except Exception as e:
+        log.error(f"Admin grant error: {e}")
         return web.json_response({"error": str(e)[:200]}, status=500)
 
 
@@ -4022,99 +4122,6 @@ async def miniapp_hr_followup(request):
     except Exception as e:
         log.error(f"HR followup error: {e}")
         track_error()
-        return web.json_response({"error": str(e)[:200]}, status=500)
-
-
-async def miniapp_admin_overview(request):
-    try:
-        user_id = int(request.query.get("user_id", 0))
-        if ADMIN_ID == 0 or user_id != ADMIN_ID:
-            return web.json_response({"error": "Доступ запрещён"}, status=403)
-        cur.execute("SELECT COUNT(*) FROM users")
-        total_users = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM resumes")
-        total_resumes = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM payments WHERE status='paid'")
-        p = cur.fetchone()
-        total_payments, total_stars = p[0], p[1]
-        cur.execute("SELECT COUNT(*) FROM users WHERE unlimited_until IS NOT NULL AND datetime('now') < datetime(unlimited_until)")
-        premium_active = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM feedback")
-        feedback_count = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM liked_vacancies")
-        total_tracker = cur.fetchone()[0]
-        cur.execute("SELECT user_id FROM users ORDER BY created_at DESC LIMIT 200")
-        rows = cur.fetchall()
-        users = []
-        for r in rows:
-            uid = r[0]
-            cur.execute("SELECT username, balance, unlimited_until, daily_count, last_active_date, digest_active, created_at FROM users WHERE user_id=?", (uid,))
-            ur = cur.fetchone()
-            if not ur:
-                continue
-            cur.execute("SELECT COUNT(*) FROM resumes WHERE user_id=?", (uid,))
-            resumes = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM liked_vacancies WHERE user_id=?", (uid,))
-            tracker = cur.fetchone()[0]
-            cur.execute("SELECT COALESCE(SUM(amount),0) FROM payments WHERE user_id=? AND status='paid'", (uid,))
-            paid = cur.fetchone()[0]
-            users.append({
-                "user_id": uid, "username": ur[0] or "", "balance": ur[1],
-                "unlimited_until": ur[2] or "", "is_premium": is_premium_user(uid),
-                "daily_count": ur[3], "last_active_date": ur[4] or "",
-                "digest_active": ur[5] or 0, "created_at": ur[6] or "",
-                "resumes": resumes, "tracker": tracker, "paid_stars": paid,
-            })
-        cur.execute("SELECT user_id, amount, status, created_at FROM payments ORDER BY id DESC LIMIT 20")
-        payments = [{"user_id": r[0], "amount": r[1], "status": r[2], "created_at": r[3]} for r in cur.fetchall()]
-        return web.json_response({
-            "totals": {
-                "users": total_users, "resumes": total_resumes, "payments": total_payments,
-                "stars": total_stars, "premium_active": premium_active,
-                "feedback": feedback_count, "tracker": total_tracker,
-            },
-            "users": users,
-            "payments": payments,
-        })
-    except Exception as e:
-        log.error(f"Admin overview error: {e}")
-        return web.json_response({"error": str(e)[:200]}, status=500)
-
-
-async def miniapp_admin_grant(request):
-    try:
-        body = await parse_json_body(request)
-        user_id = int(body.get("user_id", 0))
-        if ADMIN_ID == 0 or user_id != ADMIN_ID:
-            return web.json_response({"error": "Доступ запрещён"}, status=403)
-        target = int(body.get("target_user_id", 0))
-        action = (body.get("action") or "").strip()
-        try:
-            value = int(body.get("value", 0) or 0)
-        except Exception:
-            value = 0
-        if not target:
-            return web.json_response({"error": "Не указан TG ID пользователя"}, status=400)
-        register_user(target, "admin_target", None)
-        if action == "add_balance":
-            admin_add_balance(target, value if value > 0 else 50)
-        elif action == "set_balance":
-            cur.execute("UPDATE users SET balance=? WHERE user_id=?", (max(0, value), target))
-            conn.commit()
-        elif action == "unlimited_days":
-            admin_set_unlimited(target, value if value > 0 else 30)
-        elif action == "revoke":
-            cur.execute("UPDATE users SET unlimited_until=NULL WHERE user_id=?", (target,))
-            conn.commit()
-        else:
-            return web.json_response({"error": f"Неизвестное действие: {action}"}, status=400)
-        log.info(f"ADMIN grant: admin={user_id} target={target} action={action} value={value}")
-        cur.execute("SELECT balance, unlimited_until FROM users WHERE user_id=?", (target,))
-        row = cur.fetchone()
-        return web.json_response({"ok": True, "balance": row[0] if row else 0,
-                                  "unlimited_until": (row[1] if row else "") or ""})
-    except Exception as e:
-        log.error(f"Admin grant error: {e}")
         return web.json_response({"error": str(e)[:200]}, status=500)
 
 
