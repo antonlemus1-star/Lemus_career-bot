@@ -38,7 +38,7 @@ except ImportError:
     DDGS_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("career_bot_v43")
+log = logging.getLogger("career_bot_v46")
 
 # ---------------- Конфиг ----------------
 RAW_BOT_TOKEN = os.getenv("BOT_TOKEN", "")
@@ -58,6 +58,12 @@ MINI_APP_URL = os.getenv("MINI_APP_URL", "")
 DB_PATH = os.getenv("DB_PATH", "tracker.db")
 COURSES_DIR = os.getenv("COURSES_DIR", "courses")
 BOOTSTRAP_PREMIUM_USERS = {280043586: 3650}
+
+# Лимиты выдачи вакансий
+MAX_VACANCIES_RETURN = 70      # сколько вакансий возвращаем пользователю
+MAX_VACANCIES_SCORED = 100     # сколько уникальных вакансий скорим после фильтров
+SCORE_BATCH_SIZE = 20          # пакет вакансий на один ИИ-запрос скоринга
+BOT_PAGE_SIZE = 15             # партия выдачи в чате (кнопка «▶ Далее»)
 
 TELEGRAM_API = "https://api.telegram.org/bot" + BOT_TOKEN
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -291,45 +297,45 @@ COURSES = {
         "title": "🎓 Резюме за 1 час",
         "description": "Пошаговый курс по созданию резюме, которое не отсеят роботы",
         "lessons": [
-            {"title": "Урок 1: Структура резюме, которое пройдёт ATS", "content": "📚 УРОК 1: Структура резюме, которое пройдёт ATS\n\n🎯 Цель: Понять как устроены системы автоматического отбора (ATS).\n\n✅ ПРАВИЛЬНАЯ СТРУКТУРА:\n1️⃣ ФИО и контакты.\n2️⃣ Желаемая должность (точная, как в вакансии).\n3️⃣ Краткое резюме / Summary (3-4 предложения).\n4️⃣ Ключевые навыки (списком).\n5️⃣ Опыт работы (от последнего к первому).\n6️⃣ Образование.\n7️⃣ Дополнительно.\n\n❌ ЧАСТЫЕ ОШИБКИ:\n• Креативные заголовки — робот их не понимает.\n• Таблицы и колонки — ломают парсинг.\n• Формат .doc вместо .docx.\n\n📝 ЗАДАНИЕ: Проверьте своё резюме по чек-листу.\n⏱ Время: 10 минут"},
-            {"title": "Урок 2: Опыт через достижения", "content": "📚 УРОК 2: Опыт через достижения.\n\n💡 ГЛАВНОЕ: Разница между \"делал\" и \"сделал\".\n\n📐 ФОРМУЛА ДОСТИЖЕНИЯ:\n[Глагол действия] + [Что сделал] + [Измеримый результат]\n\n📝 ЗАДАНИЕ: Перепишите 3 пункта опыта по формуле достижений.\n⏱ Время: 15 минут"},
-            {"title": "Урок 3: Ключевые слова и ATS-оптимизация", "content": "📚 УРОК 3: Ключевые слова и ATS-оптимизация.\n📝 ЗАДАНИЕ: Соберите список ключевых слов из 5 вакансий.\n⏱ Время: 15 минут"},
-            {"title": "Урок 4: Сопроводительное письмо за 10 минут", "content": "📚 УРОК 4: Сопроводительное письмо за 10 минут.\n📝 ЗАДАНИЕ: Напишите сопроводительное письмо по формуле.\n⏱ Время: 10 минут"},
-            {"title": "Урок 5: Финальная проверка и стратегия отправки", "content": "🎉 ПОЗДРАВЛЯЮ! Курс завершён!\n⏱ Время: 20 минут"}
+            {"title": "Урок 1: Структура резюме, которое пройдёт ATS", "content": "📚 УРОК 1: Структура резюме под ATS.\n\n✅ ФИО и контакты → должность → Summary → ключевые навыки → опыт → образование.\n❌ Ошибки: таблицы, колонки, креативные заголовки, .doc.\n\n📝 ЗАДАНИЕ: проверьте резюме по чек-листу.\n⏱ 10 минут"},
+            {"title": "Урок 2: Опыт через достижения", "content": "📚 УРОК 2: Достижения вместо обязанностей.\n\n📐 ФОРМУЛА: [глагол] + [что сделал] + [метрика].\n\n📝 ЗАДАНИЕ: перепишите 3 пункта опыта.\n⏱ 15 минут"},
+            {"title": "Урок 3: Ключевые слова и ATS-оптимизация", "content": "📚 УРОК 3: Ключевые слова.\n📝 ЗАДАНИЕ: соберите слова из 5 вакансий.\n⏱ 15 минут"},
+            {"title": "Урок 4: Сопроводительное письмо за 10 минут", "content": "📚 УРОК 4: Письмо по формуле.\n📝 ЗАДАНИЕ: напишите письмо.\n⏱ 10 минут"},
+            {"title": "Урок 5: Финальная проверка и стратегия отправки", "content": "🎉 Курс завершён!\n⏱ 20 минут"}
         ]
     },
     "interview": {
         "title": "🎤 Собеседование без стресса",
         "description": "Как пройти любое собеседование уверенно",
         "lessons": [
-            {"title": "Урок 1: Подготовка к собеседованию", "content": "📚 УРОК 1: Подготовка.\n📝 ЗАДАНИЕ: Подготовьте ответы на все вопросы.\n⏱ Время: 45 минут"},
-            {"title": "Урок 2: Каверзные вопросы", "content": "📚 УРОК 2: Каверзные вопросы.\n📝 ЗАДАНИЕ: Запишите свои ответы на диктофон.\n⏱ Время: 30 минут"},
-            {"title": "Урок 3: Вопросы о зарплате", "content": "📚 УРОК 3: Вопросы о зарплате.\n📝 ЗАДАНИЕ: Определите свою рыночную стоимость.\n⏱ Время: 20 минут"},
-            {"title": "Урок 4: Как произвести впечатление", "content": "📚 УРОК 4: Как произвести впечатление.\n📝 ЗАДАНИЕ: Подготовьте 5 вопросов.\n⏱ Время: 15 минут"},
-            {"title": "Урок 5: После собеседования", "content": "🎉 ПОЗДРАВЛЯЮ! Курс завершён!\n⏱ Время: 20 минут"}
+            {"title": "Урок 1: Подготовка к собеседованию", "content": "📚 УРОК 1: Подготовка и самопрезентация.\n⏱ 45 минут"},
+            {"title": "Урок 2: Каверзные вопросы", "content": "📚 УРОК 2: Каверзные вопросы и STAR.\n⏱ 30 минут"},
+            {"title": "Урок 3: Вопросы о зарплате", "content": "📚 УРОК 3: Зарплата на собеседовании.\n⏱ 20 минут"},
+            {"title": "Урок 4: Как произвести впечатление", "content": "📚 УРОК 4: Впечатление и вопросы интервьюеру.\n⏱ 15 минут"},
+            {"title": "Урок 5: После собеседования", "content": "🎉 Курс завершён!\n⏱ 20 минут"}
         ]
     },
     "salary": {
         "title": "💰 Переговоры о зарплате",
         "description": "Как получить максимум от оффера",
         "lessons": [
-            {"title": "Урок 1: Определите свою рыночную стоимость", "content": "📚 УРОК 1: Определите свою стоимость.\n📝 ЗАДАНИЕ: Рассчитайте свою рыночную стоимость.\n⏱ Время: 30 минут"},
-            {"title": "Урок 2: Когда и как говорить о зарплате", "content": "📚 УРОК 2: Когда говорить о зарплате.\n📝 ЗАДАНИЕ: Подготовьте скрипт ответа.\n⏱ Время: 20 минут"},
-            {"title": "Урок 3: Техники переговоров", "content": "📚 УРОК 3: Техники переговоров.\n📝 ЗАДАНИЕ: Потренируйтесь отвечать.\n⏱ Время: 25 минут"},
-            {"title": "Урок 4: Торг за бонусы и условия", "content": "📚 УРОК 4: Торг за бонусы.\n📝 ЗАДАНИЕ: Составьте список из 5 пунктов.\n⏱ Время: 15 минут"},
-            {"title": "Урок 5: Контр-оффер и финальное решение", "content": "🎉 ПОЗДРАВЛЯЮ! Вы прошли курс. Удачи! 💪\n⏱ Время: 15 минут"}
+            {"title": "Урок 1: Определите свою рыночную стоимость", "content": "📚 УРОК 1: Рыночная вилка.\n⏱ 30 минут"},
+            {"title": "Урок 2: Когда и как говорить о зарплате", "content": "📚 УРОК 2: Скрипты ответа.\n⏱ 20 минут"},
+            {"title": "Урок 3: Техники переговоров", "content": "📚 УРОК 3: Техники и паузы.\n⏱ 25 минут"},
+            {"title": "Урок 4: Торг за бонусы и условия", "content": "📚 УРОК 4: Пакет вместо оклада.\n⏱ 15 минут"},
+            {"title": "Урок 5: Контр-оффер и финальное решение", "content": "🎉 Курс завершён!\n⏱ 15 минут"}
         ]
     },
     "crisis": {
         "title": "🆘 Поиск работы в кризис: план выхода из ямы",
         "description": "Для тех, кто ищет 3+ месяца: деньги, голова, пробелы, тишина, безопасность",
         "lessons": [
-            {"title": "Урок 1: Деньги — комплект выживания", "content": "📚 УРОК 1: Деньги — комплект выживания\n\n🎯 Цель: остановить финансовое кровотечение за 1-2 дня.\n\n1️⃣ *Аудит минимального бюджета.*\n2️⃣ *Кредитные каникулы (106-ФЗ).*\n3️⃣ *Центр занятости.*\n4️⃣ *Детские выплаты и субсидии.*\n5️⃣ *Письмо в банк.*\n\n📝 ЗАДАНИЕ: Прогони инструмент «Мой минимум оффера».\n⏱ Время: 40 минут"},
-            {"title": "Урок 2: Голова — система микро-шагов", "content": "📚 УРОК 2: Голова — система микро-шагов\n\n✅ Правило 3 микро-шагов.\n✅ Стрик важнее интенсивности.\n✅ Вечерний ритуал.\n✅ Один выходной в неделю.\n\n📝 ЗАДАНИЕ: Запусти «План на сегодня».\n⏱ Время: 15 минут"},
-            {"title": "Урок 3: Пробел — как объяснять дыру в резюме", "content": "📚 УРОК 3: Пробел в резюме\n\n📐 ФОРМУЛА: факт → что делал в паузе → почему сейчас сильнее.\n❌ ТАБУ: оправдания и извинения.\n\n📝 ЗАДАНИЕ: Сгенерируй версию инструментом «Объяснение пробела».\n⏱ Время: 20 минут"},
-            {"title": "Урок 4: Тишина — система фоллоу-апов", "content": "📚 УРОК 4: Фоллоу-апы\n\n📅 СХЕМА: отклик → 5-7 день → 12-14 день → закрыл.\n📐 ФОРМУЛА: благодарность + новый факт + вопрос о сроках.\n\n📝 ЗАДАНИЕ: Отправь фоллоу-апы всем откликам старше 5 дней.\n⏱ Время: 25 минут"},
-            {"title": "Урок 5: Минимум — не продавать себя дёшево", "content": "📚 УРОК 5: Минимум оффера\n\n📐 ПОЛ = расходы + 20% буфер.\n✅ ФРАЗА-ДЕРЖАТЕЛЬ для переговоров.\n\n📝 ЗАДАНИЕ: Посчитай пол инструментом «Мой минимум оффера».\n⏱ Время: 15 минут"},
-            {"title": "Урок 6: Безопасность, тёплые контакты, мост-доход", "content": "📚 УРОК 6: Безопасность и мост-доход\n\n🚩 Красные флаги скама.\n🤝 Тёплые контакты: 70% вакансий не публикуются.\n🌉 Мост-доход по своей экспертизе.\n\n🎉 Курс завершён. Дальше — микро-шагами.\n⏱ Время: 30 минут"}
+            {"title": "Урок 1: Деньги — комплект выживания", "content": "📚 УРОК 1: Деньги.\n\n1️⃣ Аудит минимального бюджета.\n2️⃣ Кредитные каникулы (106-ФЗ).\n3️⃣ Центр занятости.\n4️⃣ Выплаты и субсидии.\n5️⃣ Письмо в банк.\n\n📝 ЗАДАНИЕ: посчитай пол («Мой минимум оффера»).\n⏱ 40 минут"},
+            {"title": "Урок 2: Голова — система микро-шагов", "content": "📚 УРОК 2: Голова.\n\n✅ 3 микро-шага в день.\n✅ Стрик важнее интенсивности.\n✅ Вечерний ритуал.\n✅ Выходной раз в неделю.\n\n📝 ЗАДАНИЕ: «План на сегодня».\n⏱ 15 минут"},
+            {"title": "Урок 3: Пробел — как объяснять дыру в резюме", "content": "📚 УРОК 3: Пробел.\n\n📐 ФОРМУЛА: факт → пауза → сила сейчас.\n❌ ТАБУ: оправдания.\n\n📝 ЗАДАНИЕ: «Объяснение пробела».\n⏱ 20 минут"},
+            {"title": "Урок 4: Тишина — система фоллоу-апов", "content": "📚 УРОК 4: Тишина.\n\n📅 5-7 день → 12-14 день → закрыл.\n\n📝 ЗАДАНИЕ: фоллоу-апы всем откликам старше 5 дней.\n⏱ 25 минут"},
+            {"title": "Урок 5: Минимум — не продавать себя дёшево", "content": "📚 УРОК 5: Минимум.\n\n📐 ПОЛ = расходы + 20%.\n✅ Фраза-держатель.\n\n📝 ЗАДАНИЕ: «Мой минимум оффера».\n⏱ 15 минут"},
+            {"title": "Урок 6: Безопасность, тёплые контакты, мост-доход", "content": "📚 УРОК 6: Безопасность и мост-доход.\n\n🚩 Флаги скама.\n🤝 Тёплые контакты.\n🌉 Мост-доход.\n\n🎉 Пакет завершён.\n⏱ 30 минут"}
         ]
     }
 }
@@ -783,7 +789,7 @@ def extract_text(path: str, file_name: str) -> str:
 
 SECTION_KEYWORDS = ["summary", "обо мне", "опыт работы", "образование", "ключевые навыки",
                     "навыки", "контакты", "дополнительная информация", "повышение квалификации",
-                    "курсы", "целевой вектор", "ключевые компетенции"]
+                    "курсы", "целевой вектор", "ключевые компетенции", "желаемая должность"]
 
 PDF_FONT_URLS = [
     "https://raw.githubusercontent.com/dejavu-fonts/dejavu-fonts/master/ttf/DejaVuSans.ttf",
@@ -870,7 +876,6 @@ def resume_to_docx_bytes(text: str) -> bytes:
 
 
 async def send_resume_files(chat_id: int, resume_text: str, base_name: str, caption: str):
-    """Отправляет резюме двумя файлами: DOCX и PDF."""
     try:
         docx_bytes = resume_to_docx_bytes(resume_text)
         await send_document_bytes(chat_id, docx_bytes, f"{base_name}.docx", caption)
@@ -997,7 +1002,7 @@ async def show_typing(chat_id):
 
 
 # ============================================================
-# 🎨 КЛАВИАТУРЫ
+# 🎨 КЛАВИАТУРЫ (v4.5+: Skill Gap в главном меню, без ЛПР и трекера)
 # ============================================================
 
 def get_main_keyboard(is_admin=False):
@@ -1016,9 +1021,9 @@ def get_main_keyboard(is_admin=False):
 def get_job_seeker_keyboard(is_admin=False):
     kb = [
         [{"text": "🔍 Поиск вакансий"}, {"text": "🎤 Тренажер собеседований"}],
-        [{"text": "🔗 Разобрать вакансию"}, {"text": "🕵️ Найти ЛПР"}],
+        [{"text": "🔗 Разобрать вакансию"}, {"text": "📊 Анализ навыков (Skill Gap)"}],
         [{"text": "📝 Короткие Питчи"}, {"text": "📄 Моё резюме"}],
-        [{"text": "📊 Трекер и статистика"}, {"text": "🎓 Премиум"}],
+        [{"text": "🎓 Премиум"}, {"text": "📤 Экспорт (Word+PDF)"}],
         [{"text": "🏠 Главное меню"}, {"text": "🚀 Запустить бота"}],
     ]
     return {"keyboard": kb, "resize_keyboard": True}
@@ -1026,9 +1031,9 @@ def get_job_seeker_keyboard(is_admin=False):
 
 def get_seeker_resume_keyboard():
     kb = [
-        [{"text": "📋 Аудит резюме"}, {"text": "📊 Анализ навыков (Skill Gap)"}],
-        [{"text": "🛠 Адаптация резюме"}, {"text": "📁 Мои резюме"}],
-        [{"text": "📥 Загрузить резюме"}, {"text": "📤 Экспорт (Word+PDF)"}],
+        [{"text": "📋 Аудит резюме"}, {"text": "🛠 Адаптация резюме"}],
+        [{"text": "📁 Мои резюме"}, {"text": "📥 Загрузить резюме"}],
+        [{"text": "📤 Экспорт (Word+PDF)"}, {"text": "📊 Анализ навыков (Skill Gap)"}],
         [{"text": "⬅️ Назад к меню соискателя"}, {"text": "🚀 Запустить бота"}],
     ]
     return {"keyboard": kb, "resize_keyboard": True}
@@ -1042,20 +1047,11 @@ def get_seeker_interview_keyboard():
     return {"keyboard": kb, "resize_keyboard": True}
 
 
-def get_seeker_tracker_keyboard():
-    kb = [
-        [{"text": "📌 Трекер откликов"}, {"text": "📊 Аналитика"}],
-        [{"text": "🎯 План поиска"}],
-        [{"text": "⬅️ Назад к меню соискателя"}, {"text": "🚀 Запустить бота"}],
-    ]
-    return {"keyboard": kb, "resize_keyboard": True}
-
-
 def get_seeker_premium_keyboard():
     kb = [
         [{"text": "🎓 Курсы"}, {"text": "📝 Шаблоны писем"}],
         [{"text": "🆘 Антикризисный пакет"}],
-        [{"text": "📊 Аналитика"}, {"text": "🎯 План поиска"}],
+        [{"text": "🎯 План поиска"}],
         [{"text": "⬅️ Назад к меню соискателя"}, {"text": "🚀 Запустить бота"}],
     ]
     return {"keyboard": kb, "resize_keyboard": True}
@@ -1078,7 +1074,7 @@ def get_keyboard(is_admin=False):
     return get_main_keyboard(is_admin)
 
 
-# ---------------- hh.ru парсинг ----------------
+# ---------------- hh.ru парсинг (аккуратный: паузы между запросами) ----------------
 async def hh_api_search(query: str, region_code: int = 1):
     try:
         params = {"text": query, "area": region_code, "per_page": "50"}
@@ -1143,38 +1139,6 @@ async def hh_scrape_search(query: str, region_code: int = 1):
         log.warning("hh scrape failed: %s", str(e)[:150])
         track_error()
         return None
-
-
-async def live_search_recruiter(company: str, contact_name: str = "") -> list:
-    results = []
-    if not DDGS_AVAILABLE:
-        return results
-    search_queries = []
-    if contact_name:
-        search_queries.append(f"{contact_name} {company} рекрутер HR LinkedIn")
-        search_queries.append(f"{contact_name} {company} TenChat")
-    else:
-        search_queries.append(f"IT рекрутер {company} LinkedIn site:linkedin.com")
-        search_queries.append(f"HR менеджер {company} TenChat site:tenchat.ru")
-    try:
-        def sync_search():
-            found = []
-            with DDGS() as ddgs:
-                for query in search_queries[:3]:
-                    try:
-                        for r in ddgs.text(query, max_results=3):
-                            url = r.get("href", "") or r.get("link", "")
-                            if url:
-                                found.append({"url": url, "title": r.get("title", ""),
-                                              "snippet": r.get("body", ""), "query": query})
-                    except Exception as e:
-                        log.warning(f"DDG query failed: {query}, {e}")
-            return found
-        results = await asyncio.to_thread(sync_search)
-    except Exception as e:
-        log.warning(f"Live search failed: {e}")
-        track_error()
-    return results
 
 
 async def aggressive_recruiter_search(chat_id: int, company: str, position: str = "", contact_hint: str = "") -> dict:
@@ -1385,10 +1349,7 @@ async def analyze_vacancy_text(chat_id: int, user_id: int, vacancy_text: str):
         [{"text": "🔍 LinkedIn", "url": f"https://www.google.com/search?q=site:linkedin.com+%22{encoded_company}%22+HR"}],
         [{"text": "🌐 Карьерный сайт", "url": f"https://www.google.com/search?q=%22карьера%22+%22{encoded_company}%22+контакты"}]
     ]
-    cur.execute("INSERT INTO liked_vacancies (user_id, vacancy_id, title, status) VALUES (?, ?, ?, 'Разобрана: Контакт')",
-                (user_id, f"text_{int(datetime.datetime.now().timestamp())}", f"{title} ({company})"))
-    conn.commit()
-    final_report += "\n\n📌 _Вакансия добавлена в Трекер._"
+    final_report += "\n\n📌 _Совет: сразу сделай «✍️ Сопроводительное» и «🛠 Адаптацию резюме» под эту вакансию._"
     await send_telegram(chat_id, final_report, {"inline_keyboard": inline_kb})
 
 
@@ -1412,7 +1373,6 @@ async def hr_analyze_candidate_match(chat_id: int, user_id: int, resume_text: st
         "   • Опыт работы: [0-100]% (почему)\n"
         "   • Навыки и компетенции: [0-100]% (почему)\n"
         "   • Образование: [0-100]% (почему)\n"
-        "   • Дополнительные требования: [0-100]% (почему)\n"
         "✅ СИЛЬНЫЕ СТОРОНЫ: [3-5 пунктов]\n"
         "⚠️ ПРОБЕЛЫ: [3-5 пунктов]\n"
         "🚩 КРАСНЫЕ ФЛАГИ: [или 'Не обнаружены']\n"
@@ -1431,7 +1391,6 @@ async def hr_generate_interview_questions(chat_id: int, user_id: int, resume_tex
         await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
         return
     await show_typing(chat_id)
-    await send_telegram(chat_id, "❓ *Генерирую вопросы...*")
     prompt = (
         "Ты — опытный интервьюер. Составь список вопросов для собеседования.\n"
         f"--- РЕЗЮМЕ КАНДИДАТА ---\n{resume_text[:4000]}\n\n"
@@ -1455,7 +1414,6 @@ async def hr_generate_test_task(chat_id: int, user_id: int, resume_text: str):
         await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
         return
     await show_typing(chat_id)
-    await send_telegram(chat_id, "📝 *Генерирую тестовое задание...*")
     prompt = (
         "Ты — опытный нанимающий менеджер. Составь тестовое задание на основе резюме.\n"
         f"--- РЕЗЮМЕ КАНДИДАТА ---\n{resume_text[:4000]}\n\n"
@@ -1481,7 +1439,6 @@ async def hr_generate_vacancy_description(chat_id: int, user_id: int, params: st
         await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
         return
     await show_typing(chat_id)
-    await send_telegram(chat_id, "📋 *Генерирую описание вакансии...*")
     prompt = (
         f"Ты — опытный рекрутер. Составь описание вакансии по структуре hh.ru.\n"
         f"Вводные: {params}\n\n"
@@ -1609,13 +1566,12 @@ async def analyze_setka_post(chat_id: int, user_id: int, post_text: str):
     if not result or not validate_ai_response(result, min_length=50):
         await send_telegram(chat_id, "⚠️ ИИ недоступен.")
         return
-    title_match = re.search(r'(ищем|вакансия|требуется|позиция)\s+([^\n\.,]+)', post_text, re.IGNORECASE)
-    role_title = title_match.group(0)[:40] if title_match else "Вакансия из Сетки"
-    cur.execute("INSERT INTO liked_vacancies (user_id, vacancy_id, title, status) VALUES (?, ?, ?, 'Сетка: Контакт')",
-                (user_id, "setka_" + str(int(datetime.datetime.now().timestamp())), role_title))
-    conn.commit()
     await send_telegram(chat_id, f"🌐 *Разбор предложения:*\n\n{result}")
 
+
+# ============================================================
+# 📄 ПОСТРАНИЧНАЯ ВЫДАЧА ВАКАНСИЙ В ЧАТЕ (ПАРТИИ ПО 15, КНОПКА «▶ ДАЛЕЕ»)
+# ============================================================
 
 async def send_vacancies_page(chat_id: int, user_id: int, page: int = 0):
     cached = user_search_cache.get(user_id)
@@ -1623,7 +1579,7 @@ async def send_vacancies_page(chat_id: int, user_id: int, page: int = 0):
         await send_telegram(chat_id, "💡 Список вакансий устарел. Нажмите «🔍 Поиск вакансий».")
         return
     items = cached["items"]
-    page_size = 15
+    page_size = BOT_PAGE_SIZE
     start = page * page_size
     end = start + page_size
     chunk = items[start:end]
@@ -1642,17 +1598,18 @@ async def send_vacancies_page(chat_id: int, user_id: int, page: int = 0):
         match_badge = f"🎯 Соответствие: {match_score}% ({match_reason})\n"
         sal_line = f"{sal}\n" if sal else ""
         markup = {"inline_keyboard": [
-            [{"text": "👍 Откликнулся", "callback_data": f"like_{vid}"},
-             {"text": "✍️ Сопроводительное", "callback_data": f"gen_{vid}"}],
-            [{"text": "📊 Соответствие", "callback_data": f"match_{vid}"},
-             {"text": "🎯 Питч для ЛПР", "callback_data": f"pitch_{vid}"}],
-            [{"text": "🗑 Мусор", "callback_data": f"hide_{vid}"}]
+            [{"text": "✍️ Сопроводительное", "callback_data": f"gen_{vid}"},
+             {"text": "📊 Соответствие", "callback_data": f"match_{vid}"}],
+            [{"text": "🎯 Питч рекрутеру", "callback_data": f"pitch_{vid}"},
+             {"text": "🗑 Мусор", "callback_data": f"hide_{vid}"}]
         ]}
         await send_telegram(chat_id, f"🏢 *{comp}*\n💼 [{name}]({v.get('url')})\n{sal_line}{match_badge}", markup)
         await asyncio.sleep(0.2)
     if end < len(items):
-        more_markup = {"inline_keyboard": [[{"text": "▶ Далее", "callback_data": f"page_{page + 1}"}]]}
-        await send_telegram(chat_id, f"💡 Осталось {len(items) - end} вакансий.", more_markup)
+        more_markup = {"inline_keyboard": [[{"text": f"▶ Далее ({min(end, len(items))}/{len(items)})", "callback_data": f"page_{page + 1}"}]]}
+        await send_telegram(chat_id, f"💡 Осталось ещё {len(items) - end} вакансий — жми «▶ Далее».", more_markup)
+    else:
+        await send_telegram(chat_id, f"✅ Показаны все {len(items)} вакансий подборки.")
 
 
 async def handle_search(chat_id: int, user_id: int, is_admin: bool):
@@ -1664,7 +1621,7 @@ async def handle_search(chat_id: int, user_id: int, is_admin: bool):
         await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
         return
     await show_typing(chat_id)
-    await send_telegram(chat_id, "🔍 Подбираю вакансии по резюме (регион, отрасль, уровень, топ-компании)...")
+    await send_telegram(chat_id, "🔍 Подбираю вакансии по резюме (регион, отрасль, уровень, топ-компании). До 70 вакансий, выдам партиями...")
     result = await core_search_vacancies(user_id)
     if result.get("error"):
         await send_telegram(chat_id, f"⚠️ {result['error']}", get_job_seeker_keyboard(is_admin))
@@ -1675,14 +1632,29 @@ async def handle_search(chat_id: int, user_id: int, is_admin: bool):
         return
     user_search_cache[user_id] = {"items": scored_list}
     await send_telegram(chat_id,
-        f"🔥 Нашел {len(scored_list)} вакансий.\n🎯 Запросы: {', '.join(result['queries'][:3])}",
+        f"🔥 Нашел {len(scored_list)} вакансий (показываю партиями по {BOT_PAGE_SIZE}).\n"
+        f"🎯 Запросы: {', '.join(result['queries'][:3])}",
         get_job_seeker_keyboard(is_admin))
     await send_vacancies_page(chat_id, user_id, page=0)
 
 
 # ============================================================
-# 📊 SKILL GAP + ИСПРАВЛЕНИЕ РЕЗЮМЕ (WORD + PDF)
+# 📊 SKILL GAP + ИСПРАВЛЕНИЕ РЕЗЮМЕ ПОД HH.RU (ATS) + WORD/PDF
 # ============================================================
+
+ATS_RULES = (
+    "ТРЕБОВАНИЯ HH.RU / ATS К ОФОРМЛЕНИЮ:\n"
+    "- Plain text: без таблиц, колонок, графиков, эмодзи и спецсимволов кроме дефисов и запятых.\n"
+    "- Структура строго как в резюме hh: ФИО и контакты → Желаемая должность → Summary (3-5 предложений) → "
+    "КЛЮЧЕВЫЕ НАВЫКИ (15-25 терминов через запятую: hard skills, домены, методологии — именно те слова, "
+    "по которым рекрутеры hh ищут такой профиль) → Опыт работы (обратный хронологический порядок: компания, "
+    "должность, даты, обязанности, достижения) → Образование и сертификаты.\n"
+    "- Каждое достижение начинается с сильного глагола и содержит метрику (%, ₽, срок, размер команды, доля рынка).\n"
+    "- Обязанности описаны отраслевой терминологией, чтобы автомэтчинг hh повышал релевантность в поиске работодателя.\n"
+    "- Summary отвечает на вопрос «почему этот кандидат силён именно для целевых ролей» и содержит 2-3 цифры-якоря.\n"
+    "- Длина: 1-2 страницы, без воды и повторов.\n"
+)
+
 
 def build_skillgap_prompt(resume: str) -> str:
     current_date = datetime.date.today().strftime("%d.%m.%Y")
@@ -1691,30 +1663,34 @@ def build_skillgap_prompt(resume: str) -> str:
         "Выдай структурированный ответ:\n"
         "✅ СИЛЬНЫЕ КОМПЕТЕНЦИИ: [3-5 пунктов]\n"
         "⚠️ ЗОНЫ РОСТА: [3-5 пунктов]\n"
+        "🔑 КЛЮЧЕВЫЕ СЛОВА ДЛЯ HH.RU: [15-25 поисковых терминов, которые должны быть в резюме]\n"
         "💡 РЕКОМЕНДАЦИИ: [что подтянуть и как переформулировать]\n\n" + resume[:8000]
     )
 
 
 def build_fix_prompt(resume: str, gap: str) -> str:
     return (
-        "Ты — элитный карьерный консультант. Перепиши резюме кандидата по рекомендациям.\n"
-        f"РЕКОМЕНДАЦИИ:\n{gap[:3000]}\n\nИСХОДНОЕ РЕЗЮМЕ:\n{resume[:6000]}\n\n"
+        "Ты — элитный карьерный консультант и эксперт по ATS hh.ru. Перепиши резюме кандидата так, чтобы оно "
+        "проходило фильтры hh.ru и цепляло HR с первых строк.\n"
+        f"РЕКОМЕНДАЦИИ ПОСЛЕ SKILL GAP:\n{gap[:3000]}\n\nИСХОДНОЕ РЕЗЮМЕ:\n{resume[:6000]}\n\n"
+        f"{ATS_RULES}\n"
         "ПРАВИЛА:\n"
-        "1. Сохрани ВСЕ факты, компании, даты и цифры.\n"
-        "2. Замени слабые глаголы на сильные (руководил → выстроил, запустил, увеличил).\n"
-        "3. Каждое достижение — через метрику (%, ₽, срок, размер команды).\n"
-        "4. Структура: ФИО → Контакты → Summary → Ключевые компетенции → Опыт → Образование.\n"
-        "5. Выдай ТОЛЬКО текст резюме, без комментариев."
+        "1. Сохрани ВСЕ факты, компании, даты и цифры исходного резюме — ничего не выдумывай.\n"
+        "2. Замени слабые глаголы на сильные (руководил → выстроил, запустил, увеличил, сократил).\n"
+        "3. Включи блок «КЛЮЧЕВЫЕ НАВЫКИ» из поисковых терминов hh для этого профиля.\n"
+        "4. Выдай ТОЛЬКО готовый текст резюме, без комментариев и пояснений."
     )
 
 
 def build_adapt_prompt(resume: str, vacancy: str) -> str:
     current_date = datetime.date.today().strftime("%d.%m.%Y")
     return (
-        f"Дата: {current_date}. Перепиши резюме под вакансию. ТОЛЬКО текст, начиная с ФИО.\n"
-        f"Вакансия:\n{vacancy[:3000]}\n\nРезюме:\n{resume[:6000]}\n\n"
-        "ПРАВИЛА: сохрани факты; добавь ключевые слова вакансии; усиль релевантные блоки; "
-        "нерелевантный опыт сократи; выдай ТОЛЬКО текст резюме."
+        f"Дата: {current_date}. Перепиши резюме под вакансию так, чтобы оно прошло фильтры hh.ru и зацепило HR.\n"
+        f"ВАКАНСИЯ:\n{vacancy[:3000]}\n\nРЕЗЮМЕ:\n{resume[:6000]}\n\n"
+        f"{ATS_RULES}\n"
+        "ПРАВИЛА: сохрани факты; добавь ключевые слова вакансии в Summary, навыки и опыт; "
+        "усиль релевантные блоки; нерелевантный опыт сократи до одной строки; "
+        "выдай ТОЛЬКО текст резюме, начиная с ФИО."
     )
 
 
@@ -1733,10 +1709,10 @@ async def run_skill_gap_analysis(chat_id: int, user_id: int):
         await send_telegram(chat_id, "⚠️ ИИ недоступен.")
         return
     user_skillgap_cache[user_id] = analysis
-    markup = {"inline_keyboard": [[{"text": "🚀 Исправить резюме → Word + PDF", "callback_data": "fix_resume_from_gap"}]]}
+    markup = {"inline_keyboard": [[{"text": "🚀 Исправить резюме под hh.ru → Word + PDF", "callback_data": "fix_resume_from_gap"}]]}
     await send_telegram(chat_id,
         f"📊 *Анализ навыков:*\n\n{analysis}\n\n"
-        "👇 Нажми кнопку — перепишу резюме по этим выводам и пришлю файлами Word и PDF.", markup)
+        "👇 Нажми кнопку — перепишу резюме под фильтры hh.ru и внимание HR, пришлю файлами Word и PDF.", markup)
 
 
 async def run_fix_resume_by_gap(chat_id: int, user_id: int):
@@ -1755,7 +1731,7 @@ async def run_fix_resume_by_gap(chat_id: int, user_id: int):
         gap = await asyncio.to_thread(ai_generate, build_skillgap_prompt(resume)) or "Усилить бизнес-метрики и формулировки достижений"
         user_skillgap_cache[user_id] = gap
     await show_typing(chat_id)
-    await send_telegram(chat_id, "⚙️ *Переписываю резюме по выводам Skill Gap...*")
+    await send_telegram(chat_id, "⚙️ *Переписываю резюме под фильтры hh.ru...*")
     improved = await asyncio.to_thread(ai_generate, build_fix_prompt(resume, gap))
     if not improved or not validate_ai_response(improved, min_length=200):
         await send_telegram(chat_id, "⚠️ ИИ вернул некорректный результат.")
@@ -1764,7 +1740,7 @@ async def run_fix_resume_by_gap(chat_id: int, user_id: int):
     add_resume(user_id, "Optimized_Resume.docx", improved)
     await send_resume_files(chat_id, improved, "Optimized_Resume",
         "💎 *Исправленное резюме готово!*\n"
-        "✅ Переписано по выводам Skill Gap.\n"
+        "✅ Оптимизировано под фильтры hh.ru (ATS) и внимание HR.\n"
         "✅ Сохранено как новое активное резюме.\n"
         "📎 Файлы: Word + PDF.")
 
@@ -1781,7 +1757,7 @@ async def run_resume_adaptation(chat_id: int, user_id: int, resume_id: int, vaca
     if not resume_text:
         await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
         return
-    await send_telegram(chat_id, "🛠 *Адаптирую резюме под вакансию...*")
+    await send_telegram(chat_id, "🛠 *Адаптирую резюме под вакансию (с учётом фильтров hh.ru)...*")
     adapted = await asyncio.to_thread(ai_generate, build_adapt_prompt(resume_text, vacancy_text))
     if not adapted or not validate_ai_response(adapted, min_length=200):
         await send_telegram(chat_id, "⚠️ ИИ недоступен.")
@@ -1792,7 +1768,7 @@ async def run_resume_adaptation(chat_id: int, user_id: int, resume_id: int, vaca
     add_resume(user_id, "Adapted_Resume.docx", adapted)
     await send_resume_files(chat_id, adapted, "Adapted_Resume",
         "📄 *Адаптированное резюме готово!*\n"
-        "✅ Переписано под требования вакансии.\n"
+        "✅ Переписано под требования вакансии и фильтры hh.ru.\n"
         "✅ Сохранено как новое активное резюме.\n"
         "📎 Файлы: Word + PDF.")
 
@@ -1806,7 +1782,7 @@ async def run_resume_audit(chat_id: int, user_id: int):
     if not resume:
         await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
         return
-    audit = await asyncio.to_thread(ai_generate, f"Глубокий аудит резюме:\n{resume[:8000]}")
+    audit = await asyncio.to_thread(ai_generate, f"Глубокий аудит резюме с точки зрения рекрутера и ATS hh.ru:\n{resume[:8000]}")
     rewrite = await asyncio.to_thread(ai_generate, build_fix_prompt(resume, audit or ""))
     if audit and validate_ai_response(audit, min_length=100) and rewrite and validate_ai_response(rewrite, min_length=200):
         await send_telegram(chat_id, f"📋 *Аудит резюме:*\n\n{audit}")
@@ -1826,40 +1802,6 @@ async def run_ai_generation(chat_id: int, user_id: int, vac_info: dict):
         await send_telegram(chat_id, "⚠️ ИИ недоступен.")
         return
     await send_telegram(chat_id, f"📝 *Сопроводительное:*\n\n{letter}")
-
-
-async def osint_search_manager(chat_id: int, user_id: int, target_info: str):
-    if not spend_balance(user_id, cost=1):
-        await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
-        return
-    await show_typing(chat_id)
-    resume = get_active_resume(user_id) or "Резюме не указано"
-    prompt = (
-        f"Ты — эксперт по executive search. Цель: {target_info}\nРезюме: {resume[:2000]}\n"
-        "1. Кто принимает решение о найме.\n2. 3 Google Dorks для LinkedIn/TenChat/TG.\n"
-        "3. Короткое Cold DM сообщение.\n4. Лайфхаки."
-    )
-    result = await asyncio.to_thread(ai_generate, prompt)
-    if not result or not validate_ai_response(result, min_length=100):
-        await send_telegram(chat_id, "⚠️ ИИ недоступен.")
-        return
-    company_name = target_info.split(",")[0].strip().split()[0] if target_info else "Company"
-    encoded_company = urllib.parse.quote(company_name)
-    live_results = []
-    if DDGS_AVAILABLE:
-        live_results = await live_search_recruiter(company_name)
-    links_kb = [
-        [{"text": "🔍 HR в LinkedIn", "url": f"https://www.google.com/search?q=site:linkedin.com+%22{encoded_company}%22+HR"}],
-        [{"text": "🌐 Карьерный сайт", "url": f"https://www.google.com/search?q=%22карьера%22+%22{encoded_company}%22+вакансии"}]
-    ]
-    for r in live_results[:3]:
-        links_kb.append([{"text": f"🔗 {r['title'][:35]}", "url": r["url"]}])
-    live_section = ""
-    if live_results:
-        live_section = f"\n\n🌐 *Найдено профилей:* {len(live_results)}\n"
-        for i, r in enumerate(live_results[:3], 1):
-            live_section += f"{i}. {r['title']}\n   `{r['url']}`\n"
-    await send_telegram(chat_id, f"🕵️ *Стратегия выхода на ЛПР:*\n\n{result}{live_section}", {"inline_keyboard": links_kb})
 
 
 async def generate_pitch_from_menu(chat_id: int, user_id: int, target_info: str):
@@ -1977,27 +1919,6 @@ async def show_template(chat_id: int, user_id: int, template_num: int):
     await send_telegram(chat_id, f"{template['name']}\n\n{template['content']}")
 
 
-async def show_analytics(chat_id: int, user_id: int):
-    if not is_premium_user(user_id):
-        await send_telegram(chat_id, "🔒 *Аналитика доступна только премиум-пользователям!*")
-        return
-    cur.execute("SELECT COUNT(*) FROM liked_vacancies WHERE user_id=?", (user_id,))
-    total_vacancies = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM liked_vacancies WHERE user_id=? AND status LIKE '%Контакт%'", (user_id,))
-    contacted = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM resumes WHERE user_id=?", (user_id,))
-    total_resumes = cur.fetchone()[0]
-    conversion = (contacted / total_vacancies * 100) if total_vacancies > 0 else 0
-    analytics_msg = (
-        "📊 *Расширенная аналитика*\n"
-        f"📋 *Всего разобрано вакансий:* {total_vacancies}\n"
-        f"📧 *Установлено контактов:* {contacted}\n"
-        f"📈 *Конверсия в контакт:* {conversion:.1f}%\n"
-        f"📁 *Загружено резюме:* {total_resumes}\n"
-    )
-    await send_telegram(chat_id, analytics_msg)
-
-
 async def generate_job_search_plan(chat_id: int, user_id: int):
     if not is_premium_user(user_id):
         await send_telegram(chat_id, "🔒 *План поиска доступен только премиум-пользователям!*")
@@ -2016,10 +1937,9 @@ async def generate_job_search_plan(chat_id: int, user_id: int):
         "План должен включать:\n"
         "1. Конкретные действия на каждый день.\n"
         "2. Сколько вакансий разбирать в день.\n"
-        "3. Кого искать и как выходить на ЛПР.\n"
-        "4. Какие документы готовить.\n"
-        "5. Когда отправлять отклики.\n"
-        "6. Метрики успеха."
+        "3. Какие документы готовить.\n"
+        "4. Когда отправлять отклики.\n"
+        "5. Метрики успеха."
     )
     plan = await asyncio.to_thread(ai_generate, prompt)
     if not plan or not validate_ai_response(plan, min_length=100):
@@ -2203,9 +2123,9 @@ async def handle_document(chat_id: int, user_id: int, document: dict, is_admin: 
         success_text = (
             f"✅ *Резюме «{file_name}» загружено!*\n"
             "💡 *Что можно сделать:*\n"
-            "1️⃣ *🎤 Тренажер собеседований* — 3 каверзных вопроса с разбором.\n"
-            "2️⃣ * Анализ навыков* — аудит и исправленное резюме в Word + PDF.\n"
-            "3️⃣ * Поиск вакансий* — подбор по резюме.\n"
+            "1️⃣ * Тренажер собеседований* — 3 каверзных вопроса с разбором.\n"
+            "2️⃣ * Анализ навыков* — аудит и исправленное резюме под hh.ru в Word + PDF.\n"
+            "3️⃣ * Поиск вакансий* — до 70 вакансий партиями по 15.\n"
             "📎 *Форматы:* PDF, DOCX, DOC, ODT, RTF, TXT и фото резюме."
         )
     await send_telegram(chat_id, success_text, keyboard)
@@ -2438,24 +2358,7 @@ async def process_message(msg: dict):
             [{"text": "🔍 LinkedIn", "url": f"https://www.google.com/search?q=site:linkedin.com+%22{encoded}%22+HR"}],
             [{"text": "🌐 Карьерный сайт", "url": f"https://www.google.com/search?q=%22карьера%22+%22{encoded}%22+контакты"}]
         ]
-        cur.execute("INSERT INTO liked_vacancies (user_id, vacancy_id, title, status) VALUES (?, ?, ?, 'Разобрана')",
-                    (user_id, f"manual_{int(datetime.datetime.now().timestamp())}", f"{new_title} ({new_company})"))
-        conn.commit()
         await send_telegram(chat_id, final_report, {"inline_keyboard": inline_kb})
-        return
-
-    if user_states.get(user_id) == "waiting_for_osint_target":
-        user_states.pop(user_id, None)
-        if extract_hh_vacancy_id(text):
-            await send_telegram(chat_id, "📎 Вижу ссылку. Пришли текст вакансии.")
-            return
-        if is_vacancy_text(text) or len(text) > 300:
-            if not get_active_resume(user_id):
-                await send_telegram(chat_id, NO_RESUME_TEXT)
-                return
-            bg(analyze_vacancy_text(chat_id, user_id, text))
-            return
-        bg(osint_search_manager(chat_id, user_id, text))
         return
 
     if user_states.get(user_id) == "waiting_for_pitch_target":
@@ -2545,7 +2448,7 @@ async def process_message(msg: dict):
         await send_telegram(chat_id,
             "📎 *Вижу ссылку на вакансию!*\n"
             "⚠️ hh.ru блокирует автоматический доступ.\n"
-            "💡 Скопируй полный текст вакансии и пришли сюда.")
+            "💡 Скопируй полный текст вакансии и пришли сюда — сделаю разбор, сопроводительное и адаптацию резюме.")
         return
 
     if is_vacancy_text(text):
@@ -2574,8 +2477,8 @@ async def process_message(msg: dict):
             "💼 *Режим соискателя активирован!*\n"
             "🚀 *Как это работает:*\n"
             "1️⃣ Отправь файл резюме (до 5 МБ).\n"
-            "2️⃣ Нажми «🎤 Тренажер собеседований» или «🔍 Поиск вакансий».\n"
-            "3️⃣ Скопируй текст вакансии из hh — я найду контакты и напишу питч!\n"
+            "2️⃣ Нажми «🎤 Тренажер», «🔍 Поиск вакансий» или «📊 Анализ навыков».\n"
+            "3️⃣ Скопируй текст вакансии из hh — я разберу её, напишу питч и сопроводительное!\n"
             "Используй меню ниже 👇"
         )
         await send_telegram(chat_id, seeker_text, get_job_seeker_keyboard(is_admin))
@@ -2608,9 +2511,6 @@ async def process_message(msg: dict):
     elif text == "🎤 Собеседование":
         await send_telegram(chat_id, "🎤 *Подготовка к собеседованию*", get_seeker_interview_keyboard())
 
-    elif text == "📊 Трекер и статистика":
-        await send_telegram(chat_id, "📊 *Трекер и статистика*", get_seeker_tracker_keyboard())
-
     elif text == "🎓 Премиум":
         await send_telegram(chat_id, "🎓 *Премиум функции*", get_seeker_premium_keyboard())
 
@@ -2635,15 +2535,6 @@ async def process_message(msg: dict):
             "2️⃣ Скопируй полный текст.\n"
             "3️⃣ Вставь сюда следующим сообщением.")
 
-    elif text == "🕵️ Найти ЛПР":
-        if not get_active_resume(user_id):
-            await send_telegram(chat_id, NO_RESUME_TEXT)
-            return
-        user_states[user_id] = "waiting_for_osint_target"
-        await send_telegram(chat_id,
-            "🕵️ *Прямой выход на ЛПР*\n"
-            "Напиши: `Компания, должность` (например: `Сбер, Product Manager`).")
-
     elif text == "📝 Короткие Питчи":
         if not get_active_resume(user_id):
             await send_telegram(chat_id, NO_RESUME_TEXT)
@@ -2651,7 +2542,7 @@ async def process_message(msg: dict):
         user_states[user_id] = "waiting_for_pitch_target"
         await send_telegram(chat_id,
             "📝 *Генерация питча*\n"
-            "Напиши: `Компания, должность` (например: `Яндекс, Data Scientist`).")
+            "Напиши: `Компания, должность` (например: `Сбер, Product Manager`).")
 
     elif text == "📊 Анализ навыков (Skill Gap)":
         if not get_active_resume(user_id):
@@ -2682,9 +2573,6 @@ async def process_message(msg: dict):
     elif text == "📝 Шаблоны писем":
         bg(show_cover_letter_templates(chat_id, user_id))
 
-    elif text == "📊 Аналитика":
-        bg(show_analytics(chat_id, user_id))
-
     elif text == "🎯 План поиска":
         bg(generate_job_search_plan(chat_id, user_id))
 
@@ -2706,18 +2594,6 @@ async def process_message(msg: dict):
             [{"text": "🎓 Курс «Поиск работы в кризис»", "callback_data": "course_crisis"}]
         ]}
         await send_telegram(chat_id, "🆘 *Антикризисный пакет*\nВыбери инструмент:", kb)
-
-    elif text == "📌 Трекер откликов":
-        cur.execute("SELECT vacancy_id, title, status FROM liked_vacancies WHERE user_id=? ORDER BY id DESC LIMIT 15", (user_id,))
-        rows = cur.fetchall()
-        if not rows:
-            await send_telegram(chat_id, "📌 Трекер пуст.")
-        else:
-            tracker_msg = "📌 *Ваш трекер откликов:*\n\n"
-            for r in rows:
-                v_url = f"https://hh.ru/vacancy/{r[0]}" if not (str(r[0]).startswith("setka_") or str(r[0]).startswith("text_") or str(r[0]).startswith("manual_") or str(r[0]).startswith("hr_") or str(r[0]).startswith("mini_")) else "#"
-                tracker_msg += f"• [{r[1]}]({v_url})\nСтатус: `{r[2]}`\n\n"
-            await send_telegram(chat_id, tracker_msg)
 
     elif text == "🔍 Поиск вакансий":
         if not get_active_resume(user_id):
@@ -2884,12 +2760,14 @@ async def process_message(msg: dict):
 
     elif text == "ℹ️ Помощь":
         help_text = (
-            "ℹ️ *Справка (Версия 4.4):*\n"
+            "ℹ️ *Справка (Версия 4.6):*\n"
             "🎯 *Два режима:* соискатель и рекрутер.\n"
-            "📊 *Skill Gap:* аудит навыков → кнопка «Исправить резюме» → файлы Word + PDF в чат.\n"
-            "🛠 *Адаптация:* резюме переписывается под текст вакансии → Word + PDF.\n"
-            "📤 *Экспорт:* любое активное резюме выгружается в Word и PDF.\n"
-            "📎 *Форматы входа:* PDF, DOCX, DOC, ODT, RTF, TXT и фото.\n"
+            "🔍 *Поиск вакансий:* до 70 вакансий, выдача партиями по 15 с кнопкой «▶ Далее».\n"
+            "📊 *Skill Gap:* аудит → «Исправить резюме под hh.ru» → Word + PDF.\n"
+            "🛠 *Адаптация:* резюме под текст вакансии → Word + PDF.\n"
+            "📤 *Экспорт:* активное резюме в Word и PDF.\n"
+            "🎤 *Тренажер:* 3 каверзных вопроса с разбором ответов.\n"
+            "📎 *Форматы:* PDF, DOCX, DOC, ODT, RTF, TXT и фото.\n"
             "🛡️ *Защита:* 15 запросов в минуту.\n"
             "📧 *Поддержка:* a.lemus@ya.ru"
         )
@@ -2916,7 +2794,7 @@ async def process_message(msg: dict):
 
 
 # ============================================================
-# 🔍 ЯДРО ПОИСКА ВАКАНСИЙ v3
+# 🔍 ЯДРО ПОИСКА ВАКАНСИЙ v4 (ДО 70 ВАКАНСИЙ, ПАКЕТНЫЙ СКОРИНГ)
 # ============================================================
 
 SENIORITY_WORDS = ["руководитель", "директор", "head", "chief", "lead", "начальник",
@@ -3155,12 +3033,12 @@ async def core_search_vacancies(user_id: int) -> dict:
         if is_vacancy_hidden(user_id, vid):
             continue
         unique[vid] = v
-    filtered = list(unique.values())[:60]
+    filtered = list(unique.values())[:MAX_VACANCIES_SCORED]
     log.info(f"📊 Filtered: {len(filtered)} / {len(all_items)}")
 
     scored = []
-    for i in range(0, len(filtered), 15):
-        batch = filtered[i:i + 15]
+    for i in range(0, len(filtered), SCORE_BATCH_SIZE):
+        batch = filtered[i:i + SCORE_BATCH_SIZE]
         vacancies_text = "\n".join([f"ID {v['id']}: {v.get('name')} в {v.get('company')}" for v in batch])
         quick_prompt = (
             f"Оцени соответствие резюме кандидата каждой вакансии (0-100).\n"
@@ -3209,11 +3087,11 @@ async def core_search_vacancies(user_id: int) -> dict:
             })
         await asyncio.sleep(1)
     scored.sort(key=lambda x: -x["match_score"])
-    return {"error": "", "vacancies": scored[:30], "queries": queries, "industries": industries}
+    return {"error": "", "vacancies": scored[:MAX_VACANCIES_RETURN], "queries": queries, "industries": industries}
 
 
 # ============================================================
-# 🌙 ДАЙДЖЕСТ ВАКАНСИЙ
+# 🌙 ДАЙДЖЕСТ ВАКАНСИЙ (только по подписке пользователя)
 # ============================================================
 
 async def digest_loop():
@@ -3297,12 +3175,6 @@ async def miniapp_data(request):
             return web.json_response({"error": "No user_id"}, status=400)
         data = get_user_data(user_id)
         resumes = list_resumes(user_id)
-        cur.execute(
-            "SELECT vacancy_id, title, status FROM liked_vacancies WHERE user_id=? ORDER BY id DESC LIMIT 20",
-            (user_id,)
-        )
-        tracker_rows = cur.fetchall()
-        tracker = [{"vacancy_id": r[0], "title": r[1], "status": r[2]} for r in tracker_rows]
         active_resume_text = get_active_resume(user_id)
         cur.execute("SELECT digest_active FROM users WHERE user_id=?", (user_id,))
         drow = cur.fetchone()
@@ -3315,7 +3187,6 @@ async def miniapp_data(request):
             "resumes_count": len(resumes),
             "has_active_resume": len(active_resume_text) > 0,
             "digest_active": digest_active,
-            "tracker": tracker,
             "active_resume_preview": active_resume_text[:500] if active_resume_text else ""
         })
     except Exception as e:
@@ -3388,12 +3259,7 @@ async def miniapp_activate_resume(request):
         return web.json_response({"error": str(e)[:200]}, status=500)
 
 
-# ============================================================
-# 📤📄 ЭКСПОРТ / ИСПРАВЛЕНИЕ / АДАПТАЦИЯ РЕЗЮМЕ (МИНИ-АП)
-# ============================================================
-
 async def miniapp_export_resume(request):
-    """Шлёт активное (или выбранное) резюме в чат двумя файлами: DOCX + PDF."""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -3412,7 +3278,6 @@ async def miniapp_export_resume(request):
 
 
 async def miniapp_fix_resume(request):
-    """Skill Gap → исправленное резюме: сохраняет как активное и шлёт DOCX + PDF в чат."""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -3435,7 +3300,9 @@ async def miniapp_fix_resume(request):
         improved = improved.replace("```", "").strip()
         add_resume(user_id, "Optimized_Resume.docx", improved)
         await send_resume_files(user_id, improved, "Optimized_Resume",
-            "💎 *Исправленное резюме (из приложения):* Word + PDF\n✅ Сохранено как новое активное резюме.")
+            "💎 *Исправленное резюме (из приложения):* Word + PDF\n"
+            "✅ Оптимизировано под фильтры hh.ru (ATS) и внимание HR.\n"
+            "✅ Сохранено как новое активное резюме.")
         return web.json_response({"ok": True, "text": improved, "sent_to_chat": True})
     except Exception as e:
         log.error(f"Fix resume error: {e}")
@@ -3444,7 +3311,6 @@ async def miniapp_fix_resume(request):
 
 
 async def miniapp_adapt_resume(request):
-    """Адаптация активного резюме под текст вакансии: сохраняет и шлёт DOCX + PDF."""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -3468,7 +3334,9 @@ async def miniapp_adapt_resume(request):
         adapted = adapted.replace("```", "").strip()
         add_resume(user_id, "Adapted_Resume.docx", adapted)
         await send_resume_files(user_id, adapted, "Adapted_Resume",
-            "📄 *Адаптированное резюме (из приложения):* Word + PDF\n✅ Сохранено как новое активное резюме.")
+            "📄 *Адаптированное резюме (из приложения):* Word + PDF\n"
+            "✅ Переписано под требования вакансии и фильтры hh.ru.\n"
+            "✅ Сохранено как новое активное резюме.")
         return web.json_response({"ok": True, "text": adapted, "sent_to_chat": True})
     except Exception as e:
         log.error(f"Adapt resume error: {e}")
@@ -3735,8 +3603,6 @@ async def miniapp_admin_overview(request):
         premium_active = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM feedback")
         feedback_count = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM liked_vacancies")
-        total_tracker = cur.fetchone()[0]
         cur.execute("SELECT user_id FROM users ORDER BY created_at DESC LIMIT 200")
         rows = cur.fetchall()
         users = []
@@ -3748,8 +3614,6 @@ async def miniapp_admin_overview(request):
                 continue
             cur.execute("SELECT COUNT(*) FROM resumes WHERE user_id=?", (uid,))
             resumes = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM liked_vacancies WHERE user_id=?", (uid,))
-            tracker = cur.fetchone()[0]
             cur.execute("SELECT COALESCE(SUM(amount),0) FROM payments WHERE user_id=? AND status='paid'", (uid,))
             paid = cur.fetchone()[0]
             users.append({
@@ -3757,7 +3621,7 @@ async def miniapp_admin_overview(request):
                 "unlimited_until": ur[2] or "", "is_premium": is_premium_user(uid),
                 "daily_count": ur[3], "last_active_date": ur[4] or "",
                 "digest_active": ur[5] or 0, "created_at": ur[6] or "",
-                "resumes": resumes, "tracker": tracker, "paid_stars": paid,
+                "resumes": resumes, "paid_stars": paid,
             })
         cur.execute("SELECT user_id, amount, status, created_at FROM payments ORDER BY id DESC LIMIT 20")
         payments = [{"user_id": r[0], "amount": r[1], "status": r[2], "created_at": r[3]} for r in cur.fetchall()]
@@ -3765,7 +3629,7 @@ async def miniapp_admin_overview(request):
             "totals": {
                 "users": total_users, "resumes": total_resumes, "payments": total_payments,
                 "stars": total_stars, "premium_active": premium_active,
-                "feedback": feedback_count, "tracker": total_tracker,
+                "feedback": feedback_count,
             },
             "users": users,
             "payments": payments,
@@ -3865,11 +3729,6 @@ async def miniapp_analyze_vacancy(request):
             pitch = clean_pitch_text(pitch, title)
         else:
             pitch = "⚠️ Не удалось сгенерировать питч."
-        cur.execute(
-            "INSERT INTO liked_vacancies (user_id, vacancy_id, title, status) VALUES (?, ?, ?, 'Разобрана: Мини-ап')",
-            (user_id, f"mini_{int(datetime.datetime.now().timestamp())}", f"{title} ({company})")
-        )
-        conn.commit()
         contacts_list = []
         if aggressive_results["found"]:
             for c in aggressive_results["contacts"][:3]:
@@ -3912,46 +3771,6 @@ async def miniapp_search_vacancies(request):
         })
     except Exception as e:
         log.error(f"Miniapp search error: {e}")
-        track_error()
-        return web.json_response({"error": str(e)[:200]}, status=500)
-
-
-async def miniapp_find_lpr(request):
-    try:
-        body = await parse_json_body(request)
-        user_id = int(body.get("user_id", 0))
-        company = (body.get("company") or "").strip()
-        position = (body.get("position") or "").strip()
-        if not user_id or not company:
-            return web.json_response({"error": "Укажите компанию"}, status=400)
-        if not spend_balance(user_id, cost=1):
-            return web.json_response({"error": "Недостаточно запросов!"}, status=402)
-        aggressive_results = await aggressive_recruiter_search(0, company, position, "")
-        contacts_list = []
-        if aggressive_results["found"]:
-            for c in aggressive_results["contacts"][:5]:
-                contacts_list.append({
-                    "name": c.get("name", ""),
-                    "email": c.get("email", ""),
-                    "phone": c.get("phone", ""),
-                    "url": c.get("url", "")
-                })
-        encoded_company = urllib.parse.quote(company)
-        links = [
-            {"text": "🔍 HR в LinkedIn", "url": f"https://www.google.com/search?q=site:linkedin.com+%22{encoded_company}%22+HR"},
-            {"text": "🔍 TenChat", "url": f"https://www.google.com/search?q=site:tenchat.ru+%22{encoded_company}%22+HR"},
-            {"text": "🌐 Карьерный сайт", "url": f"https://www.google.com/search?q=%22карьера%22+%22{encoded_company}%22+контакты"}
-        ]
-        return web.json_response({
-            "company": company,
-            "position": position,
-            "contacts": contacts_list,
-            "email_templates": aggressive_results.get("email_templates", []),
-            "search_log": aggressive_results.get("search_log", ""),
-            "links": links
-        })
-    except Exception as e:
-        log.error(f"Miniapp LPR error: {e}")
         track_error()
         return web.json_response({"error": str(e)[:200]}, status=500)
 
@@ -4023,10 +3842,6 @@ async def miniapp_hr_match(request):
             f"--- ТЕКСТ ВАКАНСИИ ---\n{vacancy_text[:3000]}\n\n"
             "Выдай структурированный анализ:\n"
             "🎯 ОБЩИЙ ПРОЦЕНТ СООТВЕТСТВИЯ: [число]%\n"
-            "Разбивка:\n"
-            "   • Опыт работы: [число]% \n"
-            "   • Навыки: [число]% \n"
-            "   • Образование: [число]% \n"
             "✅ СИЛЬНЫЕ СТОРОНЫ: [3-5 пунктов]\n"
             "⚠️ ПРОБЕЛЫ: [3-5 пунктов]\n"
             "🚩 КРАСНЫЕ ФЛАГИ: [или 'Не обнаружены']\n"
@@ -4324,7 +4139,7 @@ async def telegram_webhook(request):
                 puid = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else uid
                 if tariff == "unl10":
                     admin_set_unlimited(puid, 10)
-                    await send_telegram(puid, "🎉 *Безлимит на 10 дней активирован!*\nОткрыты: курсы, шаблоны, аналитика, план и 🆘 антикризисный пакет.")
+                    await send_telegram(puid, "🎉 *Безлимит на 10 дней активирован!*\nОткрыты: курсы, шаблоны, план и 🆘 антикризисный пакет.")
                 else:
                     admin_add_balance(puid, 50)
                     await send_telegram(puid, "🎉 *Начислено 50 запросов!*")
@@ -4486,7 +4301,6 @@ async def main():
         ("POST", "/miniapp/admin/grant", miniapp_admin_grant),
         ("POST", "/miniapp/analyze", miniapp_analyze_vacancy),
         ("POST", "/miniapp/search", miniapp_search_vacancies),
-        ("POST", "/miniapp/find-lpr", miniapp_find_lpr),
         ("POST", "/miniapp/pitch", miniapp_generate_pitch),
         ("POST", "/miniapp/skill-gap", miniapp_skill_gap),
         ("POST", "/miniapp/hr-match", miniapp_hr_match),
@@ -4513,7 +4327,7 @@ async def main():
         webhook_url = f"{render_url.rstrip('/')}/{BOT_TOKEN}"
         async with HTTP.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}") as resp:
             log.info("setWebhook: %s", (await resp.text())[:200])
-    log.info("🚀 Bot v4.4 started successfully.")
+    log.info("🚀 Bot v4.6 started successfully.")
     bg(cleanup_old_data())
     bg(monitor_load())
     bg(digest_loop())
