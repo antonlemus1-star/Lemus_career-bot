@@ -308,7 +308,7 @@ COURSES = {
             {"title": "Урок 2: Когда и как говорить о зарплате", "content": "📚 УРОК 2: Когда говорить о зарплате.\n📝 ЗАДАНИЕ: Подготовьте скрипт ответа.\n⏱ Время: 20 минут"},
             {"title": "Урок 3: Техники переговоров", "content": "📚 УРОК 3: Техники переговоров.\n📝 ЗАДАНИЕ: Потренируйтесь отвечать.\n⏱ Время: 25 минут"},
             {"title": "Урок 4: Торг за бонусы и условия", "content": "📚 УРОК 4: Торг за бонусы.\n📝 ЗАДАНИЕ: Составьте список из 5 пунктов.\n⏱ Время: 15 минут"},
-            {"title": "Урок 5: Контр-оффер и финальное решение", "content": "🎉 ПОЗДРАВЛЯЮ! Вы прошли курс. Удачи! 💪\n⏱ Время: 15 минут"}
+            {"title": "Урок 5: Контр-оффер и финальное решение", "content": "🎉 ПОЗДРАВЛЯЮ! Вы прошли курс. Удачи! 💪\n Время: 15 минут"}
         ]
     },
     "crisis": {
@@ -793,7 +793,7 @@ async def show_typing(chat_id):
 
 
 # ============================================================
-# 🎨 КЛАВИАТУРЫ (КНОПКА «🚀 ЗАПУСТИТЬ БОТА» ВО ВСЕХ ОСНОВНЫХ МЕНЮ)
+# 🎨 КЛАВИАТУРЫ
 # ============================================================
 
 def get_main_keyboard(is_admin=False):
@@ -2752,7 +2752,7 @@ async def process_message(msg: dict):
 
 
 # ============================================================
-# 🔍 ЯДРО ПОИСКА ВАКАНСИЙ v3 (УНИВЕРСАЛЬНОЕ, ТОП-КОМПАНИИ В ПРИОРИТЕТЕ)
+# 🔍 ЯДРО ПОИСКА ВАКАНСИЙ v3
 # ============================================================
 
 SENIORITY_WORDS = ["руководитель", "директор", "head", "chief", "lead", "начальник",
@@ -3388,9 +3388,6 @@ async def miniapp_crisis_tool(request):
         return web.json_response({"error": str(e)[:200]}, status=500)
 
 
-# ============================================================
-# 🆕 НОВЫЙ ЭНДПОИНТ: ПРОБУЖДЕНИЕ БОТА (ДЛЯ IPHONE)
-# ============================================================
 async def miniapp_wake_bot(request):
     """Прогревает бота и шлёт приветствие прямо в чат пользователя — работает на iOS, Android, Desktop."""
     try:
@@ -3400,7 +3397,6 @@ async def miniapp_wake_bot(request):
             return web.json_response({"error": "Нет user_id"}, status=400)
         register_user(user_id, "", None)
         is_admin = (ADMIN_ID != 0 and user_id == ADMIN_ID)
-        
         if is_admin:
             wake_text = "👋 *Привет, Антон!* Админ-режим активен. Бот на связи и готов работать."
         else:
@@ -3411,7 +3407,6 @@ async def miniapp_wake_bot(request):
                 f"🎁 Баланс: `{data['balance']} запросов`\n"
                 f"🎯 Выбери действие в меню ниже 👇"
             )
-        
         try:
             await send_telegram(user_id, wake_text, get_main_keyboard(is_admin))
             log.info(f"Wake bot sent to user {user_id}")
@@ -3421,6 +3416,55 @@ async def miniapp_wake_bot(request):
             return web.json_response({"ok": False, "error": str(e)[:100]}, status=500)
     except Exception as e:
         log.error(f"Wake bot error: {e}")
+        track_error()
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+# ============================================================
+# 🆕 СОПРОВОДИТЕЛЬНОЕ ПИСЬМО ПОД ВАКАНСИЮ (ИЗ РЕЗЮМЕ)
+# ============================================================
+
+async def miniapp_cover_letter(request):
+    """POST /miniapp/cover-letter — письмо из активного резюме под конкретную вакансию. Чистый текст для копирования."""
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        title = (body.get("vacancy_title") or "").strip()
+        company = (body.get("vacancy_company") or "").strip()
+        vtext = (body.get("vacancy_text") or "").strip()
+        if not user_id:
+            return web.json_response({"error": "Нет user_id"}, status=400)
+        if not title and not vtext:
+            return web.json_response({"error": "Укажите должность или текст вакансии"}, status=400)
+        if not spend_balance(user_id, cost=1):
+            return web.json_response({"error": "Недостаточно запросов!"}, status=402)
+        resume = get_active_resume(user_id)
+        if not resume:
+            return web.json_response({"error": "Сначала загрузите резюме"}, status=400)
+        vac_block = f"Должность: {title or 'не указана'}\nКомпания: {company or 'не указана'}\n"
+        if vtext:
+            vac_block += f"Текст вакансии:\n{vtext[:3000]}\n"
+        prompt = (
+            "Ты — эксперт по сопроводительным письмам. Напиши письмо ОТ ИМЕНИ кандидата под конкретную вакансию.\n"
+            f"{vac_block}\n"
+            f"Резюме кандидата:\n{resume[:4000]}\n\n"
+            "Требования:\n"
+            "- 120–180 слов, 3–4 абзаца;\n"
+            "- обращение «Добрый день!», если имя рекрутера неизвестно;\n"
+            "- только факты и цифры из резюме, привязанные к задачам вакансии;\n"
+            "- финал: призыв к созвону + подпись именем кандидата из шапки резюме;\n"
+            "- ВЫДАЙ ТОЛЬКО ТЕКСТ ПИСЬМА: без комментариев, без заголовков, без кавычек и пояснений."
+        )
+        letter = await asyncio.to_thread(ai_generate, prompt)
+        if not letter or not validate_ai_response(letter, min_length=50):
+            return web.json_response({"error": "Не удалось сгенерировать письмо"}, status=500)
+        letter = letter.replace("```", "").strip()
+        if letter.startswith("«") and letter.endswith("»"):
+            letter = letter[1:-1].strip()
+        log.info(f"Cover letter generated: user={user_id}, vac={title} @ {company}")
+        return web.json_response({"letter": letter, "title": title, "company": company})
+    except Exception as e:
+        log.error(f"Cover letter error: {e}")
         track_error()
         return web.json_response({"error": str(e)[:200]}, status=500)
 
@@ -4091,7 +4135,8 @@ async def main():
         ("GET", "/miniapp/templates", miniapp_templates),
         ("POST", "/miniapp/template", miniapp_template),
         ("POST", "/miniapp/crisis-tool", miniapp_crisis_tool),
-        ("POST", "/miniapp/wake-bot", miniapp_wake_bot),  # 🆕 НОВЫЙ — пробуждение бота для iPhone
+        ("POST", "/miniapp/wake-bot", miniapp_wake_bot),
+        ("POST", "/miniapp/cover-letter", miniapp_cover_letter),
         ("POST", "/miniapp/analyze", miniapp_analyze_vacancy),
         ("POST", "/miniapp/search", miniapp_search_vacancies),
         ("POST", "/miniapp/find-lpr", miniapp_find_lpr),
