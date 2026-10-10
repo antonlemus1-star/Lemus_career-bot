@@ -38,7 +38,7 @@ except ImportError:
     DDGS_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("career_bot_v46")
+log = logging.getLogger("career_bot_v47")
 
 # ---------------- Конфиг ----------------
 RAW_BOT_TOKEN = os.getenv("BOT_TOKEN", "")
@@ -49,7 +49,33 @@ if not BOT_TOKEN or ":" not in BOT_TOKEN:
 
 log.info(f"✅ Using cleaned BOT_TOKEN starting with: {BOT_TOKEN[:10]}...")
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+# ============================================================
+# 🔑 ПУЛ КЛЮЧЕЙ GEMINI (ротация для обхода лимитов)
+# ============================================================
+GEMINI_KEYS = [
+    "AQ.Ab8RN6I-FjMeDIMUzc37CiId--uMUAlAT9SNtcrW9IiUtnrrEA",
+    "AQ.Ab8RN6KhBn2lK929UemtSKU0Hk5X-821nkGwZ7h-oUZ9ft_eUA",
+    "AQ.Ab8RN6IhlxUHVY5fK2aM1lZg3uCdOqUMOIjLDXALfb6B8l3rVg",
+    "AQ.Ab8RN6KiB22qbRPPVy-tDcG5XitkAoXjnMPhHw4SUoHjIFICag",
+]
+GEMINI_KEYS = list(dict.fromkeys([k.strip() for k in GEMINI_KEYS if k.strip()]))
+
+_env_key = os.getenv("GEMINI_API_KEY", "").strip()
+if _env_key and _env_key not in GEMINI_KEYS:
+    GEMINI_KEYS.insert(0, _env_key)
+
+gemini_clients = []
+for _k in GEMINI_KEYS:
+    try:
+        gemini_clients.append(genai.Client(api_key=_k))
+        log.info(f"✅ Gemini client #{len(gemini_clients)} initialized (key prefix: {_k[:10]}...)")
+    except Exception as e:
+        log.warning(f"⚠️ Failed to init Gemini client: {e}")
+
+client = gemini_clients[0] if gemini_clients else None
+GEMINI_API_KEY = GEMINI_KEYS[0] if GEMINI_KEYS else ""
+_gemini_key_idx = {"i": 0}
+
 GROQ_KEY = os.getenv("GROQ_KEY", "")
 OPENROUTER_KEY = os.getenv("OPENROUTER_KEY", "")
 PORT = int(os.getenv("PORT", "10000"))
@@ -60,13 +86,12 @@ COURSES_DIR = os.getenv("COURSES_DIR", "courses")
 BOOTSTRAP_PREMIUM_USERS = {280043586: 3650}
 
 # Лимиты выдачи вакансий
-MAX_VACANCIES_RETURN = 70      # сколько вакансий возвращаем пользователю
-MAX_VACANCIES_SCORED = 100     # сколько уникальных вакансий скорим после фильтров
-SCORE_BATCH_SIZE = 20          # пакет вакансий на один ИИ-запрос скоринга
-BOT_PAGE_SIZE = 15             # партия выдачи в чате (кнопка «▶ Далее»)
+MAX_VACANCIES_RETURN = 70
+MAX_VACANCIES_SCORED = 100
+SCORE_BATCH_SIZE = 20
+BOT_PAGE_SIZE = 15
 
 TELEGRAM_API = "https://api.telegram.org/bot" + BOT_TOKEN
-client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 GEMINI_MODEL_CANDIDATES = list(dict.fromkeys([
     os.getenv("GEMINI_MODEL", "gemini-3.6-flash"),
@@ -260,7 +285,8 @@ async def monitor_load():
             log.info(f"📊 Metrics: AI={metrics_snapshot['ai_requests_per_minute']}/min, "
                      f"Users={metrics_snapshot['active_users_per_hour']}/hr, "
                      f"Cache={metrics_snapshot['cache_size']}, "
-                     f"AI_time={metrics_snapshot['avg_ai_response_time']:.1f}s")
+                     f"AI_time={metrics_snapshot['avg_ai_response_time']:.1f}s, "
+                     f"Gemini_keys={len(gemini_clients)}")
             critical_alerts = []
             warning_alerts = []
             warn_alerts = []
@@ -290,7 +316,7 @@ async def monitor_load():
 
 
 # ============================================================
-# 🎓 КУРСЫ: ВСТРОЕННЫЙ FALLBACK + ЗАГРУЗКА ИЗ ФАЙЛОВ courses/*.md
+# 🎓 КУРСЫ
 # ============================================================
 COURSES = {
     "resume": {
@@ -612,7 +638,10 @@ def like_vacancy(user_id: int, vacancy_id: str, title: str):
     conn.commit()
 
 
-# ---------------- ИИ-слой (С РЕТРАЯМИ) ----------------
+# ============================================================
+# 🔑 ИИ-СЛОЙ С РОТАЦИЕЙ КЛЮЧЕЙ GEMINI + FALLBACK
+# ============================================================
+
 def _openai_compat(prompt: str, base: str, key: str, model: str) -> str:
     r = requests.post(
         f"{base}/chat/completions",
@@ -625,45 +654,84 @@ def _openai_compat(prompt: str, base: str, key: str, model: str) -> str:
     return r.json()["choices"][0]["message"]["content"]
 
 
+def _is_quota_error(e: Exception) -> bool:
+    """Определяет, что ошибка связана с исчерпанием квоты/лимита."""
+    msg = str(e).lower()
+    quota_keywords = [
+        "quota", "429", "rate limit", "resource has been exhausted",
+        "exceeded", "too many requests", "daily limit", "requests per minute",
+        "resource_exhausted", "insufficient tokens"
+    ]
+    return any(kw in msg for kw in quota_keywords)
+
+
 def ai_generate(prompt: str):
     track_ai_request()
     start_time = time.time()
     result = None
-    if client:
-        for attempt in range(2):
+
+    # ===== ЭТАП 1: Gemini с ротацией ключей =====
+    if gemini_clients:
+        n_keys = len(gemini_clients)
+        start_idx = _gemini_key_idx["i"] % n_keys
+        attempts_order = [(start_idx + offset) % n_keys for offset in range(n_keys)]
+
+        for attempt_idx, key_idx in enumerate(attempts_order):
+            c = gemini_clients[key_idx]
             cands = list(GEMINI_MODEL_CANDIDATES)
             if _working_model["name"] in cands:
                 cands.remove(_working_model["name"])
                 cands.insert(0, _working_model["name"])
+
             for m in cands:
                 try:
-                    resp = client.models.generate_content(
+                    log.info(f"🤖 Gemini key#{key_idx + 1}/{n_keys} | model={m}")
+                    resp = c.models.generate_content(
                         model=m, contents=prompt,
                         config=gtypes.GenerateContentConfig(temperature=0.7))
                     if resp is not None and resp.text:
                         _working_model["name"] = m
+                        _gemini_key_idx["i"] = key_idx
                         result = resp.text
+                        log.info(f"✅ Gemini OK (key#{key_idx + 1})")
                         break
                 except Exception as e:
-                    log.warning("Gemini model %s failed: %s", m, str(e)[:100])
+                    err_str = str(e)[:200]
+                    if _is_quota_error(e):
+                        log.warning(f"⚠️ Gemini key#{key_idx + 1} quota exhausted: {err_str}")
+                        break
+                    else:
+                        log.warning(f"⚠️ Gemini key#{key_idx + 1} model {m} failed: {err_str}")
+                        continue
             if result:
                 break
-            _working_model["name"] = None
-            time.sleep(2)
+            time.sleep(0.5)
+
+    # ===== ЭТАП 2: Groq fallback =====
     if result is None and GROQ_KEY:
+        log.info("🔄 Gemini failed, trying Groq fallback...")
         try:
             result = _openai_compat(prompt, "https://api.groq.com/openai/v1", GROQ_KEY, GROQ_MODEL)
+            if result:
+                log.info("✅ Groq OK")
         except Exception as e:
-            log.warning("Groq failed: %s", str(e)[:100])
+            log.warning(f"Groq failed: {str(e)[:150]}")
+
+    # ===== ЭТАП 3: OpenRouter fallback =====
     if result is None and OPENROUTER_KEY:
+        log.info("🔄 Groq failed, trying OpenRouter fallback...")
         try:
             result = _openai_compat(prompt, "https://openrouter.ai/api/v1", OPENROUTER_KEY, "qwen/qwen-2.5-7b-instruct:free")
+            if result:
+                log.info("✅ OpenRouter OK")
         except Exception as e:
-            log.warning("OpenRouter failed: %s", str(e)[:100])
+            log.warning(f"OpenRouter failed: {str(e)[:150]}")
+
     elapsed = time.time() - start_time
     bot_metrics["avg_ai_response_time"] = (bot_metrics["avg_ai_response_time"] * 0.8) + (elapsed * 0.2)
     if result is None:
         track_error()
+        log.error("❌ All AI providers failed for this request")
     return result
 
 
@@ -721,7 +789,7 @@ def extract_text_from_odt(path: str) -> str:
 
 
 async def extract_text_from_image(path: str) -> str:
-    if not client:
+    if not gemini_clients:
         return ""
     try:
         with open(path, 'rb') as f:
@@ -729,29 +797,38 @@ async def extract_text_from_image(path: str) -> str:
         ext = path.lower().split('.')[-1]
         mime_types = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png', 'webp': 'image/webp', 'gif': 'image/gif'}
         mime_type = mime_types.get(ext, 'image/jpeg')
-        try:
-            image_part = gtypes.Part.from_bytes(data=image_data, mime_type=mime_type)
-            resp = client.models.generate_content(
-                model=GEMINI_MODEL_CANDIDATES[0],
-                contents=[image_part, "Извлеки ВЕСЬ текст из этого изображения. Выдай только текст без комментариев."]
-            )
-            if resp and resp.text:
-                return resp.text
-        except Exception as e1:
-            log.warning(f"Part.from_bytes failed: {e1}")
+        # Пробуем по очереди все ключи Gemini (для OCR тоже нужна квота)
+        last_err = None
+        for c in gemini_clients:
             try:
-                image_b64 = base64.b64encode(image_data).decode('utf-8')
-                resp = client.models.generate_content(
+                image_part = gtypes.Part.from_bytes(data=image_data, mime_type=mime_type)
+                resp = c.models.generate_content(
                     model=GEMINI_MODEL_CANDIDATES[0],
-                    contents=[
-                        {"inline_data": {"mime_type": mime_type, "data": image_b64}},
-                        "Извлеки ВЕСЬ текст из этого изображения. Выдай только текст без комментариев."
-                    ]
+                    contents=[image_part, "Извлеки ВЕСЬ текст из этого изображения. Выдай только текст без комментариев."]
                 )
                 if resp and resp.text:
                     return resp.text
-            except Exception as e2:
-                log.error(f"inline_data also failed: {e2}")
+            except Exception as e1:
+                last_err = e1
+                if _is_quota_error(e1):
+                    continue
+                try:
+                    image_b64 = base64.b64encode(image_data).decode('utf-8')
+                    resp = c.models.generate_content(
+                        model=GEMINI_MODEL_CANDIDATES[0],
+                        contents=[
+                            {"inline_data": {"mime_type": mime_type, "data": image_b64}},
+                            "Извлеки ВЕСЬ текст из этого изображения. Выдай только текст без комментариев."
+                        ]
+                    )
+                    if resp and resp.text:
+                        return resp.text
+                except Exception as e2:
+                    last_err = e2
+                    if _is_quota_error(e2):
+                        continue
+                    break
+        log.error(f"Image OCR failed with all keys: {last_err}")
         return ""
     except Exception as e:
         log.error(f"Image text extraction failed: {e}")
@@ -1002,7 +1079,7 @@ async def show_typing(chat_id):
 
 
 # ============================================================
-# 🎨 КЛАВИАТУРЫ (v4.5+: Skill Gap в главном меню, без ЛПР и трекера)
+# 🎨 КЛАВИАТУРЫ
 # ============================================================
 
 def get_main_keyboard(is_admin=False):
@@ -1074,7 +1151,7 @@ def get_keyboard(is_admin=False):
     return get_main_keyboard(is_admin)
 
 
-# ---------------- hh.ru парсинг (аккуратный: паузы между запросами) ----------------
+# ---------------- hh.ru парсинг ----------------
 async def hh_api_search(query: str, region_code: int = 1):
     try:
         params = {"text": query, "area": region_code, "per_page": "50"}
@@ -1570,7 +1647,7 @@ async def analyze_setka_post(chat_id: int, user_id: int, post_text: str):
 
 
 # ============================================================
-# 📄 ПОСТРАНИЧНАЯ ВЫДАЧА ВАКАНСИЙ В ЧАТЕ (ПАРТИИ ПО 15, КНОПКА «▶ ДАЛЕЕ»)
+# 📄 ПОСТРАНИЧНАЯ ВЫДАЧА ВАКАНСИЙ
 # ============================================================
 
 async def send_vacancies_page(chat_id: int, user_id: int, page: int = 0):
@@ -1639,7 +1716,7 @@ async def handle_search(chat_id: int, user_id: int, is_admin: bool):
 
 
 # ============================================================
-# 📊 SKILL GAP + ИСПРАВЛЕНИЕ РЕЗЮМЕ ПОД HH.RU (ATS) + WORD/PDF
+# 📊 SKILL GAP + ИСПРАВЛЕНИЕ РЕЗЮМЕ
 # ============================================================
 
 ATS_RULES = (
@@ -1949,7 +2026,7 @@ async def generate_job_search_plan(chat_id: int, user_id: int):
 
 
 # ============================================================
-# 🆘 АНТИКРИЗИСНЫЙ ПАКЕТ (ПРЕМИУМ)
+# 🆘 АНТИКРИЗИСНЫЙ ПАКЕТ
 # ============================================================
 
 CRISIS_TOOLS_SET = {"gap", "followup", "scam", "min", "warm", "bridge", "day"}
@@ -2760,7 +2837,7 @@ async def process_message(msg: dict):
 
     elif text == "ℹ️ Помощь":
         help_text = (
-            "ℹ️ *Справка (Версия 4.6):*\n"
+            "ℹ️ *Справка (Версия 4.7):*\n"
             "🎯 *Два режима:* соискатель и рекрутер.\n"
             "🔍 *Поиск вакансий:* до 70 вакансий, выдача партиями по 15 с кнопкой «▶ Далее».\n"
             "📊 *Skill Gap:* аудит → «Исправить резюме под hh.ru» → Word + PDF.\n"
@@ -2769,6 +2846,7 @@ async def process_message(msg: dict):
             "🎤 *Тренажер:* 3 каверзных вопроса с разбором ответов.\n"
             "📎 *Форматы:* PDF, DOCX, DOC, ODT, RTF, TXT и фото.\n"
             "🛡️ *Защита:* 15 запросов в минуту.\n"
+            "🔑 *ИИ-пул:* ротация 4 ключей Gemini + fallback на Groq/OpenRouter.\n"
             "📧 *Поддержка:* a.lemus@ya.ru"
         )
         await send_telegram(chat_id, help_text, get_main_keyboard(is_admin))
@@ -2787,6 +2865,7 @@ async def process_message(msg: dict):
             f"👥 Пользователей: `{total_users}`\n"
             f"📁 Резюме: `{total_resumes}`\n"
             f"💳 Платежей: `{p[0]}` на `{p[1]}` ⭐\n"
+            f"🔑 Gemini ключей: `{len(gemini_clients)}`\n"
             f"📱 Полная аналитика и управление подписками — в приложении: экран «👑 Админ-панель».")
 
     else:
@@ -2794,7 +2873,7 @@ async def process_message(msg: dict):
 
 
 # ============================================================
-# 🔍 ЯДРО ПОИСКА ВАКАНСИЙ v4 (ДО 70 ВАКАНСИЙ, ПАКЕТНЫЙ СКОРИНГ)
+# 🔍 ЯДРО ПОИСКА ВАКАНСИЙ v4
 # ============================================================
 
 SENIORITY_WORDS = ["руководитель", "директор", "head", "chief", "lead", "начальник",
@@ -3091,7 +3170,7 @@ async def core_search_vacancies(user_id: int) -> dict:
 
 
 # ============================================================
-# 🌙 ДАЙДЖЕСТ ВАКАНСИЙ (только по подписке пользователя)
+# 🌙 ДАЙДЖЕСТ ВАКАНСИЙ
 # ============================================================
 
 async def digest_loop():
@@ -3630,6 +3709,7 @@ async def miniapp_admin_overview(request):
                 "users": total_users, "resumes": total_resumes, "payments": total_payments,
                 "stars": total_stars, "premium_active": premium_active,
                 "feedback": feedback_count,
+                "gemini_keys": len(gemini_clients),
             },
             "users": users,
             "payments": payments,
@@ -4318,6 +4398,8 @@ async def main():
         app.router.add_route(method, path, handler)
 
     log.info(f"✅ MiniApp endpoints registered with CORS middleware ({len(routes)} endpoints)")
+    log.info(f"🔑 Gemini keys pool: {len(gemini_clients)} keys active")
+    log.info(f"🔑 Groq: {'YES' if GROQ_KEY else 'NO'} | OpenRouter: {'YES' if OPENROUTER_KEY else 'NO'}")
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -4327,7 +4409,7 @@ async def main():
         webhook_url = f"{render_url.rstrip('/')}/{BOT_TOKEN}"
         async with HTTP.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}") as resp:
             log.info("setWebhook: %s", (await resp.text())[:200])
-    log.info("🚀 Bot v4.6 started successfully.")
+    log.info("🚀 Bot v4.7 started successfully.")
     bg(cleanup_old_data())
     bg(monitor_load())
     bg(digest_loop())
