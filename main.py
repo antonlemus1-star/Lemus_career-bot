@@ -26,6 +26,12 @@ except ImportError:
     import fitz
 
 try:
+    from fpdf import FPDF
+    FPDF_AVAILABLE = True
+except ImportError:
+    FPDF_AVAILABLE = False
+
+try:
     from duckduckgo_search import DDGS
     DDGS_AVAILABLE = True
 except ImportError:
@@ -328,7 +334,6 @@ COURSES = {
     }
 }
 
-# Имена файлов на GitHub -> canonical ID (чтобы заменили встроенные заглушки)
 COURSE_FILE_ALIASES = {
     "резюме_за_1_час": "resume",
     "собеседование_без_стресса": "interview",
@@ -348,14 +353,6 @@ def _course_slug(file_name: str) -> str:
 
 
 def load_courses_from_disk():
-    """Подтягивает курсы из папки courses/*.md в бот и приложение.
-
-    Формат файла (гибкий):
-      # Название курса            (необязательно — иначе имя файла)
-      Описание курса              (строки до первого урока)
-      ## Урок 1: Заголовок        (или "Урок 1.", "### Урок 1" и т.п.)
-      Текст урока...
-    """
     if not os.path.isdir(COURSES_DIR):
         log.info(f"Courses dir not found: {COURSES_DIR} — using built-in lessons")
         return
@@ -780,6 +777,120 @@ def extract_text(path: str, file_name: str) -> str:
     return text_content.strip()
 
 
+# ============================================================
+# 📄 ГЕНЕРАЦИЯ ФАЙЛОВ РЕЗЮМЕ: DOCX + PDF
+# ============================================================
+
+SECTION_KEYWORDS = ["summary", "обо мне", "опыт работы", "образование", "ключевые навыки",
+                    "навыки", "контакты", "дополнительная информация", "повышение квалификации",
+                    "курсы", "целевой вектор", "ключевые компетенции"]
+
+PDF_FONT_URLS = [
+    "https://raw.githubusercontent.com/dejavu-fonts/dejavu-fonts/master/ttf/DejaVuSans.ttf",
+    "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf",
+]
+_pdf_font_cache = {"path": None}
+
+
+def ensure_pdf_font() -> str:
+    if _pdf_font_cache["path"] and os.path.exists(_pdf_font_cache["path"]):
+        return _pdf_font_cache["path"]
+    cand = "/tmp/DejaVuSans.ttf"
+    if os.path.exists(cand):
+        _pdf_font_cache["path"] = cand
+        return cand
+    for url in PDF_FONT_URLS:
+        try:
+            r = requests.get(url, timeout=90)
+            if r.status_code == 200 and len(r.content) > 100000:
+                with open(cand, "wb") as f:
+                    f.write(r.content)
+                _pdf_font_cache["path"] = cand
+                log.info("PDF font downloaded OK")
+                return cand
+        except Exception as e:
+            log.warning(f"PDF font download failed ({url}): {e}")
+    return ""
+
+
+def resume_to_pdf_bytes(text: str) -> bytes:
+    if not FPDF_AVAILABLE:
+        raise RuntimeError("fpdf2 not installed")
+    font = ensure_pdf_font()
+    if not font:
+        raise RuntimeError("PDF font unavailable")
+    pdf = FPDF(format="A4")
+    pdf.set_auto_page_break(auto=True, margin=18)
+    pdf.add_font("DejaVu", "", font)
+    pdf.add_page()
+    pdf.set_margins(15, 15, 15)
+    first = True
+    for raw_line in text.split("\n"):
+        line = raw_line.replace("*", "").replace("#", "").strip()
+        if not line:
+            pdf.ln(2)
+            continue
+        low = line.lower()
+        if first:
+            pdf.set_font("DejaVu", "", 16)
+            pdf.multi_cell(0, 8, line)
+            pdf.ln(2)
+            first = False
+            continue
+        if any(k in low for k in SECTION_KEYWORDS) and len(line) < 60:
+            pdf.ln(2)
+            pdf.set_font("DejaVu", "", 12)
+            pdf.multi_cell(0, 7, line.upper())
+            pdf.ln(1)
+            pdf.set_font("DejaVu", "", 10)
+            continue
+        pdf.set_font("DejaVu", "", 10)
+        pdf.multi_cell(0, 5.5, line)
+    return bytes(pdf.output())
+
+
+def resume_to_docx_bytes(text: str) -> bytes:
+    doc = Document()
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        clean_line = re.sub(r'[*#]', '', line).strip()
+        if not clean_line:
+            continue
+        if i == 0 and len(clean_line) < 100:
+            doc.add_heading(clean_line, level=1)
+        elif any(k in clean_line.lower() for k in SECTION_KEYWORDS) and len(clean_line) < 60:
+            doc.add_heading(clean_line, level=2)
+        elif clean_line.startswith(("•", "-")):
+            doc.add_paragraph(clean_line, style='List Bullet')
+        else:
+            doc.add_paragraph(clean_line)
+    stream = io.BytesIO()
+    doc.save(stream)
+    return stream.getvalue()
+
+
+async def send_resume_files(chat_id: int, resume_text: str, base_name: str, caption: str):
+    """Отправляет резюме двумя файлами: DOCX и PDF."""
+    try:
+        docx_bytes = resume_to_docx_bytes(resume_text)
+        await send_document_bytes(chat_id, docx_bytes, f"{base_name}.docx", caption)
+    except Exception as e:
+        log.error(f"DOCX send failed: {e}")
+        track_error()
+    await asyncio.sleep(0.4)
+    try:
+        pdf_bytes = resume_to_pdf_bytes(resume_text)
+        form = aiohttp.FormData()
+        form.add_field("chat_id", str(chat_id))
+        form.add_field("document", pdf_bytes, filename=f"{base_name}.pdf", content_type="application/pdf")
+        async with HTTP.post(f"{TELEGRAM_API}/sendDocument", data=form) as resp:
+            await resp.json()
+    except Exception as e:
+        log.error(f"PDF send failed: {e}")
+        track_error()
+        await send_telegram(chat_id, "⚠️ PDF сейчас недоступен (не смог собрать шрифт). Word-файл отправлен.")
+
+
 # ---------------- Telegram helpers ----------------
 def bg(coro):
     t = asyncio.create_task(coro)
@@ -917,7 +1028,7 @@ def get_seeker_resume_keyboard():
     kb = [
         [{"text": "📋 Аудит резюме"}, {"text": "📊 Анализ навыков (Skill Gap)"}],
         [{"text": "🛠 Адаптация резюме"}, {"text": "📁 Мои резюме"}],
-        [{"text": "📥 Загрузить резюме"}, {"text": "📤 Экспорт резюме"}],
+        [{"text": "📥 Загрузить резюме"}, {"text": "📤 Экспорт (Word+PDF)"}],
         [{"text": "⬅️ Назад к меню соискателя"}, {"text": "🚀 Запустить бота"}],
     ]
     return {"keyboard": kb, "resize_keyboard": True}
@@ -1184,35 +1295,13 @@ def clean_pitch_text(pitch: str, title: str) -> str:
     return pitch
 
 
-async def export_resume_docx(chat_id: int, user_id: int):
+async def export_resume_files(chat_id: int, user_id: int):
     resume = get_active_resume(user_id)
     if not resume:
         await send_telegram(chat_id, "💡 Нет активного резюме для экспорта. Загрузите резюме.")
         return
     await show_typing(chat_id)
-    try:
-        doc = Document()
-        lines = resume.split("\n")
-        for i, line in enumerate(lines):
-            clean_line = re.sub(r'[*#]', '', line).strip()
-            if not clean_line:
-                continue
-            if i == 0 and len(clean_line) < 100:
-                doc.add_heading(clean_line, level=1)
-            elif any(keyword in clean_line.lower() for keyword in ["summary", "обо мне", "опыт работы", "образование", "ключевые навыки"]):
-                doc.add_heading(clean_line, level=2)
-            elif clean_line.startswith("•") or clean_line.startswith("-"):
-                doc.add_paragraph(clean_line, style='List Bullet')
-            else:
-                doc.add_paragraph(clean_line)
-        stream = io.BytesIO()
-        doc.save(stream)
-        file_bytes = stream.getvalue()
-        await send_document_bytes(chat_id, file_bytes, "My_Resume.docx", "📤 *Ваше резюме экспортировано!*")
-    except Exception as e:
-        log.error(f"Resume export error: {e}")
-        track_error()
-        await send_telegram(chat_id, "⚠️ Ошибка экспорта.")
+    await send_resume_files(chat_id, resume, "My_Resume", "📤 *Ваше резюме:* Word + PDF")
 
 
 # ---------------- Разбор вакансии ----------------
@@ -1591,6 +1680,44 @@ async def handle_search(chat_id: int, user_id: int, is_admin: bool):
     await send_vacancies_page(chat_id, user_id, page=0)
 
 
+# ============================================================
+# 📊 SKILL GAP + ИСПРАВЛЕНИЕ РЕЗЮМЕ (WORD + PDF)
+# ============================================================
+
+def build_skillgap_prompt(resume: str) -> str:
+    current_date = datetime.date.today().strftime("%d.%m.%Y")
+    return (
+        f"Дата: {current_date}. Проведи анализ навыков (Skill Gap) кандидата.\n"
+        "Выдай структурированный ответ:\n"
+        "✅ СИЛЬНЫЕ КОМПЕТЕНЦИИ: [3-5 пунктов]\n"
+        "⚠️ ЗОНЫ РОСТА: [3-5 пунктов]\n"
+        "💡 РЕКОМЕНДАЦИИ: [что подтянуть и как переформулировать]\n\n" + resume[:8000]
+    )
+
+
+def build_fix_prompt(resume: str, gap: str) -> str:
+    return (
+        "Ты — элитный карьерный консультант. Перепиши резюме кандидата по рекомендациям.\n"
+        f"РЕКОМЕНДАЦИИ:\n{gap[:3000]}\n\nИСХОДНОЕ РЕЗЮМЕ:\n{resume[:6000]}\n\n"
+        "ПРАВИЛА:\n"
+        "1. Сохрани ВСЕ факты, компании, даты и цифры.\n"
+        "2. Замени слабые глаголы на сильные (руководил → выстроил, запустил, увеличил).\n"
+        "3. Каждое достижение — через метрику (%, ₽, срок, размер команды).\n"
+        "4. Структура: ФИО → Контакты → Summary → Ключевые компетенции → Опыт → Образование.\n"
+        "5. Выдай ТОЛЬКО текст резюме, без комментариев."
+    )
+
+
+def build_adapt_prompt(resume: str, vacancy: str) -> str:
+    current_date = datetime.date.today().strftime("%d.%m.%Y")
+    return (
+        f"Дата: {current_date}. Перепиши резюме под вакансию. ТОЛЬКО текст, начиная с ФИО.\n"
+        f"Вакансия:\n{vacancy[:3000]}\n\nРезюме:\n{resume[:6000]}\n\n"
+        "ПРАВИЛА: сохрани факты; добавь ключевые слова вакансии; усиль релевантные блоки; "
+        "нерелевантный опыт сократи; выдай ТОЛЬКО текст резюме."
+    )
+
+
 async def run_skill_gap_analysis(chat_id: int, user_id: int):
     if not spend_balance(user_id, cost=1):
         await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
@@ -1601,72 +1728,92 @@ async def run_skill_gap_analysis(chat_id: int, user_id: int):
     if not resume:
         await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
         return
-    current_date = datetime.date.today().strftime("%d.%m.%Y")
-    prompt = (
-        f"Дата: {current_date}. Проведи анализ навыков (Skill Gap) кандидата.\n"
-        "1. Сильные компетенции 2. Зоны роста 3. Рекомендации.\n\n" + resume[:8000]
-    )
-    analysis = await asyncio.to_thread(ai_generate, prompt)
+    analysis = await asyncio.to_thread(ai_generate, build_skillgap_prompt(resume))
     if not analysis or not validate_ai_response(analysis, min_length=100):
         await send_telegram(chat_id, "⚠️ ИИ недоступен.")
         return
     user_skillgap_cache[user_id] = analysis
-    markup = {"inline_keyboard": [[{"text": "🚀 Исправить резюме", "callback_data": "fix_resume_from_gap"}]]}
-    await send_telegram(chat_id, f"📊 *Анализ навыков:*\n\n{analysis}", markup)
+    markup = {"inline_keyboard": [[{"text": "🚀 Исправить резюме → Word + PDF", "callback_data": "fix_resume_from_gap"}]]}
+    await send_telegram(chat_id,
+        f"📊 *Анализ навыков:*\n\n{analysis}\n\n"
+        "👇 Нажми кнопку — перепишу резюме по этим выводам и пришлю файлами Word и PDF.", markup)
 
 
 async def run_fix_resume_by_gap(chat_id: int, user_id: int):
     if not check_free_action(user_id, "resume_fix", max_free=1):
-        await send_telegram(chat_id, "🔒 *Бесплатный лимит исчерпан!*")
+        await send_telegram(chat_id, "🔒 *Бесплатный лимит исправлений исчерпан!*")
         return
     if not spend_balance(user_id, cost=1):
         await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
         return
     resume = get_active_resume(user_id)
-    gap = user_skillgap_cache.get(user_id, "Усилить бизнес-метрики")
+    if not resume:
+        await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
+        return
+    gap = user_skillgap_cache.get(user_id, "")
+    if not gap:
+        gap = await asyncio.to_thread(ai_generate, build_skillgap_prompt(resume)) or "Усилить бизнес-метрики и формулировки достижений"
+        user_skillgap_cache[user_id] = gap
     await show_typing(chat_id)
-    await send_telegram(chat_id, "⚙️ *Переписываю резюме...*")
-    prompt = (
-        "Ты — элитный карьерный консультант. Перепиши резюме кандидата по рекомендациям.\n"
-        f"РЕКОМЕНДАЦИИ:\n{gap[:3000]}\n\nИСХОДНОЕ РЕЗЮМЕ:\n{resume[:6000]}\n\n"
-        "ПРАВИЛА:\n"
-        "1. Сохрани ВСЕ факты.\n"
-        "2. Замени слабые глаголы на сильные.\n"
-        "3. Добавь цифры.\n"
-        "4. Структура: ФИО → Контакты → Summary → Навыки → Опыт → Образование.\n"
-        "5. Выдай ТОЛЬКО текст резюме."
-    )
-    improved = await asyncio.to_thread(ai_generate, prompt)
+    await send_telegram(chat_id, "⚙️ *Переписываю резюме по выводам Skill Gap...*")
+    improved = await asyncio.to_thread(ai_generate, build_fix_prompt(resume, gap))
     if not improved or not validate_ai_response(improved, min_length=200):
         await send_telegram(chat_id, "⚠️ ИИ вернул некорректный результат.")
         return
-    try:
-        doc = Document()
-        lines = improved.split("\n")
-        for i, line in enumerate(lines):
-            clean_line = re.sub(r'[*#]', '', line).strip()
-            if not clean_line:
-                continue
-            if i == 0 and len(clean_line) < 100:
-                doc.add_heading(clean_line, level=1)
-            elif any(keyword in clean_line.lower() for keyword in ["summary", "обо мне", "опыт работы", "образование", "ключевые навыки"]):
-                doc.add_heading(clean_line, level=2)
-            elif clean_line.startswith("•") or clean_line.startswith("-"):
-                doc.add_paragraph(clean_line, style='List Bullet')
-            else:
-                doc.add_paragraph(clean_line)
-        stream = io.BytesIO()
-        doc.save(stream)
-        file_bytes = stream.getvalue()
-        add_resume(user_id, "Optimized_Resume.docx", improved)
-        await send_document_bytes(chat_id, file_bytes, "Optimized_Resume.docx",
-            "💎 *Ваше улучшенное резюме готово!*\n"
-            "✅ Переписано по рекомендациям Skill Gap.\n"
-            "✅ Сохранено как новое активное резюме.")
-    except Exception as e:
-        log.error("DOCX error: %s", e)
-        track_error()
-        await send_telegram(chat_id, "⚠️ Ошибка файла.")
+    improved = improved.replace("```", "").strip()
+    add_resume(user_id, "Optimized_Resume.docx", improved)
+    await send_resume_files(chat_id, improved, "Optimized_Resume",
+        "💎 *Исправленное резюме готово!*\n"
+        "✅ Переписано по выводам Skill Gap.\n"
+        "✅ Сохранено как новое активное резюме.\n"
+        "📎 Файлы: Word + PDF.")
+
+
+async def run_resume_adaptation(chat_id: int, user_id: int, resume_id: int, vacancy_text: str):
+    if not check_free_action(user_id, "resume_adapt", max_free=1):
+        await send_telegram(chat_id, "🔒 *Бесплатный лимит адаптаций исчерпан!*")
+        return
+    if not spend_balance(user_id, cost=1):
+        await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
+        return
+    await show_typing(chat_id)
+    resume_text = get_resume_by_id(user_id, resume_id) or get_active_resume(user_id)
+    if not resume_text:
+        await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
+        return
+    await send_telegram(chat_id, "🛠 *Адаптирую резюме под вакансию...*")
+    adapted = await asyncio.to_thread(ai_generate, build_adapt_prompt(resume_text, vacancy_text))
+    if not adapted or not validate_ai_response(adapted, min_length=200):
+        await send_telegram(chat_id, "⚠️ ИИ недоступен.")
+        return
+    if "---" in adapted:
+        adapted = adapted.split("---")[-1].strip()
+    adapted = adapted.replace("```", "").strip()
+    add_resume(user_id, "Adapted_Resume.docx", adapted)
+    await send_resume_files(chat_id, adapted, "Adapted_Resume",
+        "📄 *Адаптированное резюме готово!*\n"
+        "✅ Переписано под требования вакансии.\n"
+        "✅ Сохранено как новое активное резюме.\n"
+        "📎 Файлы: Word + PDF.")
+
+
+async def run_resume_audit(chat_id: int, user_id: int):
+    if not spend_balance(user_id, cost=1):
+        await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
+        return
+    await show_typing(chat_id)
+    resume = get_active_resume(user_id)
+    if not resume:
+        await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
+        return
+    audit = await asyncio.to_thread(ai_generate, f"Глубокий аудит резюме:\n{resume[:8000]}")
+    rewrite = await asyncio.to_thread(ai_generate, build_fix_prompt(resume, audit or ""))
+    if audit and validate_ai_response(audit, min_length=100) and rewrite and validate_ai_response(rewrite, min_length=200):
+        await send_telegram(chat_id, f"📋 *Аудит резюме:*\n\n{audit}")
+        rewrite = rewrite.replace("```", "").strip()
+        add_resume(user_id, "Resume_Pro.docx", rewrite)
+        await send_resume_files(chat_id, rewrite, "Resume_Pro",
+            "✅ *Оптимизированное резюме:* Word + PDF\nСохранено как новое активное резюме.")
 
 
 async def run_ai_generation(chat_id: int, user_id: int, vac_info: dict):
@@ -1769,66 +1916,6 @@ async def run_vacancy_match(chat_id: int, user_id: int, vac_info: dict):
         await send_telegram(chat_id, "⚠️ ИИ недоступен.")
         return
     await send_telegram(chat_id, f"📊 *Анализ соответствия:*\n\n{analysis}")
-
-
-async def run_resume_adaptation(chat_id: int, user_id: int, resume_id: int, vacancy_text: str):
-    if not check_free_action(user_id, "resume_adapt", max_free=1):
-        await send_telegram(chat_id, "🔒 *Бесплатный лимит исчерпан!*")
-        return
-    if not spend_balance(user_id, cost=1):
-        await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
-        return
-    await show_typing(chat_id)
-    resume_text = get_resume_by_id(user_id, resume_id) or get_active_resume(user_id)
-    if not resume_text:
-        await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
-        return
-    current_date = datetime.date.today().strftime("%d.%m.%Y")
-    prompt = (
-        f"Дата: {current_date}. Перепиши резюме под вакансию. ТОЛЬКО текст, начиная с ФИО.\n"
-        f"Вакансия:\n{vacancy_text[:3000]}\n\nРезюме:\n{resume_text[:6000]}"
-    )
-    adapted = await asyncio.to_thread(ai_generate, prompt)
-    if not adapted or not validate_ai_response(adapted, min_length=200):
-        await send_telegram(chat_id, "⚠️ ИИ недоступен.")
-        return
-    if "---" in adapted:
-        adapted = adapted.split("---")[-1].strip()
-    try:
-        doc = Document()
-        for p in adapted.split("\n"):
-            clean_p = re.sub(r'[*#]', '', p).strip()
-            if clean_p:
-                doc.add_paragraph(clean_p)
-        stream = io.BytesIO()
-        doc.save(stream)
-        await send_document_bytes(chat_id, stream.getvalue(), "Adapted_Resume.docx", "📄 Адаптированное резюме готово!")
-    except Exception as e:
-        log.error("DOCX error: %s", e)
-        track_error()
-
-
-async def run_resume_audit(chat_id: int, user_id: int):
-    if not spend_balance(user_id, cost=1):
-        await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
-        return
-    await show_typing(chat_id)
-    resume = get_active_resume(user_id)
-    if not resume:
-        await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
-        return
-    audit = await asyncio.to_thread(ai_generate, f"Глубокий аудит резюме:\n{resume[:8000]}")
-    rewrite = await asyncio.to_thread(ai_generate, f"Перепиши для позиций выше:\n{resume[:8000]}")
-    if audit and validate_ai_response(audit, min_length=100) and rewrite and validate_ai_response(rewrite, min_length=200):
-        await send_telegram(chat_id, f"📋 *Аудит резюме:*\n\n{audit}")
-        doc = Document()
-        for p in rewrite.split("\n"):
-            clean_p = re.sub(r'[*#]', '', p).strip()
-            if clean_p:
-                doc.add_paragraph(clean_p)
-        stream = io.BytesIO()
-        doc.save(stream)
-        await send_document_bytes(chat_id, stream.getvalue(), "Resume_Pro.docx", "✅ Оптимизированное резюме готово!")
 
 
 async def show_courses(chat_id: int, user_id: int):
@@ -1972,7 +2059,7 @@ def build_crisis_prompt(tool: str, params: str, resume: str) -> str:
             "Ты — карьерный консультант и психолог. Ситуация кандидата: пробел в занятости.\n"
             f"Вводные: {params}\n"
             "Составь:\n"
-            "1) Уверенный нарратив пробела на 2-3 предложения (формула: факт → чем занимался в паузе → почему сейчас сильнее);\n"
+            "1) Уверенный нарратив пробела на 2-3 предложения;\n"
             "2) Короткие ответы на 3 каверзных вопроса рекрутера о пробеле;\n"
             "3) Три фразы-табу, которые нельзя говорить.\n"
             "Тон: достойный, без извинений и драмы.\n"
@@ -1982,58 +2069,41 @@ def build_crisis_prompt(tool: str, params: str, resume: str) -> str:
         return (
             "Ты — мастер деловой коммуникации. Напиши фоллоу-ап письмо HR после тишины на отклик.\n"
             f"Вводные: {params}\n"
-            "Структура: благодарность за возможность отклика/интервью → один новый конкретный факт о себе "
-            "(достижение, сертификация, проект) → вопрос о сроках решения и следующих шагах.\n"
-            "Объём до 120 слов. Тон: тёплый, уверенный, без давления и без отчаяния."
+            "Структура: благодарность → один новый конкретный факт о себе → вопрос о сроках решения.\n"
+            "Объём до 120 слов. Тон: тёплый, уверенный, без давления."
         )
     if tool == "scam":
         return (
             "Ты — эксперт по трудовому мошенничеству. Проанализируй вакансию на признаки скама.\n"
             f"Текст вакансии:\n{params[:4000]}\n\n"
-            "Выдай:\n"
-            "1) Список найденных красных флагов (или «не найдены»);\n"
-            "2) Уровень риска: низкий/средний/высокий;\n"
-            "3) Что проверить до согласия (юрлицо в ЕГРЮЛ, отзывы, договор, оформление по ТК);\n"
-            "4) Что нельзя отправлять и платить ни при каких условиях."
+            "Выдай:\n1) красные флаги; 2) уровень риска; 3) что проверить; 4) что нельзя платить/отправлять."
         )
     if tool == "min":
         return (
-            "Ты — финансовый советник и коуч по переговорам. Вводные — обязательные расходы кандидата в месяц: "
+            "Ты — финансовый советник и коуч по переговорам. Расходы кандидата в месяц: "
             f"{params}\n"
-            "Выдай:\n"
-            "1) Расчёт минимального приемлемого оффера: сумма расходов + 20% буфер (покажи арифметику);\n"
-            "2) Точную фразу для переговоров, удерживающую этот пол;\n"
-            "3) Две стратегии, если оффер ниже пола: временный мост с дедлайном и торг немедленными условиями;\n"
-            "4) Одно поддерживающее предложение: почему согласие ниже пола из страха — это потерянные 2 года."
+            "Выдай: 1) расчёт пола оффера (+20% буфер); 2) фразу-держатель для переговоров; "
+            "3) две стратегии если оффер ниже пола; 4) поддерживающее предложение."
         )
     if tool == "warm":
         return (
-            "Ты — эксперт по нетворкингу. Напиши сообщение тёплому контакту с просьбой о рекомендации или тёплом знакомстве.\n"
+            "Ты — эксперт по нетворкингу. Напиши сообщение тёплому контакту с просьбой о рекомендации.\n"
             f"Вводные: {params}\n"
-            "Структура: тёплое приветствие с общим воспоминанием → суть поиска одной фразой (позиция, ценность) → "
-            "конкретная лёгкая просьба (рекомендация / знакомство с нужным человеком / 15 минут звонка) → благодарность без давления.\n"
-            "Объём до 100 слов. Тон: на равных, без стыда и просьб «выручить»."
+            "Структура: воспоминание → суть поиска одной фразой → лёгкая конкретная просьба → благодарность.\n"
+            "Объём до 100 слов. Тон: на равных."
         )
     if tool == "bridge":
         return (
-            "Ты — карьерный стратег. Кандидату нужен мост-доход на период поиска работы.\n"
+            "Ты — карьерный стратег. Кандидату нужен мост-доход на период поиска.\n"
             f"Резюме:\n{resume[:2500]}\n\n"
-            "Предложи 5 идей мост-дохода именно по навыкам кандидата. Для каждой:\n"
-            "• суть одной фразой;\n"
-            "• где продавать (платформы, типы компаний, каналы);\n"
-            "• как упаковать предложение в одну фразу;\n"
-            "• реалистичный срок до первых денег.\n"
-            "Идеи должны соответствовать уровню кандидата, а не быть случайными подработками."
+            "Предложи 5 идей мост-дохода по навыкам кандидата: суть, где продавать, упаковка, срок до первых денег."
         )
     extra = f"\nДополнительно о ситуации: {params}" if params else ""
     return (
         "Ты — поддерживающий коуч. Составь план на СЕГОДНЯ для кандидата в поиске работы.\n"
         f"Резюме:\n{resume[:1500]}{extra}\n\n"
-        "Выдай:\n"
-        "1) Три микро-шага на сегодня (2 целевых отклика + 1 контакт с человеком) с конкретикой из резюме;\n"
-        "2) Один пункт заботы о себе и теле;\n"
-        "3) Вечернюю фразу поддержки: что записать в дневник перед сном.\n"
-        "Формат: простой чек-лист. Тон: тёплый, без токсичного позитива."
+        "Выдай: 1) три микро-шага (2 отклика + 1 контакт с человеком); 2) пункт заботы о себе; "
+        "3) вечернюю фразу поддержки. Формат: чек-лист."
     )
 
 
@@ -2056,6 +2126,8 @@ NO_RESUME_TRAINER_TEXT = (
     "Пришли файл резюме (PDF, DOCX или фото) прямо сюда — или загрузи в приложении: «📥 Загрузить резюме».\n"
     "Как только резюме появится, нажми «🎤 Тренажер собеседований» ещё раз — и начнём."
 )
+
+NO_RESUME_TEXT = "💡 Сначала загрузите резюме!"
 
 
 async def handle_document(chat_id: int, user_id: int, document: dict, is_admin: bool):
@@ -2132,8 +2204,8 @@ async def handle_document(chat_id: int, user_id: int, document: dict, is_admin: 
             f"✅ *Резюме «{file_name}» загружено!*\n"
             "💡 *Что можно сделать:*\n"
             "1️⃣ *🎤 Тренажер собеседований* — 3 каверзных вопроса с разбором.\n"
-            "2️⃣ *🔗 Разобрать вакансию* — скопируй текст вакансии.\n"
-            "3️⃣ *🔍 Поиск вакансий* — подбор по резюме.\n"
+            "2️⃣ * Анализ навыков* — аудит и исправленное резюме в Word + PDF.\n"
+            "3️⃣ * Поиск вакансий* — подбор по резюме.\n"
             "📎 *Форматы:* PDF, DOCX, DOC, ODT, RTF, TXT и фото резюме."
         )
     await send_telegram(chat_id, success_text, keyboard)
@@ -2379,7 +2451,7 @@ async def process_message(msg: dict):
             return
         if is_vacancy_text(text) or len(text) > 300:
             if not get_active_resume(user_id):
-                await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
+                await send_telegram(chat_id, NO_RESUME_TEXT)
                 return
             bg(analyze_vacancy_text(chat_id, user_id, text))
             return
@@ -2393,7 +2465,7 @@ async def process_message(msg: dict):
             return
         if is_vacancy_text(text) or len(text) > 300:
             if not get_active_resume(user_id):
-                await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
+                await send_telegram(chat_id, NO_RESUME_TEXT)
                 return
             bg(analyze_vacancy_text(chat_id, user_id, text))
             return
@@ -2466,9 +2538,6 @@ async def process_message(msg: dict):
         rid = user_adapt_target.get(user_id)
         user_states.pop(user_id, None)
         user_adapt_target.pop(user_id, None)
-        if not spend_balance(user_id, cost=1):
-            await send_telegram(chat_id, "⚠️ Недостаточно запросов!")
-            return
         bg(run_resume_adaptation(chat_id, user_id, rid, text))
         return
 
@@ -2481,7 +2550,7 @@ async def process_message(msg: dict):
 
     if is_vacancy_text(text):
         if not get_active_resume(user_id):
-            await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
+            await send_telegram(chat_id, NO_RESUME_TEXT)
             return
         bg(analyze_vacancy_text(chat_id, user_id, text))
         return
@@ -2550,14 +2619,14 @@ async def process_message(msg: dict):
 
     elif text == "🌐 Вакансии из Сетки":
         if not get_active_resume(user_id):
-            await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
+            await send_telegram(chat_id, NO_RESUME_TEXT)
             return
         user_states[user_id] = "waiting_for_setka_post"
         await send_telegram(chat_id, "🌐 *Вакансии из Сетки*\nСкопируйте текст поста и отправьте сюда.")
 
     elif text == "🔗 Разобрать вакансию":
         if not get_active_resume(user_id):
-            await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
+            await send_telegram(chat_id, NO_RESUME_TEXT)
             return
         user_states[user_id] = "waiting_for_vacancy_text"
         await send_telegram(chat_id,
@@ -2568,7 +2637,7 @@ async def process_message(msg: dict):
 
     elif text == "🕵️ Найти ЛПР":
         if not get_active_resume(user_id):
-            await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
+            await send_telegram(chat_id, NO_RESUME_TEXT)
             return
         user_states[user_id] = "waiting_for_osint_target"
         await send_telegram(chat_id,
@@ -2577,7 +2646,7 @@ async def process_message(msg: dict):
 
     elif text == "📝 Короткие Питчи":
         if not get_active_resume(user_id):
-            await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
+            await send_telegram(chat_id, NO_RESUME_TEXT)
             return
         user_states[user_id] = "waiting_for_pitch_target"
         await send_telegram(chat_id,
@@ -2586,21 +2655,21 @@ async def process_message(msg: dict):
 
     elif text == "📊 Анализ навыков (Skill Gap)":
         if not get_active_resume(user_id):
-            await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
+            await send_telegram(chat_id, NO_RESUME_TEXT)
             return
         bg(run_skill_gap_analysis(chat_id, user_id))
 
     elif text == "🛠 Адаптация резюме":
         rows = list_resumes(user_id)
         if not rows:
-            await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
+            await send_telegram(chat_id, NO_RESUME_TEXT)
             return
         kb = {"inline_keyboard": [[{"text": f"📄 {r['name']}", "callback_data": f"adaptsel_{r['id']}"}] for r in rows]}
-        await send_telegram(chat_id, "🛠 Выберите резюме:", kb)
+        await send_telegram(chat_id, "🛠 Выберите резюме и пришлите текст вакансии:", kb)
 
     elif text == "📋 Аудит резюме":
         if not get_active_resume(user_id):
-            await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
+            await send_telegram(chat_id, NO_RESUME_TEXT)
             return
         bg(run_resume_audit(chat_id, user_id))
 
@@ -2623,9 +2692,7 @@ async def process_message(msg: dict):
         if not is_premium_user(user_id):
             await send_telegram(chat_id,
                 "🔒 *Антикризисный пакет входит в Премиум.*\n"
-                "Внутри: курс «Поиск работы в кризис» (6 уроков) и 7 персональных генераторов:\n"
-                "🕳 объяснение пробела • 📮 фоллоу-ап после тишины • 🛡 проверка на скам • "
-                "💰 минимум оффера • 🤝 письмо тёплому контакту • 🌉 мост-доход • 📅 план на сегодня.\n"
+                "Внутри: курс «Поиск работы в кризис» (6 уроков) и 7 персональных генераторов.\n"
                 "💳 Безлимит на 10 дней — 500 ⭐: кнопка «💎 Оплата и Баланс».")
             return
         kb = {"inline_keyboard": [
@@ -2654,7 +2721,7 @@ async def process_message(msg: dict):
 
     elif text == "🔍 Поиск вакансий":
         if not get_active_resume(user_id):
-            await send_telegram(chat_id, "💡 Сначала загрузите резюме!")
+            await send_telegram(chat_id, NO_RESUME_TEXT)
         else:
             bg(handle_search(chat_id, user_id, is_admin))
 
@@ -2666,8 +2733,8 @@ async def process_message(msg: dict):
             "• Изображения: JPG, PNG, WEBP.\n"
             "📏 *Максимальный размер:* 5 МБ.")
 
-    elif text == "📤 Экспорт резюме":
-        bg(export_resume_docx(chat_id, user_id))
+    elif text in ("📤 Экспорт (Word+PDF)", "📤 Экспорт резюме"):
+        bg(export_resume_files(chat_id, user_id))
 
     elif text == "📊 Соответствие резюме вакансии":
         user_states[user_id] = "waiting_for_hr_resume"
@@ -2817,14 +2884,13 @@ async def process_message(msg: dict):
 
     elif text == "ℹ️ Помощь":
         help_text = (
-            "ℹ️ *Справка (Версия 4.3):*\n"
-            "🎯 *Два режима:*\n"
-            "💼 *Я ищу работу* — для соискателей.\n"
-            "🏢 *Я нанимаю* — для рекрутеров.\n"
-            "📎 *Форматы:* PDF, DOCX, DOC, ODT, RTF, TXT и фото.\n"
-            "📏 *Максимальный размер:* 5 МБ.\n"
+            "ℹ️ *Справка (Версия 4.4):*\n"
+            "🎯 *Два режима:* соискатель и рекрутер.\n"
+            "📊 *Skill Gap:* аудит навыков → кнопка «Исправить резюме» → файлы Word + PDF в чат.\n"
+            "🛠 *Адаптация:* резюме переписывается под текст вакансии → Word + PDF.\n"
+            "📤 *Экспорт:* любое активное резюме выгружается в Word и PDF.\n"
+            "📎 *Форматы входа:* PDF, DOCX, DOC, ODT, RTF, TXT и фото.\n"
             "🛡️ *Защита:* 15 запросов в минуту.\n"
-            "🚀 *Кнопка «Запустить бота»* есть в каждом меню — она мгновенно будит сервер и пишет тебе в чат.\n"
             "📧 *Поддержка:* a.lemus@ya.ru"
         )
         await send_telegram(chat_id, help_text, get_main_keyboard(is_admin))
@@ -3021,10 +3087,9 @@ async def core_search_vacancies(user_id: int) -> dict:
         "\"keywords\": [\"навык 1\", \"... до 10\"], "
         "\"employers\": [\"компания из опыта 1\", \"...\"], "
         "\"target_companies\": [\"желаемый работодатель 1\", \"... до 8\"]}\n"
-        "Правила: должности строго уровня и трека кандидата (не ниже и не выше); "
+        "Правила: должности строго уровня и трека кандидата; "
         "отрасли — где кандидат работал и куда целится; keywords — ключевые навыки и домены; "
-        "employers — названия компаний из блоков опыта; target_companies — компании из целевого вектора кандидата "
-        "(если указан) плюс крупнейшие игроки его отраслей."
+        "employers — компании из блоков опыта; target_companies — целевой вектор кандидата плюс крупнейшие игроки отраслей."
     )
     plan_raw = await asyncio.to_thread(ai_generate, plan_prompt)
     queries, industries, keywords, employers, target_companies = [], [], [], [], []
@@ -3323,6 +3388,94 @@ async def miniapp_activate_resume(request):
         return web.json_response({"error": str(e)[:200]}, status=500)
 
 
+# ============================================================
+# 📤📄 ЭКСПОРТ / ИСПРАВЛЕНИЕ / АДАПТАЦИЯ РЕЗЮМЕ (МИНИ-АП)
+# ============================================================
+
+async def miniapp_export_resume(request):
+    """Шлёт активное (или выбранное) резюме в чат двумя файлами: DOCX + PDF."""
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        resume_id = int(body.get("resume_id", 0) or 0)
+        if not user_id:
+            return web.json_response({"error": "Нет user_id"}, status=400)
+        resume = get_resume_by_id(user_id, resume_id) if resume_id else get_active_resume(user_id)
+        if not resume:
+            return web.json_response({"error": "Нет резюме для экспорта"}, status=400)
+        await send_resume_files(user_id, resume, "My_Resume", "📤 *Ваше резюме из приложения:* Word + PDF")
+        return web.json_response({"ok": True, "sent_to_chat": True})
+    except Exception as e:
+        log.error(f"Export resume error: {e}")
+        track_error()
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_fix_resume(request):
+    """Skill Gap → исправленное резюме: сохраняет как активное и шлёт DOCX + PDF в чат."""
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        if not user_id:
+            return web.json_response({"error": "Нет user_id"}, status=400)
+        if not check_free_action(user_id, "resume_fix", max_free=1):
+            return web.json_response({"error": "Бесплатный лимит исправлений исчерпан"}, status=402)
+        if not spend_balance(user_id, cost=1):
+            return web.json_response({"error": "Недостаточно запросов!"}, status=402)
+        resume = get_active_resume(user_id)
+        if not resume:
+            return web.json_response({"error": "Сначала загрузите резюме"}, status=400)
+        gap = user_skillgap_cache.get(user_id, "")
+        if not gap:
+            gap = await asyncio.to_thread(ai_generate, build_skillgap_prompt(resume)) or ""
+            user_skillgap_cache[user_id] = gap
+        improved = await asyncio.to_thread(ai_generate, build_fix_prompt(resume, gap))
+        if not improved or not validate_ai_response(improved, min_length=200):
+            return web.json_response({"error": "Не удалось исправить резюме"}, status=500)
+        improved = improved.replace("```", "").strip()
+        add_resume(user_id, "Optimized_Resume.docx", improved)
+        await send_resume_files(user_id, improved, "Optimized_Resume",
+            "💎 *Исправленное резюме (из приложения):* Word + PDF\n✅ Сохранено как новое активное резюме.")
+        return web.json_response({"ok": True, "text": improved, "sent_to_chat": True})
+    except Exception as e:
+        log.error(f"Fix resume error: {e}")
+        track_error()
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
+async def miniapp_adapt_resume(request):
+    """Адаптация активного резюме под текст вакансии: сохраняет и шлёт DOCX + PDF."""
+    try:
+        body = await parse_json_body(request)
+        user_id = int(body.get("user_id", 0))
+        vacancy_text = (body.get("vacancy_text") or "").strip()
+        if not user_id:
+            return web.json_response({"error": "Нет user_id"}, status=400)
+        if len(vacancy_text) < 100:
+            return web.json_response({"error": "Вставьте полный текст вакансии (минимум 100 символов)"}, status=400)
+        if not check_free_action(user_id, "resume_adapt", max_free=1):
+            return web.json_response({"error": "Бесплатный лимит адаптаций исчерпан"}, status=402)
+        if not spend_balance(user_id, cost=1):
+            return web.json_response({"error": "Недостаточно запросов!"}, status=402)
+        resume = get_active_resume(user_id)
+        if not resume:
+            return web.json_response({"error": "Сначала загрузите резюме"}, status=400)
+        adapted = await asyncio.to_thread(ai_generate, build_adapt_prompt(resume, vacancy_text))
+        if not adapted or not validate_ai_response(adapted, min_length=200):
+            return web.json_response({"error": "Не удалось адаптировать резюме"}, status=500)
+        if "---" in adapted:
+            adapted = adapted.split("---")[-1].strip()
+        adapted = adapted.replace("```", "").strip()
+        add_resume(user_id, "Adapted_Resume.docx", adapted)
+        await send_resume_files(user_id, adapted, "Adapted_Resume",
+            "📄 *Адаптированное резюме (из приложения):* Word + PDF\n✅ Сохранено как новое активное резюме.")
+        return web.json_response({"ok": True, "text": adapted, "sent_to_chat": True})
+    except Exception as e:
+        log.error(f"Adapt resume error: {e}")
+        track_error()
+        return web.json_response({"error": str(e)[:200]}, status=500)
+
+
 async def miniapp_invoice(request):
     try:
         body = await parse_json_body(request)
@@ -3488,7 +3641,6 @@ async def miniapp_crisis_tool(request):
 
 
 async def miniapp_wake_bot(request):
-    """Прогрев + действие в чат. action='interview' сразу запускает тренажёр."""
     try:
         body = await parse_json_body(request)
         user_id = int(body.get("user_id", 0))
@@ -3566,10 +3718,6 @@ async def miniapp_cover_letter(request):
         track_error()
         return web.json_response({"error": str(e)[:200]}, status=500)
 
-
-# ============================================================
-# 👑 АДМИН-ПАНЕЛЬ В МИНИ-АП (ТОЛЬКО ВЛАДЕЛЕЦ)
-# ============================================================
 
 async def miniapp_admin_overview(request):
     try:
@@ -3846,15 +3994,7 @@ async def miniapp_skill_gap(request):
         resume = get_active_resume(user_id)
         if not resume:
             return web.json_response({"error": "Сначала загрузите резюме"}, status=400)
-        current_date = datetime.date.today().strftime("%d.%m.%Y")
-        prompt = (
-            f"Дата: {current_date}. Проведи анализ навыков (Skill Gap) кандидата.\n"
-            "Выдай структурированный ответ:\n"
-            "✅ СИЛЬНЫЕ КОМПЕТЕНЦИИ: [3-5 пунктов]\n"
-            "⚠️ ЗОНЫ РОСТА: [3-5 пунктов]\n"
-            "💡 РЕКОМЕНДАЦИИ: [что подтянуть]\n\n" + resume[:8000]
-        )
-        analysis = await asyncio.to_thread(ai_generate, prompt)
+        analysis = await asyncio.to_thread(ai_generate, build_skillgap_prompt(resume))
         if not analysis or not validate_ai_response(analysis, min_length=100):
             return web.json_response({"error": "Не удалось провести анализ"}, status=500)
         user_skillgap_cache[user_id] = analysis
@@ -4328,6 +4468,9 @@ async def main():
         ("POST", "/miniapp/upload-resume", miniapp_upload_resume),
         ("GET", "/miniapp/resumes", miniapp_resumes_list),
         ("POST", "/miniapp/activate-resume", miniapp_activate_resume),
+        ("POST", "/miniapp/export-resume", miniapp_export_resume),
+        ("POST", "/miniapp/fix-resume", miniapp_fix_resume),
+        ("POST", "/miniapp/adapt-resume", miniapp_adapt_resume),
         ("POST", "/miniapp/invoice", miniapp_invoice),
         ("GET", "/miniapp/payments", miniapp_payments),
         ("POST", "/miniapp/digest", miniapp_digest),
@@ -4370,7 +4513,7 @@ async def main():
         webhook_url = f"{render_url.rstrip('/')}/{BOT_TOKEN}"
         async with HTTP.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}") as resp:
             log.info("setWebhook: %s", (await resp.text())[:200])
-    log.info("🚀 Bot v4.3 started successfully.")
+    log.info("🚀 Bot v4.4 started successfully.")
     bg(cleanup_old_data())
     bg(monitor_load())
     bg(digest_loop())
